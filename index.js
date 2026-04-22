@@ -26,11 +26,16 @@ try {
     )
   })
 
+  let shuttingDown = false
   function shutdown(signal) {
+    if (shuttingDown) return
+    shuttingDown = true
     logger.info(`${signal} received, shutting down gracefully`)
     managers.discovery.stopPeriodicProbe()
     managers.ws.stop()
     server.close(() => process.exit(0))
+    // Force exit if connections don't drain within 3 seconds
+    setTimeout(() => process.exit(0), 3000).unref()
   }
 
   process.on('SIGTERM', () => shutdown('SIGTERM'))
