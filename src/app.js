@@ -24,12 +24,15 @@ export async function createApp(config) {
     nodeCount: config.ollamaNodes?.length,
     discoveryInterval: config.discoveryInterval,
     maxConcurrentPerNode: config.maxConcurrentPerNode,
+    autoDiscover: config.autoDiscover,
   })
 
   // Create managers
   const discoveryManager = new DiscoveryManager({
     ollamaNodes: config.ollamaNodes,
     discoveryInterval: config.discoveryInterval,
+    autoDiscover: config.autoDiscover,
+    networkScanInterval: config.networkScanInterval,
   })
 
   const loadManager = new LoadManager({
@@ -46,8 +49,12 @@ export async function createApp(config) {
   // Initialize discovery
   const reachableCount = await discoveryManager.initialize()
   if (reachableCount === 0) {
-    logger.error('No reachable nodes at startup')
-    throw new Error('No reachable nodes available')
+    if (config.autoDiscover) {
+      logger.warn('No reachable nodes found at startup — will keep scanning the network')
+    } else {
+      logger.error('No reachable nodes at startup')
+      throw new Error('No reachable nodes available')
+    }
   }
 
   // Start periodic probe

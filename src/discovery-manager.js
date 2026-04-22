@@ -2,6 +2,7 @@
 import { request } from 'undici'
 import pino from 'pino'
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
+import { NetworkScanner } from './network-scanner.js'
 
 const logger = pino()
 
@@ -9,9 +10,13 @@ export class DiscoveryManager {
   constructor(config = {}) {
     this.OLLAMA_NODES = config.ollamaNodes || []
     this.DISCOVERY_INTERVAL = config.discoveryInterval || 15000
+    this.autoDiscover = config.autoDiscover ?? false
+    this.NETWORK_SCAN_INTERVAL = config.networkScanInterval || 60000
     this.onInventoryUpdated = config.onInventoryUpdated || null
     this.inventory = new Map() // Maps nodeHost -> NodeInfo
     this.periodicProbeHandle = null
+    this.networkScanHandle = null
+    this.networkScanner = new NetworkScanner()
   }
 
   notifyInventoryUpdated() {
@@ -139,7 +144,7 @@ export class DiscoveryManager {
   async probeNode(host) {
     const base = this.normalizeBaseUrl(host)
     const node = new NodeInfo(base)
-    logger.info(`Probing ${host}`)
+    logger.debug(`Probing ${host}`)
 
     try {
       // Version check
@@ -149,7 +154,7 @@ export class DiscoveryManager {
       if (versionResp.statusCode !== 200) {
         throw new Error(`Version ${versionResp.statusCode}`)
       }
-      logger.info(`${host} version OK`)
+      logger.debug(`${host} version OK`)
 
       // Get model list
       const tagsResp = await request(`${base}/api/tags`, {
@@ -160,7 +165,7 @@ export class DiscoveryManager {
       }
 
       const tagsData = await tagsResp.body.json()
-      logger.info(`${host} models:`, tagsData.models?.length || 0)
+      logger.debug({ host, models: tagsData.models?.length || 0 }, 'Models fetched')
 
       // Enrich models with /api/show details in parallel
       const enrichedModels = await this.populateNodeModelsEnriched(
@@ -182,11 +187,44 @@ export class DiscoveryManager {
   }
 
   /**
+   * Merge auto-discovered node URLs into OLLAMA_NODES, skipping duplicates.
+   * @param {string[]} discoveredUrls
+   * @private
+   */
+  mergeDiscoveredNodes(discoveredUrls) {
+    const existingNormalized = new Set(
+      this.OLLAMA_NODES.map((n) => this.normalizeBaseUrl(n)),
+    )
+    for (const url of discoveredUrls) {
+      const normalized = this.normalizeBaseUrl(url)
+      if (!existingNormalized.has(normalized)) {
+        this.OLLAMA_NODES.push(url)
+        existingNormalized.add(normalized)
+        logger.info({ url }, 'Auto-discovered Ollama node added')
+      }
+    }
+  }
+
+  /**
+   * Run a network scan and merge any newly found nodes, then probe them.
+   */
+  async discoverNetworkNodes() {
+    const discovered = await this.networkScanner.scanLocalNetwork()
+    if (discovered.length > 0) {
+      this.mergeDiscoveredNodes(discovered)
+    }
+  }
+
+  /**
    * Initialize discovery by probing all configured nodes
    * @returns {Promise<number>} number of reachable nodes
    */
   async initialize() {
-    logger.info('Initializing discovery with nodes:', this.OLLAMA_NODES)
+    if (this.autoDiscover) {
+      await this.discoverNetworkNodes()
+    }
+
+    logger.debug('Initializing discovery with nodes:', this.OLLAMA_NODES)
     const initialTasks = this.OLLAMA_NODES.map((host) => this.probeNode(host))
     const initialResults = await Promise.allSettled(initialTasks)
 
@@ -208,7 +246,7 @@ export class DiscoveryManager {
   }
 
   /**
-   * Start periodic discovery probe
+   * Start periodic discovery probe and optional network scan
    */
   startPeriodicProbe() {
     if (this.periodicProbeHandle) {
@@ -221,6 +259,13 @@ export class DiscoveryManager {
     this.periodicProbeHandle = setInterval(async () => {
       await this.performProbe()
     }, this.DISCOVERY_INTERVAL)
+
+    if (this.autoDiscover) {
+      logger.info(`Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`)
+      this.networkScanHandle = setInterval(async () => {
+        await this.discoverNetworkNodes()
+      }, this.NETWORK_SCAN_INTERVAL)
+    }
   }
 
   /**
@@ -286,13 +331,18 @@ export class DiscoveryManager {
   }
 
   /**
-   * Stop periodic discovery probe
+   * Stop periodic discovery probe and network scan
    */
   stopPeriodicProbe() {
     if (this.periodicProbeHandle) {
       clearInterval(this.periodicProbeHandle)
       this.periodicProbeHandle = null
       logger.info('Periodic probe stopped')
+    }
+    if (this.networkScanHandle) {
+      clearInterval(this.networkScanHandle)
+      this.networkScanHandle = null
+      logger.info('Periodic network scan stopped')
     }
   }
 

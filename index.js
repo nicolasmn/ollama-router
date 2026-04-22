@@ -5,6 +5,8 @@ import {
   DISCOVERY_INTERVAL,
   MAX_CONCURRENT_PER_NODE,
   PORT,
+  AUTO_DISCOVER,
+  NETWORK_SCAN_INTERVAL,
 } from './src/config.js'
 import { createApp } from './src/app.js'
 
@@ -16,6 +18,8 @@ try {
     discoveryInterval: DISCOVERY_INTERVAL,
     maxConcurrentPerNode: MAX_CONCURRENT_PER_NODE,
     port: PORT,
+    autoDiscover: AUTO_DISCOVER,
+    networkScanInterval: NETWORK_SCAN_INTERVAL,
   })
 
   // Start server
