@@ -1,0 +1,26 @@
+{
+  "name": "ollama-router",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "lint": "eslint src/ index.js",
+    "lint:fix": "eslint src/ index.js --fix",
+    "format": "prettier --write src/ index.js *.md",
+    "format:check": "prettier --check src/ index.js *.md"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "pino": "^10.3.1",
+    "undici": "^6.19.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.2.1",
+    "globals": "^17.5.0",
+    "nodemon": "^3.1.14",
+    "prettier": "^3.8.3"
+  }
+}
