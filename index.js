@@ -11,7 +11,7 @@ import { createApp } from './src/app.js'
 const logger = pino()
 
 try {
-  const { app, managers } = await createApp({
+  const { server, managers } = await createApp({
     ollamaNodes: OLLAMA_NODES,
     discoveryInterval: DISCOVERY_INTERVAL,
     maxConcurrentPerNode: MAX_CONCURRENT_PER_NODE,
@@ -19,25 +19,22 @@ try {
   })
 
   // Start server
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     logger.info(`Router listening on port ${PORT}`)
     logger.info(
       `Discovered ${managers.discovery.getReachableNodeCount()} reachable nodes`,
     )
   })
 
-  // Handle graceful shutdown
-  process.on('SIGTERM', () => {
-    logger.info('SIGTERM received, shutting down gracefully')
+  function shutdown(signal) {
+    logger.info(`${signal} received, shutting down gracefully`)
     managers.discovery.stopPeriodicProbe()
-    process.exit(0)
-  })
+    managers.ws.stop()
+    server.close(() => process.exit(0))
+  }
 
-  process.on('SIGINT', () => {
-    logger.info('SIGINT received, shutting down gracefully')
-    managers.discovery.stopPeriodicProbe()
-    process.exit(0)
-  })
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 } catch (err) {
   logger.error({ error: err.message }, 'Failed to start application')
   process.exit(1)

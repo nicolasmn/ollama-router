@@ -1,21 +1,23 @@
 // app.js - Application factory
+import http from 'node:http'
 import express from 'express'
 import pino from 'pino'
 import { DiscoveryManager } from './discovery-manager.js'
 import { LoadManager } from './load-manager.js'
 import { RequestRouter } from './request-router.js'
+import { WsManager } from './ws-manager.js'
 import { createRoutes } from './routes.js'
 
 const logger = pino()
 
 /**
- * Create and configure the Express application
+ * Create and configure the application with Express, WebSocket support, and all managers.
  * @param {Object} config - configuration object
  * @param {Array<string>} config.ollamaNodes - list of Ollama node addresses
  * @param {number} config.discoveryInterval - interval for periodic discovery in ms
  * @param {number} config.maxConcurrentPerNode - max concurrent requests per node
  * @param {number} config.port - server port
- * @returns {Promise<{app: Express.Application, managers: Object}>}
+ * @returns {Promise<{server: http.Server, managers: Object}>}
  */
 export async function createApp(config) {
   logger.info('Creating application with config:', {
@@ -51,20 +53,21 @@ export async function createApp(config) {
   // Start periodic probe
   discoveryManager.startPeriodicProbe()
 
-  // Create Express app
+  // Create Express app and HTTP server
   const app = express()
   app.use(express.json({ limit: '10mb' }))
-
-  // Setup routes
   createRoutes(app, discoveryManager, loadManager, requestRouter)
 
-  // Return app and managers
+  const server = http.createServer(app)
+  const wsManager = new WsManager({ server, discoveryManager, loadManager })
+
   return {
-    app,
+    server,
     managers: {
       discovery: discoveryManager,
       load: loadManager,
       router: requestRouter,
+      ws: wsManager,
     },
   }
 }

@@ -1,7 +1,13 @@
 // routes.js - Express route handlers
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { request } from 'undici'
 import pino from 'pino'
 import { pipeline } from 'node:stream/promises'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DASHBOARD_HTML = readFileSync(join(__dirname, 'dashboard.html'), 'utf8')
 
 const logger = pino()
 
@@ -460,77 +466,10 @@ export function createRoutes(
   })
 
   /**
-   * GET /dashboard - HTML dashboard
+   * GET /dashboard - Beautiful real-time dashboard powered by WebSocket
    */
   app.get('/dashboard', (req, res) => {
-    const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ollama Router Dashboard</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-    .node { border: 1px solid #ccc; margin: 10px 0; padding: 10px; background: white; }
-    .node.reachable { border-left: 5px solid green; }
-    .node.unreachable { border-left: 5px solid red; }
-    .model { margin-left: 20px; margin-top: 10px; padding: 5px; background: #fafafa; border-left: 2px solid #ddd; }
-    .status { font-weight: bold; }
-    .healthy { color: green; }
-    .unhealthy { color: red; }
-    .stats { font-size: 0.9em; color: #666; }
-  </style>
-</head>
-<body>
-  <h1>Ollama Router Dashboard</h1>
-  <div id="content">Loading...</div>
-  <script>
-    async function updateDashboard() {
-      try {
-        const response = await fetch('/inventory');
-        const data = await response.json();
-        const content = document.getElementById('content');
-        let html = '';
-        for (const [host, node] of Object.entries(data.nodes)) {
-          const statusClass = node.reachable ? 'reachable' : 'unreachable';
-          const statusText = node.reachable ? '✓ Reachable' : '✗ Unreachable';
-          html += '<div class="node ' + statusClass + '">';
-          html += '<h2>' + host + ' <span class="status ' + (node.reachable ? 'healthy' : 'unhealthy') + '">(' + statusText + ')</span></h2>';
-          html += '<p>Active Requests: ' + node.activeRequests + '</p>';
-          html += '<p class="stats">Last Seen: ' + new Date(node.lastSeen).toLocaleString() + '</p>';
-          html += '<h3>Models (' + Object.keys(node.models).length + ')</h3>';
-          for (const [name, model] of Object.entries(node.models)) {
-            const profile = model.profile || {};
-            const capabilities = [];
-            if (profile.supportsVision) capabilities.push('vision');
-            if (profile.supportsAudio) capabilities.push('audio');
-            if (profile.supportsTools) capabilities.push('tools');
-            if (profile.supportsThinking) capabilities.push('thinking');
-            if (profile.isEmbedding) capabilities.push('embedding');
-            const capStr = capabilities.length > 0 ? capabilities.join(', ') : 'text-only';
-
-            html += '<div class="model">';
-            html += '<strong>' + name + '</strong> (' + model.family + ', ' + (model.size / 1e9).toFixed(1) + 'GB)<br>';
-            html += 'Capabilities: ' + capStr + ' | Context: ' + (profile.contextLength || 4096) + ' tokens<br>';
-            html += '<span class="stats">Latency: ' + Math.round(model.recentLatency) + 'ms | TPS: ' + model.recentTps.toFixed(1) + ' | Failures: ' + model.failures + '</span><br>';
-            html += '<span class="stats">Last Route: ' + (model.lastRoutingEndpoint || '-') + '</span>';
-            html += '</div>';
-          }
-          html += '</div>';
-        }
-        content.innerHTML = html;
-      } catch (error) {
-        document.getElementById('content').innerHTML = '<p style="color: red;">Error loading dashboard: ' + error.message + '</p>';
-      }
-    }
-    updateDashboard();
-    setInterval(updateDashboard, 5000);
-  </script>
-</body>
-</html>
-    `
     res.setHeader('Content-Type', 'text/html')
-    res.send(html)
+    res.send(DASHBOARD_HTML)
   })
 }
