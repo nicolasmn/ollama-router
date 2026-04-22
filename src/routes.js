@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url'
 import { request } from 'undici'
 import pino from 'pino'
 import { pipeline } from 'node:stream/promises'
+import {
+  translateRequestBody,
+  translateResponseBody,
+  createSSETransform,
+} from './openai-adapter.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DASHBOARD_HTML = readFileSync(join(__dirname, 'dashboard.html'), 'utf8')
@@ -65,19 +70,25 @@ function selectCandidatesOrHandleError({
 
 /**
  * Forward a request to Ollama
+ * @param {string} baseUrl
+ * @param {string} modelName
+ * @param {Object} reqBody - already-translated Ollama body
+ * @param {string} endpoint
  */
 async function forwardRequest(baseUrl, modelName, reqBody, endpoint) {
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...reqBody, model: modelName }),
+    body: JSON.stringify(reqBody),
     timeout: 30000,
   })
 
   if (resp.statusCode === 503) throw new Error('Node busy')
-  if (!resp.ok) throw new Error(`HTTP ${resp.statusCode}`)
+  if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    throw new Error(`HTTP ${resp.statusCode}`)
+  }
 
-  return resp.json()
+  return resp.body.json()
 }
 
 /**
@@ -104,22 +115,28 @@ export function createRoutes(
       return
     }
 
+    const completionId = `chatcmpl-${makeRequestId()}`
+    const created = Math.floor(Date.now() / 1000)
     const startTime = Date.now()
     try {
+      const ollamaBody = translateRequestBody(reqBody, modelName)
       const resp = await request(`${nodeHost}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...reqBody, model: modelName }),
+        body: JSON.stringify(ollamaBody),
         timeout: 30000,
       })
 
       if (resp.statusCode === 503) throw new Error('Node busy')
-      if (!resp.ok) throw new Error(`HTTP ${resp.statusCode}`)
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        throw new Error(`HTTP ${resp.statusCode}`)
+      }
 
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.setHeader('Content-Type', 'text/event-stream')
       res.setHeader('Cache-Control', 'no-cache')
       res.setHeader('Connection', 'keep-alive')
-      await pipeline(resp.body, res)
+      res.setHeader('X-Accel-Buffering', 'no')
+      await pipeline(resp.body, createSSETransform(completionId, modelName, created), res)
 
       const latency = Date.now() - startTime
       requestRouter.updateModelMetrics(nodeHost, modelName, latency, 0)
@@ -150,6 +167,8 @@ export function createRoutes(
     successLog,
     failureLog,
     res,
+    requestTransformer = null,
+    responseTransformer = null,
   }) {
     for (const candidate of candidates) {
       const { nodeHost, modelName } = candidate
@@ -167,14 +186,15 @@ export function createRoutes(
       const startTime = Date.now()
 
       try {
-        const result = await forwardRequest(
-          nodeHost,
-          modelName,
-          reqBody,
-          endpoint,
-        )
+        const ollamaBody = requestTransformer
+          ? requestTransformer(reqBody, modelName)
+          : { ...reqBody, model: modelName }
+        const result = await forwardRequest(nodeHost, modelName, ollamaBody, endpoint)
         const latency = Date.now() - startTime
-        const tokensGenerated = tokensFromResult(result)
+        const transformed = responseTransformer
+          ? responseTransformer(result, reqBody.model ?? modelName)
+          : result
+        const tokensGenerated = tokensFromResult(transformed)
         requestRouter.updateModelMetrics(
           nodeHost,
           modelName,
@@ -182,7 +202,7 @@ export function createRoutes(
           tokensGenerated,
         )
         logger.info({ requestId, nodeHost, modelName, latency }, successLog)
-        res.json(result)
+        res.json(transformed)
         return true
       } catch (err) {
         logger.warn(
@@ -238,10 +258,12 @@ export function createRoutes(
         candidates,
         reqBody: req.body,
         endpoint: '/api/chat',
-        tokensFromResult: (result) => result.usage?.completion_tokens || 0,
+        tokensFromResult: (result) => result.usage?.completion_tokens ?? 0,
         successLog: 'Chat request successful',
         failureLog: 'Chat model failed, trying next',
         res,
+        requestTransformer: translateRequestBody,
+        responseTransformer: translateResponseBody,
       })
 
       if (!success) {
@@ -262,120 +284,6 @@ export function createRoutes(
       }
 
       logger.error({ requestId, error: err.message }, 'Chat request error')
-      res.status(500).json({ error: 'Internal server error' })
-    }
-  })
-
-  /**
-   * POST /v1/embeddings - Embeddings endpoint
-   */
-  app.post('/v1/embeddings', async (req, res) => {
-    const requestId = makeRequestId()
-    logger.info({ requestId }, 'Incoming embeddings request')
-
-    try {
-      const candidates = selectCandidatesOrHandleError({
-        requestId,
-        reqBody: req.body,
-        taskType: 'general',
-        res,
-        selectFn: (reqBody) => requestRouter.selectForEmbeddings(reqBody),
-        selectionErrorMessage: 'Embeddings request model selection failed',
-        logger,
-      })
-      if (!candidates) {
-        return
-      }
-
-      const success = await tryCandidatesWithRetry({
-        requestId,
-        candidates,
-        reqBody: req.body,
-        endpoint: '/api/embeddings',
-        tokensFromResult: () => 0,
-        successLog: 'Embeddings request successful',
-        failureLog: 'Embeddings model failed, trying next',
-        res,
-      })
-
-      if (!success) {
-        logger.error({ requestId }, 'All embeddings models failed')
-        res.status(503).json({ error: 'All models failed' })
-      }
-    } catch (err) {
-      if (
-        handleSelectionError(
-          err,
-          res,
-          requestId,
-          'Embeddings request model selection failed',
-          logger,
-        )
-      ) {
-        return
-      }
-
-      logger.error(
-        { requestId, error: err.message },
-        'Embeddings request error',
-      )
-      res.status(500).json({ error: 'Internal server error' })
-    }
-  })
-
-  /**
-   * POST /v1/completions - Text completions endpoint
-   */
-  app.post('/v1/completions', async (req, res) => {
-    const requestId = makeRequestId()
-    logger.info({ requestId }, 'Incoming completions request')
-
-    try {
-      const candidates = selectCandidatesOrHandleError({
-        requestId,
-        reqBody: req.body,
-        taskType: 'completions',
-        res,
-        selectFn: (reqBody) => requestRouter.selectForCompletions(reqBody),
-        selectionErrorMessage: 'Completions request model selection failed',
-        logger,
-      })
-      if (!candidates) {
-        return
-      }
-
-      const success = await tryCandidatesWithRetry({
-        requestId,
-        candidates,
-        reqBody: req.body,
-        endpoint: '/api/generate',
-        tokensFromResult: (result) => result.eval_count || 0,
-        successLog: 'Completions request successful',
-        failureLog: 'Completions model failed, trying next',
-        res,
-      })
-
-      if (!success) {
-        logger.error({ requestId }, 'All completions models failed')
-        res.status(503).json({ error: 'All models failed' })
-      }
-    } catch (err) {
-      if (
-        handleSelectionError(
-          err,
-          res,
-          requestId,
-          'Completions request model selection failed',
-          logger,
-        )
-      ) {
-        return
-      }
-
-      logger.error(
-        { requestId, error: err.message },
-        'Completions request error',
-      )
       res.status(500).json({ error: 'Internal server error' })
     }
   })

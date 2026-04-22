@@ -207,13 +207,18 @@ export class RequestRouter {
     return this.selectForRequest(reqBody, 'embeddings')
   }
 
-  _toOpenAiModelObject(id, created, ownedBy = 'router') {
-    return {
+  _toOpenAiModelObject(id, created, ownedBy = 'router', contextLength = 0) {
+    const obj = {
       id,
       object: 'model',
       created,
       owned_by: ownedBy,
     }
+    if (contextLength > 0) {
+      obj.context_window = contextLength
+      obj.max_context_window = contextLength
+    }
+    return obj
   }
 
   getModelCatalog() {
@@ -226,9 +231,10 @@ export class RequestRouter {
         const created = Math.floor((modelInfo.lastSeen || Date.now()) / 1000)
         const existing = deduped.get(modelName)
         if (!existing || created > existing.created) {
+          const contextLength = modelInfo.profile?.contextLength ?? 0
           deduped.set(
             modelName,
-            this._toOpenAiModelObject(modelName, created, nodeHost),
+            this._toOpenAiModelObject(modelName, created, nodeHost, contextLength),
           )
         }
       }
@@ -244,6 +250,7 @@ export class RequestRouter {
 
   getModelById(modelId) {
     if (VIRTUAL_MODELS.has(modelId)) {
+      // Virtual models span multiple real models — no single context length applies
       return this._toOpenAiModelObject(modelId, Math.floor(Date.now() / 1000))
     }
 
