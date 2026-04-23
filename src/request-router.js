@@ -154,14 +154,15 @@ export class RequestRouter {
     }
 
     if (modelName === AUTO_FAST_MODEL) {
-      const fastSelection = this.selectModel(requirements, {
+      const fastRequirements = { ...requirements, preferFast: true }
+      const fastSelection = this.selectModel(fastRequirements, {
         candidateFilter: ({ modelInfo }) => {
           const params = modelInfo.profile?.parameters || 0
           return params > 0 && params <= 4
         },
       })
 
-      return fastSelection || this.selectModel(requirements)
+      return fastSelection || this.selectModel(fastRequirements)
     }
 
     if (modelName === AUTO_THINK_MODEL) {
@@ -283,12 +284,10 @@ export class RequestRouter {
     // Size fit bonus: match model capacity to request complexity
     let sizeFit = 0
     if (requirements.preferReasoning && profile.parameters >= 14) sizeFit += 15
-    if (
-      requirements.preferFast &&
-      profile.parameters > 0 &&
-      profile.parameters <= 4
-    )
-      sizeFit += 12
+    if (requirements.preferFast && profile.parameters > 0 && profile.parameters <= 4) {
+      // Smaller models score higher: 1B→+21, 2B→+18, 3B→+15, 4B→+12
+      sizeFit += 12 + Math.round((4 - profile.parameters) * 3)
+    }
 
     // Thinking-capable models get a bonus for complex requests
     const thinkingBonus =
