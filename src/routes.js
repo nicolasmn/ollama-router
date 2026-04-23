@@ -9,6 +9,8 @@ import {
   translateRequestBody,
   translateResponseBody,
   createSSETransform,
+  translateEmbeddingRequest,
+  translateEmbeddingResponse,
 } from './openai-adapter.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -284,6 +286,51 @@ export function createRoutes(
       }
 
       logger.error({ requestId, error: err.message }, 'Chat request error')
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+
+  /**
+   * POST /v1/embeddings - OpenAI-compatible embeddings endpoint
+   */
+  app.post('/v1/embeddings', async (req, res) => {
+    const requestId = makeRequestId()
+    logger.info({ requestId }, 'Incoming embeddings request')
+
+    try {
+      const candidates = selectCandidatesOrHandleError({
+        requestId,
+        reqBody: req.body,
+        taskType: 'embeddings',
+        res,
+        selectFn: (reqBody) => requestRouter.selectForEmbeddings(reqBody),
+        selectionErrorMessage: 'Embeddings request model selection failed',
+        logger,
+      })
+      if (!candidates) return
+
+      const success = await tryCandidatesWithRetry({
+        requestId,
+        candidates,
+        reqBody: req.body,
+        endpoint: '/api/embed',
+        tokensFromResult: (result) => result.usage?.prompt_tokens ?? 0,
+        successLog: 'Embeddings request successful',
+        failureLog: 'Embeddings model failed, trying next',
+        res,
+        requestTransformer: translateEmbeddingRequest,
+        responseTransformer: translateEmbeddingResponse,
+      })
+
+      if (!success) {
+        logger.error({ requestId }, 'All embedding models failed')
+        res.status(503).json({ error: 'All models failed' })
+      }
+    } catch (err) {
+      if (handleSelectionError(err, res, requestId, 'Embeddings request model selection failed', logger)) {
+        return
+      }
+      logger.error({ requestId, error: err.message }, 'Embeddings request error')
       res.status(500).json({ error: 'Internal server error' })
     }
   })

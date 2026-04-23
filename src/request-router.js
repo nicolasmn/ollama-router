@@ -134,6 +134,27 @@ export class RequestRouter {
     }
   }
 
+  /**
+   * Normalize a model name to the canonical form used in the inventory.
+   * If the name has no tag and is not found, try appending ':latest'.
+   * @param {string} modelName
+   * @returns {string} resolved model name
+   */
+  _resolveModelName(modelName) {
+    if (modelName.includes(':')) return modelName
+
+    for (const node of this.discovery.getNodes().values()) {
+      if (node.models.has(modelName)) return modelName
+    }
+
+    const withLatest = `${modelName}:latest`
+    for (const node of this.discovery.getNodes().values()) {
+      if (node.models.has(withLatest)) return withLatest
+    }
+
+    return modelName
+  }
+
   _findModelAnywhere(modelName) {
     for (const node of this.discovery.getNodes().values()) {
       if (node.models.has(modelName)) return true
@@ -187,12 +208,14 @@ export class RequestRouter {
       return this._resolveByAlias(requestedModel, requirements)
     }
 
-    if (!this._findModelAnywhere(requestedModel)) {
+    const resolvedModel = this._resolveModelName(requestedModel)
+
+    if (!this._findModelAnywhere(resolvedModel)) {
       throw this._createModelNotFoundError(requestedModel)
     }
 
     return this.selectModel(requirements, {
-      candidateFilter: ({ modelName }) => modelName === requestedModel,
+      candidateFilter: ({ modelName }) => modelName === resolvedModel,
     })
   }
 
