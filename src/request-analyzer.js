@@ -42,39 +42,34 @@ function detectMultimodalNeeds(messages) {
   let needsVision = false
   let needsAudio = false
   let totalText = ''
+  let userText = ''
 
   for (const msg of messages) {
     const content = msg?.content
     if (hasImageContent(content)) needsVision = true
     if (hasAudioContent(content)) needsAudio = true
-    totalText += ' ' + stringifyContent(content)
+    const text = ' ' + stringifyContent(content)
+    totalText += text
+    if (msg?.role === 'user') userText += text
   }
 
-  return { needsVision, needsAudio, totalText }
+  return { needsVision, needsAudio, totalText, userText }
 }
 
-function deriveComplexityFlags(
-  totalText,
-  messages,
-  maxOutputTokens,
-  needsTools,
-) {
+function deriveComplexityFlags(totalText, userText, needsTools) {
   const estimatedInputTokens = estimateTokens(totalText)
-  const hasReasoningSignals = REASONING_SIGNALS.test(totalText)
-  const hasCodeSignals = CODE_SIGNALS.test(totalText)
-  const isLongConversation = messages.length > 6
-  const isLargeInput = estimatedInputTokens > 2000
-  const isLargeOutput = maxOutputTokens > 1000
+  const estimatedUserTokens = estimateTokens(userText)
+  const hasReasoningSignals = REASONING_SIGNALS.test(userText)
+  const hasCodeSignals = CODE_SIGNALS.test(userText)
 
-  const preferReasoning =
-    hasReasoningSignals || isLongConversation || (isLargeInput && isLargeOutput)
+  // Complexity is driven by what the user actually asked, not by system prompts or history size
+  const preferReasoning = hasReasoningSignals || hasCodeSignals
 
   const preferFast =
     !needsTools &&
     !hasReasoningSignals &&
-    !isLargeInput &&
-    estimatedInputTokens < 300 &&
-    maxOutputTokens <= 200
+    !hasCodeSignals &&
+    estimatedUserTokens < 300
 
   return {
     estimatedInputTokens,
@@ -119,13 +114,16 @@ export class RequestAnalyzer {
     let needsAudio = false
     let totalText
 
+    let userText
     if (endpointType === 'completions') {
       totalText = typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
+      userText = totalText
     } else {
       const modal = detectMultimodalNeeds(messages)
       needsVision = modal.needsVision
       needsAudio = modal.needsAudio
       totalText = modal.totalText
+      userText = modal.userText
     }
 
     const {
@@ -133,7 +131,7 @@ export class RequestAnalyzer {
       hasCodeSignals,
       preferReasoning,
       preferFast,
-    } = deriveComplexityFlags(totalText, messages, maxOutputTokens, needsTools)
+    } = deriveComplexityFlags(totalText, userText, needsTools)
 
     return {
       endpointType,

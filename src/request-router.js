@@ -292,7 +292,7 @@ export class RequestRouter {
 
     // Thinking-capable models get a bonus for complex requests
     const thinkingBonus =
-      requirements.preferReasoning && profile.supportsThinking ? 20 : 0
+      requirements.preferReasoning && profile.supportsThinking ? 10 : 0
 
     // Exact multimodal match bonuses
     const visionBonus =
