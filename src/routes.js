@@ -136,7 +136,7 @@ export function createRoutes(
       res.setHeader('Cache-Control', 'no-cache')
       res.setHeader('Connection', 'keep-alive')
       res.setHeader('X-Accel-Buffering', 'no')
-      await pipeline(resp.body, createSSETransform(completionId, modelName, created), res)
+      await pipeline(resp.body, createSSETransform(completionId, reqBody.model ?? modelName, created), res)
 
       const latency = Date.now() - startTime
       requestRouter.updateModelMetrics(nodeHost, modelName, latency, 0)
