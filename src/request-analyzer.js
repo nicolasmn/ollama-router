@@ -111,12 +111,13 @@ export class RequestAnalyzer {
 
     const messages = Array.isArray(reqBody?.messages) ? reqBody.messages : []
     const isStreaming = Boolean(reqBody?.stream)
-    const maxOutputTokens = Number(reqBody?.max_tokens) || 0
+    const maxOutputTokens =
+      Number(reqBody?.max_completion_tokens ?? reqBody?.max_tokens) || 0
     const needsTools = Array.isArray(reqBody?.tools) && reqBody.tools.length > 0
 
     let needsVision = false
     let needsAudio = false
-    let totalText = ''
+    let totalText
 
     if (endpointType === 'completions') {
       totalText = typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''

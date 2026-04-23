@@ -10,15 +10,58 @@ const OPTION_MAP = {
   temperature: 'temperature',
   top_p: 'top_p',
   max_tokens: 'num_predict',
+  max_completion_tokens: 'num_predict',
   frequency_penalty: 'frequency_penalty',
   presence_penalty: 'presence_penalty',
   seed: 'seed',
 }
 
 /**
+ * Translate an OpenAI messages array into Ollama-compatible format.
+ *
+ * OpenAI and Ollama differ in two ways for tool-related messages:
+ * - Assistant messages with tool_calls may have `content: null`; Ollama requires a string.
+ * - Tool call `arguments` are JSON strings in OpenAI format; Ollama expects a parsed object.
+ * - Tool role messages carry `tool_call_id` which Ollama does not use.
+ *
+ * @param {Array} messages - OpenAI-format messages
+ * @returns {Array} Ollama-compatible messages
+ */
+function translateMessages(messages) {
+  return messages.map((msg) => {
+    if (msg.role === 'assistant' && msg.tool_calls?.length) {
+      return {
+        role: 'assistant',
+        content: msg.content ?? '',
+        tool_calls: msg.tool_calls.map((tc) => {
+          const args = tc.function?.arguments
+          let parsedArgs
+          try {
+            parsedArgs = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
+          } catch {
+            parsedArgs = {}
+          }
+          return {
+            ...tc,
+            function: { ...tc.function, arguments: parsedArgs },
+          }
+        }),
+      }
+    }
+
+    if (msg.role === 'tool') {
+      // eslint-disable-next-line no-unused-vars
+      const { tool_call_id, ...rest } = msg
+      return rest
+    }
+
+    return msg
+  })
+}
+
+/**
  * Build the Ollama /api/chat request body from an OpenAI chat completions body.
- * Passes messages, tools, and stream through unchanged.
- * Maps OpenAI top-level sampling options into Ollama's nested `options` object.
+ * Translates messages to Ollama format and maps sampling options.
  *
  * @param {Object} openaiBody - incoming OpenAI-format request body
  * @param {string} modelName - resolved model name (may differ from openaiBody.model for virtual models)
@@ -34,7 +77,7 @@ export function translateRequestBody(openaiBody, modelName) {
 
   const body = {
     model: modelName,
-    messages: openaiBody.messages,
+    messages: translateMessages(openaiBody.messages ?? []),
     stream: openaiBody.stream ?? false,
   }
 
@@ -67,8 +110,7 @@ function normaliseToolCalls(toolCalls) {
       function: {
         name: tc.function?.name ?? '',
         // Letta requires arguments to be a JSON-encoded string, not an object
-        arguments:
-          typeof args === 'string' ? args : JSON.stringify(args ?? {}),
+        arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}),
       },
     }
   })
@@ -105,10 +147,15 @@ export function translateResponseBody(
   const ts = created ?? Math.floor(Date.now() / 1000)
 
   const rawMessage = ollamaJson.message ?? {}
-  const rawToolCalls = rawMessage.tool_calls?.length ? rawMessage.tool_calls : null
+  const rawToolCalls = rawMessage.tool_calls?.length
+    ? rawMessage.tool_calls
+    : null
 
   const toolCalls = rawToolCalls ? normaliseToolCalls(rawToolCalls) : null
-  const finishReason = mapFinishReason(ollamaJson.done_reason, Boolean(toolCalls))
+  const finishReason = mapFinishReason(
+    ollamaJson.done_reason,
+    Boolean(toolCalls),
+  )
 
   const message = {
     role: rawMessage.role ?? 'assistant',
@@ -167,7 +214,13 @@ export function translateResponseBody(
  * @param {Set<number>} toolCallIdEmitted
  * @returns {string|null} SSE line(s) to push, or null to skip
  */
-function buildSSELine(ollamaChunk, completionId, modelName, created, toolCallIdEmitted) {
+function buildSSELine(
+  ollamaChunk,
+  completionId,
+  modelName,
+  created,
+  toolCallIdEmitted,
+) {
   if (ollamaChunk.done) {
     const rawToolCalls = ollamaChunk.message?.tool_calls
     const finishReason = rawToolCalls?.length ? 'tool_calls' : 'stop'
@@ -188,7 +241,11 @@ function buildSSELine(ollamaChunk, completionId, modelName, created, toolCallIdE
   if (rawDelta.content) delta.content = rawDelta.content
 
   if (rawDelta.tool_calls?.length) {
-    delta.tool_calls = buildToolCallDelta(rawDelta.tool_calls, completionId, toolCallIdEmitted)
+    delta.tool_calls = buildToolCallDelta(
+      rawDelta.tool_calls,
+      completionId,
+      toolCallIdEmitted,
+    )
   }
 
   const sseChunk = {
@@ -253,7 +310,13 @@ export function createSSETransform(completionId, modelName, created) {
           continue
         }
 
-        const sseLine = buildSSELine(ollamaChunk, completionId, modelName, created, toolCallIdEmitted)
+        const sseLine = buildSSELine(
+          ollamaChunk,
+          completionId,
+          modelName,
+          created,
+          toolCallIdEmitted,
+        )
         if (sseLine) this.push(sseLine)
       }
 
