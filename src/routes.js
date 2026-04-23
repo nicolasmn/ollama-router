@@ -106,7 +106,12 @@ export function createRoutes(
   loadManager,
   requestRouter,
 ) {
-  async function handleStreamingChatRequest({ requestId, reqBody, candidate, res }) {
+  async function handleStreamingChatRequest({
+    requestId,
+    reqBody,
+    candidate,
+    res,
+  }) {
     const { nodeHost, modelName } = candidate
 
     try {
@@ -138,7 +143,11 @@ export function createRoutes(
       res.setHeader('Cache-Control', 'no-cache')
       res.setHeader('Connection', 'keep-alive')
       res.setHeader('X-Accel-Buffering', 'no')
-      await pipeline(resp.body, createSSETransform(completionId, reqBody.model ?? modelName, created), res)
+      await pipeline(
+        resp.body,
+        createSSETransform(completionId, reqBody.model ?? modelName, created),
+        res,
+      )
 
       const latency = Date.now() - startTime
       requestRouter.updateModelMetrics(nodeHost, modelName, latency, 0)
@@ -151,7 +160,7 @@ export function createRoutes(
         { requestId, nodeHost, modelName, error: err.message },
         'Streaming request failed',
       )
-      requestRouter.recordModelFailure(nodeHost, modelName)
+      requestRouter.recordModelFailure(nodeHost, modelName, err)
       if (!res.headersSent) {
         res.status(503).json({ error: err.message })
       }
@@ -191,7 +200,12 @@ export function createRoutes(
         const ollamaBody = requestTransformer
           ? requestTransformer(reqBody, modelName)
           : { ...reqBody, model: modelName }
-        const result = await forwardRequest(nodeHost, modelName, ollamaBody, endpoint)
+        const result = await forwardRequest(
+          nodeHost,
+          modelName,
+          ollamaBody,
+          endpoint,
+        )
         const latency = Date.now() - startTime
         const transformed = responseTransformer
           ? responseTransformer(result, reqBody.model ?? modelName)
@@ -211,7 +225,7 @@ export function createRoutes(
           { requestId, nodeHost, modelName, error: err.message },
           failureLog,
         )
-        requestRouter.recordModelFailure(nodeHost, modelName)
+        requestRouter.recordModelFailure(nodeHost, modelName, err)
       } finally {
         loadManager.decrementLoad(nodeHost)
       }
@@ -327,10 +341,21 @@ export function createRoutes(
         res.status(503).json({ error: 'All models failed' })
       }
     } catch (err) {
-      if (handleSelectionError(err, res, requestId, 'Embeddings request model selection failed', logger)) {
+      if (
+        handleSelectionError(
+          err,
+          res,
+          requestId,
+          'Embeddings request model selection failed',
+          logger,
+        )
+      ) {
         return
       }
-      logger.error({ requestId, error: err.message }, 'Embeddings request error')
+      logger.error(
+        { requestId, error: err.message },
+        'Embeddings request error',
+      )
       res.status(500).json({ error: 'Internal server error' })
     }
   })
@@ -353,7 +378,9 @@ export function createRoutes(
   app.get('/v1/models/:model', (req, res) => {
     const model = requestRouter.getModelById(req.params.model)
     if (!model) {
-      return res.status(404).json({ error: `Model ${req.params.model} not found` })
+      return res
+        .status(404)
+        .json({ error: `Model ${req.params.model} not found` })
     }
 
     return res.json({

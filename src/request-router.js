@@ -258,7 +258,12 @@ export class RequestRouter {
           const contextLength = modelInfo.profile?.contextLength ?? 0
           deduped.set(
             modelName,
-            this._toOpenAiModelObject(modelName, created, nodeHost, contextLength),
+            this._toOpenAiModelObject(
+              modelName,
+              created,
+              nodeHost,
+              contextLength,
+            ),
           )
         }
       }
@@ -307,7 +312,11 @@ export class RequestRouter {
     // Size fit bonus: match model capacity to request complexity
     let sizeFit = 0
     if (requirements.preferReasoning && profile.parameters >= 14) sizeFit += 15
-    if (requirements.preferFast && profile.parameters > 0 && profile.parameters <= 4) {
+    if (
+      requirements.preferFast &&
+      profile.parameters > 0 &&
+      profile.parameters <= 4
+    ) {
       // Smaller models score higher: 1B→+21, 2B→+18, 3B→+15, 4B→+12
       sizeFit += 12 + Math.round((4 - profile.parameters) * 3)
     }
@@ -375,11 +384,34 @@ export class RequestRouter {
   }
 
   /**
-   * Record a failure for a model
+   * Returns true when the error indicates the node itself is unreachable
+   * (connection refused, reset, DNS failure, or undici-level socket/timeout errors),
+   * as opposed to a model-level or HTTP-level error.
+   * @param {Error} err
+   * @returns {boolean}
+   */
+  _isConnectionFailure(err) {
+    const connectionCodes = new Set([
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'ENETUNREACH',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_SOCKET',
+      'UND_ERR_BODY_TIMEOUT',
+    ])
+    return connectionCodes.has(err?.code)
+  }
+
+  /**
+   * Record a failure for a model. If the error is a connection-level failure,
+   * the node is immediately marked unreachable without waiting for the next probe.
    * @param {string} nodeHost - node host
    * @param {string} modelName - model name
+   * @param {Error} [err] - optional error that caused the failure
    */
-  recordModelFailure(nodeHost, modelName) {
+  recordModelFailure(nodeHost, modelName, err) {
     const node = this.discovery.getNodes().get(nodeHost)
     if (!node) return
 
@@ -391,5 +423,9 @@ export class RequestRouter {
       { nodeHost, modelName, failures: modelInfo.failures },
       'Model failure recorded',
     )
+
+    if (err && this._isConnectionFailure(err)) {
+      this.discovery.markNodeUnreachable(nodeHost)
+    }
   }
 }

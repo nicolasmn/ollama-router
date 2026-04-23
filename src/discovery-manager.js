@@ -97,7 +97,8 @@ export class DiscoveryManager {
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),
       supportsThinking: capabilities.has('thinking'),
-      isEmbedding: capabilities.has('embedding') || capabilities.has('embeddings'),
+      isEmbedding:
+        capabilities.has('embedding') || capabilities.has('embeddings'),
     })
   }
 
@@ -165,7 +166,10 @@ export class DiscoveryManager {
       }
 
       const tagsData = await tagsResp.body.json()
-      logger.debug({ host, models: tagsData.models?.length || 0 }, 'Models fetched')
+      logger.debug(
+        { host, models: tagsData.models?.length || 0 },
+        'Models fetched',
+      )
 
       // Enrich models with /api/show details in parallel
       const enrichedModels = await this.populateNodeModelsEnriched(
@@ -261,7 +265,9 @@ export class DiscoveryManager {
     }, this.DISCOVERY_INTERVAL)
 
     if (this.autoDiscover) {
-      logger.info(`Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`)
+      logger.info(
+        `Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`,
+      )
       this.networkScanHandle = setInterval(async () => {
         await this.discoverNetworkNodes()
       }, this.NETWORK_SCAN_INTERVAL)
@@ -306,22 +312,32 @@ export class DiscoveryManager {
         continue
       }
 
-      // Keep node-level failure history when the node disappears and comes back.
-      freshNode.failures = previousNode.failures || 0
-      freshNode.lastFailure = previousNode.lastFailure || 0
+      if (!freshNode.reachable) {
+        // Node is unreachable — update failure tracking and preserve the last
+        // known model list so telemetry survives the outage and is available
+        // once the node recovers.
+        freshNode.failures = (previousNode.failures || 0) + 1
+        freshNode.lastFailure = Date.now()
+        freshNode.lastSeen = previousNode.lastSeen
+        freshNode.models = previousNode.models
+      } else {
+        // Node is reachable — reset failure counters and carry over runtime
+        // telemetry so routing scores remain stable across probe cycles.
+        freshNode.failures = 0
+        freshNode.lastFailure = previousNode.lastFailure || 0
 
-      for (const [modelName, freshModel] of freshNode.models) {
-        const previousModel = previousNode.models.get(modelName)
-        if (!previousModel) continue
+        for (const [modelName, freshModel] of freshNode.models) {
+          const previousModel = previousNode.models.get(modelName)
+          if (!previousModel) continue
 
-        // Keep runtime telemetry so routing scores remain stable across probes.
-        freshModel.status = previousModel.status
-        freshModel.activeRequests = previousModel.activeRequests
-        freshModel.recentLatency = previousModel.recentLatency
-        freshModel.recentTps = previousModel.recentTps
-        freshModel.failures = previousModel.failures
-        freshModel.lastRoutingEndpoint = previousModel.lastRoutingEndpoint
-        freshModel.lastRoutedAt = previousModel.lastRoutedAt
+          freshModel.status = previousModel.status
+          freshModel.activeRequests = previousModel.activeRequests
+          freshModel.recentLatency = previousModel.recentLatency
+          freshModel.recentTps = previousModel.recentTps
+          freshModel.failures = previousModel.failures
+          freshModel.lastRoutingEndpoint = previousModel.lastRoutingEndpoint
+          freshModel.lastRoutedAt = previousModel.lastRoutedAt
+        }
       }
 
       merged.set(host, freshNode)
@@ -352,6 +368,22 @@ export class DiscoveryManager {
    */
   getNodes() {
     return this.inventory
+  }
+
+  /**
+   * Immediately mark a node as unreachable without waiting for the next probe cycle.
+   * The next successful probe will restore reachable=true.
+   * @param {string} nodeHost - normalized host URL
+   */
+  markNodeUnreachable(nodeHost) {
+    const node = this.inventory.get(nodeHost)
+    if (!node || !node.reachable) return
+
+    node.reachable = false
+    node.failures = (node.failures || 0) + 1
+    node.lastFailure = Date.now()
+    logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
+    this.notifyInventoryUpdated()
   }
 
   /**
