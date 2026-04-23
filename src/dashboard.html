@@ -263,7 +263,18 @@
         width: 100%;
         border-collapse: collapse;
         min-width: 760px;
+        table-layout: fixed;
       }
+      /* Column widths – shared across all server tables so cells align */
+      col.c-model      { width: 22%; }
+      col.c-size       { width: 8%;  }
+      col.c-params     { width: 8%;  }
+      col.c-ctx        { width: 8%;  }
+      col.c-caps       { width: 17%; }
+      col.c-latency    { width: 9%;  }
+      col.c-tps        { width: 8%;  }
+      col.c-failures   { width: 8%;  }
+      col.c-lastused   { width: 12%; }
       thead th {
         font-size: 0.6875rem;
         font-weight: 600;
@@ -274,13 +285,20 @@
         padding: 0.625rem 1.5rem;
         background: rgba(0, 0, 0, 0.15);
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       tbody td {
         padding: 0.8rem 1.5rem;
         font-size: 0.875rem;
         border-top: 1px solid rgba(37, 42, 69, 0.6);
         vertical-align: middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
+      tbody td.td-model { white-space: normal; }
+      tbody td.td-caps  { white-space: normal; overflow: visible; }
       tbody tr:hover td {
         background: rgba(255, 255, 255, 0.025);
       }
@@ -367,6 +385,65 @@
       }
       .flash {
         animation: flash 0.5s ease-out;
+      }
+
+      /* ── Responsive ── */
+      @media (max-width: 900px) {
+        main {
+          padding: 1.25rem;
+        }
+        .summary {
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: 0.75rem;
+          margin-bottom: 1.25rem;
+        }
+        .stat {
+          padding: 1rem 1.1rem;
+        }
+        .stat-val {
+          font-size: 1.75rem;
+        }
+      }
+
+      @media (max-width: 600px) {
+        header {
+          padding: 0.75rem 1rem;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+        main {
+          padding: 1rem;
+        }
+        .summary {
+          grid-template-columns: repeat(2, 1fr);
+          gap: 0.625rem;
+        }
+        .stat-val {
+          font-size: 1.5rem;
+        }
+        .node-header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+        }
+        .node-meta {
+          width: 100%;
+        }
+        thead th,
+        tbody td {
+          padding-left: 1rem;
+          padding-right: 1rem;
+        }
+      }
+
+      @media (max-width: 400px) {
+        .summary {
+          grid-template-columns: 1fr 1fr;
+        }
+        .stat-val {
+          font-size: 1.25rem;
+        }
       }
     </style>
   </head>
@@ -552,6 +629,11 @@
             ? '<div class="empty">No models discovered on this node</div>'
             : `<div class="models-wrap">
           <table>
+            <colgroup>
+              <col class="c-model"><col class="c-size"><col class="c-params">
+              <col class="c-ctx"><col class="c-caps"><col class="c-latency">
+              <col class="c-tps"><col class="c-failures"><col class="c-lastused">
+            </colgroup>
             <thead><tr>
               <th>Model</th><th>Size</th><th>Params</th><th>Context</th>
               <th>Capabilities</th><th>Latency</th><th>TPS</th>
@@ -576,14 +658,14 @@
       function modelRow(m) {
         const p = m.profile || {}
         return `<tr>
-      <td>
+      <td class="td-model">
         <div class="model-name">${m.name}</div>
         <div class="model-fam">${m.family || '—'}</div>
       </td>
       <td class="mono">${fmt.bytes(m.size)}</td>
       <td class="mono">${fmt.params(p.parameters)}</td>
       <td class="mono">${fmt.ctx(p.contextLength)}</td>
-      <td>${caps(p)}</td>
+      <td class="td-caps">${caps(p)}</td>
       <td><span class="mono ${latCls(m.recentLatency)}">${fmt.ms(m.recentLatency)}</span></td>
       <td class="mono">${fmt.tps(m.recentTps)}</td>
       <td class="mono ${m.failures > 0 ? 'bad' : ''}">${m.failures || 0}</td>
