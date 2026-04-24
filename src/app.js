@@ -6,7 +6,7 @@ import { DiscoveryManager } from './discovery-manager.js'
 import { LoadManager } from './load-manager.js'
 import { RequestRouter } from './request-router.js'
 import { WsManager } from './ws-manager.js'
-import { createRoutes } from './routes.js'
+import { createRoutes } from './routes/index.js'
 
 const logger = pino()
 

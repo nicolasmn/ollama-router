@@ -1,0 +1,225 @@
+// chat.js - Chat completion endpoint handler
+import { request } from 'undici'
+import pino from 'pino'
+import { pipeline } from 'node:stream/promises'
+import {
+  translateRequestBody,
+  translateResponseBody,
+  createSSETransform,
+} from '../adapters/index.js'
+import {
+  makeRequestId,
+  handleSelectionError,
+  selectCandidatesOrHandleError,
+  forwardRequest,
+} from './request-helpers.js'
+
+const logger = pino()
+
+async function handleStreamingChatRequest({
+  requestId,
+  reqBody,
+  candidate,
+  res,
+  discoveryManager,
+  loadManager,
+}) {
+  const { nodeHost, modelName } = candidate
+
+  try {
+    loadManager.incrementLoad(nodeHost)
+  } catch {
+    logger.warn({ requestId, nodeHost }, 'Node capacity exceeded')
+    res.status(429).json({ error: 'Node at capacity' })
+    return
+  }
+
+  const completionId = `chatcmpl-${makeRequestId()}`
+  const created = Math.floor(Date.now() / 1000)
+  const startTime = Date.now()
+  try {
+    const ollamaBody = translateRequestBody(reqBody, modelName)
+    const resp = await request(`${nodeHost}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ollamaBody),
+      timeout: 30000,
+    })
+
+    if (resp.statusCode === 503) throw new Error('Node busy')
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw new Error(`HTTP ${resp.statusCode}`)
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    await pipeline(
+      resp.body,
+      createSSETransform(completionId, reqBody.model ?? modelName, created),
+      res,
+    )
+
+    const latency = Date.now() - startTime
+    discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0)
+    logger.info(
+      { requestId, nodeHost, modelName, latency },
+      'Streaming request successful',
+    )
+  } catch (err) {
+    logger.error(
+      { requestId, nodeHost, modelName, error: err.message },
+      'Streaming request failed',
+    )
+    discoveryManager.recordModelFailure(nodeHost, modelName, err)
+    if (!res.headersSent) {
+      res.status(503).json({ error: err.message })
+    }
+  } finally {
+    loadManager.decrementLoad(nodeHost)
+  }
+}
+
+async function tryCandidatesWithRetry({
+  requestId,
+  candidates,
+  reqBody,
+  endpoint,
+  tokensFromResult,
+  successLog,
+  failureLog,
+  res,
+  requestTransformer = null,
+  responseTransformer = null,
+  discoveryManager,
+  loadManager,
+}) {
+  for (const candidate of candidates) {
+    const { nodeHost, modelName } = candidate
+
+    try {
+      loadManager.incrementLoad(nodeHost)
+    } catch {
+      logger.debug(
+        { requestId, nodeHost },
+        'Node capacity exceeded, trying next',
+      )
+      continue
+    }
+
+    const startTime = Date.now()
+
+    try {
+      const ollamaBody = requestTransformer
+        ? requestTransformer(reqBody, modelName)
+        : { ...reqBody, model: modelName }
+      const result = await forwardRequest(
+        nodeHost,
+        modelName,
+        ollamaBody,
+        endpoint,
+      )
+      const latency = Date.now() - startTime
+      const transformed = responseTransformer
+        ? responseTransformer(result, reqBody.model ?? modelName)
+        : result
+      const tokensGenerated = tokensFromResult(transformed)
+      discoveryManager.updateModelMetrics(
+        nodeHost,
+        modelName,
+        latency,
+        tokensGenerated,
+      )
+      logger.info({ requestId, nodeHost, modelName, latency }, successLog)
+      res.json(transformed)
+      return true
+    } catch (err) {
+      logger.warn(
+        { requestId, nodeHost, modelName, error: err.message },
+        failureLog,
+      )
+      discoveryManager.recordModelFailure(nodeHost, modelName, err)
+    } finally {
+      loadManager.decrementLoad(nodeHost)
+    }
+  }
+
+  return false
+}
+
+export function setupChatRoutes(app, discoveryManager, loadManager, requestRouter) {
+  /**
+   * POST /v1/chat/completions - Chat completion endpoint
+   */
+  app.post('/v1/chat/completions', async (req, res) => {
+    const requestId = makeRequestId()
+    logger.info({ requestId }, 'Incoming chat completion request')
+
+    const isStreaming = Boolean(req.body?.stream)
+
+    try {
+      const taskType = 'chat'
+      const candidates = selectCandidatesOrHandleError({
+        requestId,
+        reqBody: req.body,
+        taskType,
+        res,
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
+        selectionErrorMessage: 'Chat request model selection failed',
+        logger,
+      })
+      if (!candidates) {
+        return
+      }
+
+      // Streaming keeps a single upstream stream and cannot seamlessly fail over.
+      if (isStreaming) {
+        await handleStreamingChatRequest({
+          requestId,
+          reqBody: req.body,
+          candidate: candidates,
+          res,
+          discoveryManager,
+          loadManager,
+        })
+        return
+      }
+
+      const success = await tryCandidatesWithRetry({
+        requestId,
+        candidates,
+        reqBody: req.body,
+        endpoint: '/api/chat',
+        tokensFromResult: (result) => result.usage?.completion_tokens ?? 0,
+        successLog: 'Chat request successful',
+        failureLog: 'Chat model failed, trying next',
+        res,
+        requestTransformer: translateRequestBody,
+        responseTransformer: translateResponseBody,
+        discoveryManager,
+        loadManager,
+      })
+
+      if (!success) {
+        logger.error({ requestId }, 'All chat models failed')
+        res.status(503).json({ error: 'All models failed' })
+      }
+    } catch (err) {
+      if (
+        handleSelectionError(
+          err,
+          res,
+          requestId,
+          'Chat request model selection failed',
+          logger,
+        )
+      ) {
+        return
+      }
+
+      logger.error({ requestId, error: err.message }, 'Chat request error')
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+}
