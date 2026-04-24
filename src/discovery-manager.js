@@ -3,6 +3,7 @@ import { request } from 'undici'
 import pino from 'pino'
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
 import { NetworkScanner } from './network-scanner.js'
+import { loadMetrics, saveMetrics } from './metrics-store.js'
 
 const logger = pino()
 
@@ -13,10 +14,15 @@ export class DiscoveryManager {
     this.autoDiscover = config.autoDiscover ?? false
     this.NETWORK_SCAN_INTERVAL = config.networkScanInterval || 60000
     this.onInventoryUpdated = config.onInventoryUpdated || null
+    this.metricsFile = config.metricsFile || null
     this.inventory = new Map() // Maps nodeHost -> NodeInfo
     this.periodicProbeHandle = null
     this.networkScanHandle = null
+    this.metricsFlushHandle = null
     this.networkScanner = new NetworkScanner()
+    this._persistedMetrics = this.metricsFile
+      ? loadMetrics(this.metricsFile)
+      : new Map()
   }
 
   notifyInventoryUpdated() {
@@ -70,6 +76,8 @@ export class DiscoveryManager {
 
     let parameters = 0
     let contextLength = 4096
+    let architecture = ''
+    let embeddingDim = 0
 
     if (showData?.model_info && typeof showData.model_info === 'object') {
       const info = showData.model_info
@@ -80,6 +88,10 @@ export class DiscoveryManager {
         parameters = rawParams / 1e9
       }
 
+      architecture = typeof info['general.architecture'] === 'string'
+        ? info['general.architecture']
+        : ''
+
       // Find context length: different model families use different key names
       const contextKey = Object.keys(info).find((k) =>
         k.endsWith('.context_length'),
@@ -87,12 +99,21 @@ export class DiscoveryManager {
       if (contextKey && typeof info[contextKey] === 'number') {
         contextLength = info[contextKey]
       }
+
+      if (architecture) {
+        const dimVal = info[`${architecture}.embedding_length`]
+        if (typeof dimVal === 'number' && dimVal > 0) {
+          embeddingDim = dimVal
+        }
+      }
     }
 
     return new ModelProfile({
       capabilities,
       parameters,
       contextLength,
+      architecture,
+      embeddingDim,
       supportsTools: capabilities.has('tools'),
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),
@@ -264,6 +285,13 @@ export class DiscoveryManager {
       await this.performProbe()
     }, this.DISCOVERY_INTERVAL)
 
+    if (this.metricsFile) {
+      this.metricsFlushHandle = setInterval(() => {
+        saveMetrics(this.metricsFile, this.inventory)
+      }, 60_000)
+      this.metricsFlushHandle.unref()
+    }
+
     if (this.autoDiscover) {
       logger.info(
         `Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`,
@@ -307,43 +335,67 @@ export class DiscoveryManager {
     for (const [host, freshNode] of newInventory) {
       const previousNode = this.inventory.get(host)
 
-      if (!previousNode) {
-        merged.set(host, freshNode)
-        continue
-      }
-
-      if (!freshNode.reachable) {
-        // Node is unreachable — update failure tracking and preserve the last
-        // known model list so telemetry survives the outage and is available
-        // once the node recovers.
-        freshNode.failures = (previousNode.failures || 0) + 1
-        freshNode.lastFailure = Date.now()
-        freshNode.lastSeen = previousNode.lastSeen
-        freshNode.models = previousNode.models
-      } else {
+      if (previousNode && freshNode.reachable) {
         // Node is reachable — reset failure counters and carry over runtime
         // telemetry so routing scores remain stable across probe cycles.
         freshNode.failures = 0
-        freshNode.lastFailure = previousNode.lastFailure || 0
+        freshNode.lastFailure = previousNode.lastFailure ?? 0
 
         for (const [modelName, freshModel] of freshNode.models) {
           const previousModel = previousNode.models.get(modelName)
-          if (!previousModel) continue
-
-          freshModel.status = previousModel.status
-          freshModel.activeRequests = previousModel.activeRequests
-          freshModel.recentLatency = previousModel.recentLatency
-          freshModel.recentTps = previousModel.recentTps
-          freshModel.failures = previousModel.failures
-          freshModel.lastRoutingEndpoint = previousModel.lastRoutingEndpoint
-          freshModel.lastRoutedAt = previousModel.lastRoutedAt
+          if (previousModel) {
+            freshModel.status = previousModel.status
+            freshModel.activeRequests = previousModel.activeRequests
+            freshModel.recentLatency = previousModel.recentLatency
+            freshModel.recentTps = previousModel.recentTps
+            freshModel.failures = previousModel.failures
+            freshModel.totalRequests = previousModel.totalRequests
+            freshModel.lastRoutingEndpoint = previousModel.lastRoutingEndpoint
+            freshModel.lastRoutedAt = previousModel.lastRoutedAt
+          } else {
+            this._applyPersistedMetrics(host, modelName, freshModel)
+          }
         }
+      } else if (!previousNode && freshNode.reachable) {
+        // Newly discovered node — seed from persisted metrics
+        for (const [modelName, freshModel] of freshNode.models) {
+          this._applyPersistedMetrics(host, modelName, freshModel)
+        }
+      } else if (previousNode) {
+        // Node is unreachable — update failure tracking and preserve the last
+        // known model list so telemetry survives the outage and is available
+        // once the node recovers.
+        freshNode.failures = (previousNode.failures ?? 0) + 1
+        freshNode.lastFailure = Date.now()
+        freshNode.lastSeen = previousNode.lastSeen
+        freshNode.models = previousNode.models
       }
 
       merged.set(host, freshNode)
     }
 
     this.inventory = merged
+  }
+
+  /**
+   * Seed a fresh ModelInfo with persisted metrics if it has none yet.
+   * @private
+   */
+  _applyPersistedMetrics(host, modelName, freshModel) {
+    const persisted = this._persistedMetrics.get(host)?.get(modelName)
+    if (!persisted) return
+    if (freshModel.recentLatency === 0 && persisted.recentLatency > 0) {
+      freshModel.recentLatency = persisted.recentLatency
+    }
+    if (freshModel.recentTps === 0 && persisted.recentTps > 0) {
+      freshModel.recentTps = persisted.recentTps
+    }
+    if (freshModel.failures === 0 && persisted.failures > 0) {
+      freshModel.failures = persisted.failures
+    }
+    if (freshModel.totalRequests === 0 && persisted.totalRequests > 0) {
+      freshModel.totalRequests = persisted.totalRequests
+    }
   }
 
   /**
@@ -359,6 +411,17 @@ export class DiscoveryManager {
       clearInterval(this.networkScanHandle)
       this.networkScanHandle = null
       logger.info('Periodic network scan stopped')
+    }
+    if (this.metricsFlushHandle) {
+      clearInterval(this.metricsFlushHandle)
+      this.metricsFlushHandle = null
+    }
+    if (this.metricsFile && this.inventory.size > 0) {
+      try {
+        saveMetrics(this.metricsFile, this.inventory)
+      } catch (err) {
+        logger.warn({ err }, 'Failed to flush metrics on shutdown')
+      }
     }
   }
 
@@ -382,7 +445,10 @@ export class DiscoveryManager {
     node.reachable = false
     node.failures = (node.failures || 0) + 1
     node.lastFailure = Date.now()
-    logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
+    logger.warn(
+      { nodeHost },
+      'Node marked unreachable due to connection failure',
+    )
     this.notifyInventoryUpdated()
   }
 
@@ -398,5 +464,67 @@ export class DiscoveryManager {
       }
     }
     return count
+  }
+
+  /**
+   * Update model performance metrics after a successful request.
+   * Uses exponential moving average to smooth latency and throughput.
+   * @param {string} nodeHost
+   * @param {string} modelName
+   * @param {number} latency - milliseconds
+   * @param {number} tokensGenerated
+   */
+  updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0) {
+    const node = this.inventory.get(nodeHost)
+    if (!node) return
+    const modelInfo = node.models.get(modelName)
+    if (!modelInfo) return
+
+    modelInfo.recentLatency = 0.9 * modelInfo.recentLatency + 0.1 * latency
+    const tps = latency > 0 ? tokensGenerated / (latency / 1000) : 0
+    modelInfo.recentTps = 0.9 * modelInfo.recentTps + 0.1 * tps
+    modelInfo.totalRequests = (modelInfo.totalRequests || 0) + 1
+    modelInfo.lastSeen = Date.now()
+  }
+
+  /**
+   * Record a request failure for a model.
+   * If the error is a connection-level failure, the node is immediately marked
+   * unreachable without waiting for the next probe cycle.
+   * @param {string} nodeHost
+   * @param {string} modelName
+   * @param {Error} [err]
+   */
+  recordModelFailure(nodeHost, modelName, err) {
+    const node = this.inventory.get(nodeHost)
+    if (!node) return
+    const modelInfo = node.models.get(modelName)
+    if (!modelInfo) return
+
+    modelInfo.failures = (modelInfo.failures || 0) + 1
+
+    if (err && this._isConnectionFailure(err)) {
+      this.markNodeUnreachable(nodeHost)
+    }
+  }
+
+  /**
+   * Returns true when the error indicates the node itself is unreachable
+   * (connection refused, reset, DNS failure, timeout).
+   * @param {Error} err
+   * @returns {boolean}
+   */
+  _isConnectionFailure(err) {
+    const connectionCodes = new Set([
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'ENETUNREACH',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_SOCKET',
+      'UND_ERR_BODY_TIMEOUT',
+    ])
+    return connectionCodes.has(err?.code)
   }
 }

@@ -14,6 +14,8 @@ export class ModelProfile {
     supportsAudio = false,
     supportsThinking = false,
     isEmbedding = false,
+    embeddingDim = 0,       // output vector dimension (0 = unknown)
+    architecture = '',     // general.architecture from model_info
   } = {}) {
     this.capabilities = capabilities instanceof Set ? capabilities : new Set(capabilities)
     this.parameters = parameters
@@ -23,6 +25,8 @@ export class ModelProfile {
     this.supportsAudio = supportsAudio
     this.supportsThinking = supportsThinking
     this.isEmbedding = isEmbedding
+    this.embeddingDim = embeddingDim
+    this.architecture = architecture
   }
 
   toJSON() {
@@ -35,6 +39,8 @@ export class ModelProfile {
       supportsAudio: this.supportsAudio,
       supportsThinking: this.supportsThinking,
       isEmbedding: this.isEmbedding,
+      embeddingDim: this.embeddingDim,
+      architecture: this.architecture,
     }
   }
 }
@@ -48,6 +54,7 @@ export class ModelInfo {
       profile instanceof ModelProfile ? profile : new ModelProfile(profile)
     this.status = 'idle'
     this.activeRequests = 0
+    this.totalRequests = 0
     this.recentLatency = 0
     this.recentTps = 0
     this.failures = 0
@@ -64,6 +71,7 @@ export class ModelInfo {
       profile: this.profile,
       status: this.status,
       activeRequests: this.activeRequests,
+      totalRequests: this.totalRequests,
       recentLatency: this.recentLatency,
       recentTps: this.recentTps,
       failures: this.failures,

@@ -38,6 +38,7 @@ function buildSSELine(
 
   if (rawDelta.role) delta.role = rawDelta.role
   if (rawDelta.content) delta.content = rawDelta.content
+  if (rawDelta.thinking) delta.thinking = rawDelta.thinking
 
   if (rawDelta.tool_calls?.length) {
     delta.tool_calls = buildToolCallDelta(

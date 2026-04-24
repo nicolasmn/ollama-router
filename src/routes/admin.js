@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DASHBOARD_HTML = readFileSync(
-  join(__dirname, '..', 'dashboard.html'),
+  join(__dirname, '..', 'dashboard', 'index.html'),
   'utf8',
 )
 

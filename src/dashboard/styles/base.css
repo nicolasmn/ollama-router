@@ -1,0 +1,122 @@
+:root {
+  --bg: #0d0f1a;
+  --surface: #131625;
+  --surface2: #1b1f35;
+  --border: #252a45;
+  --text: #e2e8f0;
+  --muted: #7a85a3;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --blue: #60a5fa;
+  --purple: #a78bfa;
+  --cyan: #67e8f9;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+.green {
+  color: var(--green);
+}
+
+.blue {
+  color: var(--blue);
+}
+
+.yellow {
+  color: var(--yellow);
+}
+
+.red {
+  color: var(--red);
+}
+
+.good {
+  color: var(--green);
+}
+
+.warn {
+  color: var(--yellow);
+}
+
+.bad {
+  color: var(--red);
+}
+
+.muted,
+.model-fam,
+.drawer-subtitle,
+.footer,
+.stat-sub {
+  color: var(--muted);
+}
+
+.mono,
+.detail-row-title,
+.detail-value.mono,
+.model-name,
+.node-host,
+.request-route {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.badge {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge.b-green {
+  background: rgba(74, 222, 128, 0.1);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.badge.b-red {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.badge.b-blue {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.badge.b-yellow {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.footer {
+  text-align: center;
+  font-size: 0.75rem;
+  padding: 1.5rem 0 0.5rem;
+}

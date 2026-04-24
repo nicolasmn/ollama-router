@@ -1,12 +1,10 @@
-// request-router.js - Encapsulates request routing logic
-import pino from 'pino'
+// request-router.js - Selects the best Ollama node/model for each request
 import { RequestAnalyzer } from './request-analyzer.js'
 
-const logger = pino()
 const AUTO_MODEL = 'auto'
 const AUTO_FAST_MODEL = 'auto-fast'
 const AUTO_THINK_MODEL = 'auto-think'
-const VIRTUAL_MODELS = new Set([AUTO_MODEL, AUTO_FAST_MODEL, AUTO_THINK_MODEL])
+export const VIRTUAL_MODELS = new Set([AUTO_MODEL, AUTO_FAST_MODEL, AUTO_THINK_MODEL])
 
 export class RequestRouter {
   constructor(discoveryManager, loadManager) {
@@ -175,15 +173,7 @@ export class RequestRouter {
     }
 
     if (modelName === AUTO_FAST_MODEL) {
-      const fastRequirements = { ...requirements, preferFast: true }
-      const fastSelection = this.selectModel(fastRequirements, {
-        candidateFilter: ({ modelInfo }) => {
-          const params = modelInfo.profile?.parameters || 0
-          return params > 0 && params <= 4
-        },
-      })
-
-      return fastSelection || this.selectModel(fastRequirements)
+      return this.selectModel({ ...requirements, preferFast: true })
     }
 
     if (modelName === AUTO_THINK_MODEL) {
@@ -217,6 +207,10 @@ export class RequestRouter {
     return this.selectModel(requirements, {
       candidateFilter: ({ modelName }) => modelName === resolvedModel,
     })
+  }
+
+  analyzeRequest(reqBody, endpointType) {
+    return this.requestAnalyzer.analyze(reqBody, endpointType)
   }
 
   selectForChat(reqBody) {
@@ -296,6 +290,7 @@ export class RequestRouter {
    */
   _scoreModel(nodeHost, modelInfo, requirements) {
     const { profile } = modelInfo
+    const params = profile.parameters || 0
     const load = this.loadManager.getCurrentLoad(nodeHost)
     const capacity = this.loadManager.getCapacityRemaining(nodeHost)
 
@@ -310,20 +305,40 @@ export class RequestRouter {
     const loadPenalty = load * 10
 
     // Size fit bonus: match model capacity to request complexity
+    const messageCount = requirements.messageCount || 0
     let sizeFit = 0
-    if (requirements.preferReasoning && profile.parameters >= 14) sizeFit += 15
-    if (
-      requirements.preferFast &&
-      profile.parameters > 0 &&
-      profile.parameters <= 4
-    ) {
-      // Smaller models score higher: 1B→+21, 2B→+18, 3B→+15, 4B→+12
-      sizeFit += 12 + Math.round((4 - profile.parameters) * 3)
+
+    if (params > 0) {
+      if (requirements.preferFast) {
+        // Subagent-like or explicitly fast: prefer small models
+        if (params <= 4) sizeFit += 14
+        else if (params <= 8) sizeFit += 10
+        else if (params <= 12) sizeFit += 2
+      } else if (requirements.hasCodeSignals || messageCount > 10) {
+        // Code tasks or long conversations: prefer large models
+        if (params >= 20 && params <= 35) sizeFit += 14
+        else if (params >= 10) sizeFit += 6
+        else sizeFit += 1
+      } else if (requirements.preferReasoning && messageCount <= 10) {
+        // Reasoning without code in short conversations: small thinking models excel
+        if (params >= 2 && params <= 8) sizeFit += 14
+        else if (params > 8 && params <= 20) sizeFit += 6
+        else if (params > 20) sizeFit += 2
+      } else {
+        // Default: prefer 26B class for general chat
+        if (params >= 20 && params <= 35) sizeFit += 10
+        else if (params >= 10) sizeFit += 4
+      }
     }
 
     // Thinking-capable models get a bonus for complex requests
-    const thinkingBonus =
-      requirements.preferReasoning && profile.supportsThinking ? 10 : 0
+    const thinkingBonus = profile.supportsThinking
+      ? requirements.preferReasoning
+        ? 8
+        : requirements.preferFast
+          ? 4
+          : 0
+      : 0
 
     // Exact multimodal match bonuses
     const visionBonus =
@@ -350,82 +365,5 @@ export class RequestRouter {
       audioBonus +
       contextMargin
     )
-  }
-
-  /**
-   * Update model metrics after a successful request
-   * @param {string} nodeHost - node host
-   * @param {string} modelName - model name
-   * @param {number} latency - latency in milliseconds
-   * @param {number} tokensGenerated - number of tokens generated
-   */
-  updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0) {
-    const node = this.discovery.getNodes().get(nodeHost)
-    if (!node) {
-      logger.warn({ nodeHost }, 'Node not found for metrics update')
-      return
-    }
-
-    const modelInfo = node.models.get(modelName)
-    if (!modelInfo) {
-      logger.warn({ nodeHost, modelName }, 'Model not found for metrics update')
-      return
-    }
-
-    // Update latency with exponential moving average
-    modelInfo.recentLatency = 0.9 * modelInfo.recentLatency + 0.1 * latency
-
-    // Update tokens per second
-    const tps = latency > 0 ? tokensGenerated / (latency / 1000) : 0
-    modelInfo.recentTps = 0.9 * modelInfo.recentTps + 0.1 * tps
-
-    // Update last seen
-    modelInfo.lastSeen = Date.now()
-  }
-
-  /**
-   * Returns true when the error indicates the node itself is unreachable
-   * (connection refused, reset, DNS failure, or undici-level socket/timeout errors),
-   * as opposed to a model-level or HTTP-level error.
-   * @param {Error} err
-   * @returns {boolean}
-   */
-  _isConnectionFailure(err) {
-    const connectionCodes = new Set([
-      'ECONNREFUSED',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      'ENOTFOUND',
-      'ENETUNREACH',
-      'UND_ERR_CONNECT_TIMEOUT',
-      'UND_ERR_SOCKET',
-      'UND_ERR_BODY_TIMEOUT',
-    ])
-    return connectionCodes.has(err?.code)
-  }
-
-  /**
-   * Record a failure for a model. If the error is a connection-level failure,
-   * the node is immediately marked unreachable without waiting for the next probe.
-   * @param {string} nodeHost - node host
-   * @param {string} modelName - model name
-   * @param {Error} [err] - optional error that caused the failure
-   */
-  recordModelFailure(nodeHost, modelName, err) {
-    const node = this.discovery.getNodes().get(nodeHost)
-    if (!node) return
-
-    const modelInfo = node.models.get(modelName)
-    if (!modelInfo) return
-
-    modelInfo.failures = (modelInfo.failures || 0) + 1
-    logger.debug(
-      { nodeHost, modelName, failures: modelInfo.failures },
-      'Model failure recorded',
-    )
-
-    if (err && this._isConnectionFailure(err)) {
-      this.discovery.markNodeUnreachable(nodeHost)
-    }
   }
 }

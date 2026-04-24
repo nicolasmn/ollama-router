@@ -14,7 +14,7 @@ import {
  * @param {string} modelName - resolved model name (may differ from openaiBody.model for virtual models)
  * @returns {Object} Ollama-compatible request body
  */
-export function translateRequestBody(openaiBody, modelName) {
+export function translateRequestBody(openaiBody, modelName, supportsThinking = false) {
   const options = {}
   for (const [openaiKey, ollamaKey] of Object.entries(OPTION_MAP)) {
     if (openaiBody[openaiKey] !== undefined) {
@@ -26,6 +26,10 @@ export function translateRequestBody(openaiBody, modelName) {
     model: modelName,
     messages: translateMessages(openaiBody.messages ?? []),
     stream: openaiBody.stream ?? false,
+  }
+
+  if (supportsThinking) {
+    body.think = true
   }
 
   if (openaiBody.tools?.length) {
@@ -72,6 +76,9 @@ export function translateResponseBody(
     role: rawMessage.role ?? 'assistant',
     // content must be null when tool calls are present (Letta requirement)
     content: toolCalls ? null : (rawMessage.content ?? ''),
+  }
+  if (rawMessage.thinking) {
+    message.thinking = rawMessage.thinking
   }
   if (toolCalls) {
     message.tool_calls = toolCalls

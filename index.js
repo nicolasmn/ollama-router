@@ -7,6 +7,7 @@ import {
   PORT,
   AUTO_DISCOVER,
   NETWORK_SCAN_INTERVAL,
+  METRICS_FILE,
 } from './src/config.js'
 import { createApp } from './src/app.js'
 
@@ -20,6 +21,7 @@ try {
     port: PORT,
     autoDiscover: AUTO_DISCOVER,
     networkScanInterval: NETWORK_SCAN_INTERVAL,
+    metricsFile: METRICS_FILE,
   })
 
   // Start server

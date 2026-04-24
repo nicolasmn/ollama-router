@@ -61,11 +61,13 @@ export function selectCandidatesOrHandleError({
  */
 export async function forwardRequest(baseUrl, modelName, reqBody, endpoint) {
   const { request } = await import('undici')
+  const { INFERENCE_TIMEOUT } = await import('../config.js')
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(reqBody),
-    timeout: 30000,
+    headersTimeout: INFERENCE_TIMEOUT,
+    bodyTimeout: INFERENCE_TIMEOUT,
   })
 
   if (resp.statusCode === 503) throw new Error('Node busy')

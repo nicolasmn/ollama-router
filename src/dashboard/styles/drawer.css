@@ -1,0 +1,153 @@
+.drawer-shell {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.drawer-shell.open {
+  pointer-events: auto;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 8, 16, 0.58);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.drawer-shell.open .drawer-backdrop {
+  opacity: 1;
+}
+
+.drawer {
+  container-type: inline-size;
+  container-name: drawer;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(520px, 100%);
+  height: 100%;
+  background: linear-gradient(180deg, #171a2c 0%, #111423 100%);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+  transform: translateX(100%);
+  transition: transform 0.24s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-shell.open .drawer {
+  transform: translateX(0);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.drawer-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.drawer-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.drawer-body {
+  padding: 1rem 1.25rem 1.5rem;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.detail-card,
+.detail-row,
+.preview-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+}
+
+.detail-card {
+  padding: 0.8rem 0.9rem;
+}
+
+.detail-value {
+  font-size: 0.92rem;
+}
+
+.detail-section {
+  gap: 0.55rem;
+}
+
+.detail-section h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.detail-list {
+  gap: 0.55rem;
+}
+
+.detail-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.detail-row-main {
+  min-width: 0;
+}
+
+.detail-row-title {
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
+.detail-row-sub {
+  margin-top: 0.18rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.preview-box {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #d8def0;
+  padding: 0.95rem 1rem;
+}
+
+@container drawer (max-width: 32rem) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .drawer {
+    width: 100%;
+  }
+}

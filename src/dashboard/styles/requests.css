@@ -1,0 +1,160 @@
+.requests-shell {
+  container-type: inline-size;
+  container-name: requests;
+  margin-bottom: 1.5rem;
+}
+
+.request-list,
+.nodes,
+.detail-list,
+.detail-section,
+.drawer-body,
+.request-main {
+  display: grid;
+}
+
+.request-list {
+  gap: 0.8rem;
+  padding: 0.8rem;
+}
+
+.nodes {
+  gap: 1.25rem;
+}
+
+.request-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 122px;
+  gap: 0.875rem;
+  width: 100%;
+  padding: 0.9rem 1.1rem;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid rgba(37, 42, 69, 0.45);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.request-row:hover,
+.request-row.active {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.request-status {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 0.35rem;
+  flex-shrink: 0;
+}
+
+.request-status.running {
+  background: var(--blue);
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.6);
+}
+
+.request-status.success {
+  background: var(--green);
+}
+
+.request-status.failed,
+.request-status.rejected {
+  background: var(--red);
+}
+
+.request-main {
+  min-width: 0;
+  gap: 0.3rem;
+}
+
+.request-route {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.request-target {
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.request-preview {
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: normal;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.request-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.request-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.request-meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(122, 133, 163, 0.7);
+}
+
+.request-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.request-side-top {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.request-side-bottom {
+  display: grid;
+  gap: 0.18rem;
+  justify-items: end;
+  width: 100%;
+}
+
+@container requests (max-width: 42rem) {
+  .request-list {
+    padding: 0.55rem;
+    gap: 0.6rem;
+  }
+
+  .request-row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .request-side {
+    grid-column: 2;
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .request-side-top,
+  .request-side-bottom {
+    width: auto;
+    justify-items: start;
+  }
+}

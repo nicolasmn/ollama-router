@@ -5,22 +5,43 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "lint": "eslint src/ index.js",
     "lint:fix": "eslint src/ index.js --fix",
     "format": "prettier --write src/ index.js *.md",
     "format:check": "prettier --check src/ index.js *.md"
   },
+  "jest": {
+    "testEnvironment": "node",
+    "transform": {},
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "data/",
+      "tests/",
+      "src/dashboard/",
+      "*.md",
+      ".github/",
+      "*.log"
+    ]
+  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "lit": "^3.3.2",
     "pino": "^10.3.1",
     "undici": "^6.19.8",
     "ws": "^8.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@jest/globals": "^30.3.0",
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
+    "jest": "^30.3.0",
     "nodemon": "^3.1.14",
     "prettier": "^3.8.3"
   }

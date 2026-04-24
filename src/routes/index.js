@@ -3,6 +3,7 @@ import { setupChatRoutes } from './chat.js'
 import { setupEmbeddingsRoutes } from './embeddings.js'
 import { setupModelsRoutes } from './models.js'
 import { setupAdminRoutes } from './admin.js'
+import { setupOllamaRoutes } from './ollama.js'
 
 /**
  * Create and attach route handlers to the Express app
@@ -16,9 +17,23 @@ export function createRoutes(
   discoveryManager,
   loadManager,
   requestRouter,
+  requestHistoryManager,
 ) {
-  setupChatRoutes(app, discoveryManager, loadManager, requestRouter)
-  setupEmbeddingsRoutes(app, discoveryManager, loadManager, requestRouter)
+  setupChatRoutes(
+    app,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  )
+  setupEmbeddingsRoutes(
+    app,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  )
   setupModelsRoutes(app, requestRouter)
   setupAdminRoutes(app, discoveryManager, loadManager)
+  setupOllamaRoutes(app, discoveryManager)
 }
