@@ -1,6 +1,6 @@
 import { html } from 'lit'
 
-export const MAX_VISIBLE_REQUESTS = 10
+export const MAX_VISIBLE_REQUESTS = 5
 
 export const fmt = {
   bytes: (bytes) => (bytes > 0 ? `${(bytes / 1e9).toFixed(1)} GB` : '—'),

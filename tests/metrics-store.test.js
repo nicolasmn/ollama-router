@@ -83,6 +83,8 @@ describe('metrics-store', () => {
         recentTps: 18.5,
         failures: 0,
         totalRequests: 0,
+        lastRoutedAt: 0,
+        lastRoutingEndpoint: null,
       })
       expect(nodeA.get('gemma4:26b')).toMatchObject({
         recentLatency: 800,

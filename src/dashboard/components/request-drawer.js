@@ -119,11 +119,6 @@ export class RequestDrawer extends LitElement {
       </div>
 
       <div class="detail-section">
-        <h3>Preview</h3>
-        <div class="preview-box">${this.request.promptPreview || 'No preview available.'}</div>
-      </div>
-
-      <div class="detail-section">
         <h3>Candidate Ranking</h3>
         <div class="detail-list">
           ${this.request.candidates?.length

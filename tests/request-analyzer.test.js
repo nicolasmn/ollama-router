@@ -34,6 +34,26 @@ describe('RequestAnalyzer', () => {
       )
       expect(result.needsTools).toBe(false)
     })
+
+    it('still marks preferFast for simple tool requests with trivial content', () => {
+      // A short system-only notification with tools defined should not force a large model.
+      // Tool capability filtering is handled by _meetsRequirements, not by preferFast.
+      const result = analyzer.analyze(
+        {
+          messages: [
+            {
+              role: 'system',
+              content: '[Incoming message from agent] dispatch test ok',
+            },
+          ],
+          tools: [{ type: 'function', function: { name: 'send_message' } }],
+        },
+        'chat',
+      )
+      expect(result.needsTools).toBe(true)
+      expect(result.preferFast).toBe(true)
+      expect(result.preferReasoning).toBe(false)
+    })
   })
 
   describe('vision detection', () => {

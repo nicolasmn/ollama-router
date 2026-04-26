@@ -285,7 +285,7 @@ export function setupChatRoutes(
 
     try {
       const taskType = 'chat'
-      const candidates = selectCandidatesOrHandleError({
+      const candidates = await selectCandidatesOrHandleError({
         requestId,
         reqBody: req.body,
         taskType,

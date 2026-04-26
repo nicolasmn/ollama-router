@@ -134,7 +134,7 @@ export function setupEmbeddingsRoutes(
     })
 
     try {
-      const candidates = selectCandidatesOrHandleError({
+      const candidates = await selectCandidatesOrHandleError({
         requestId,
         reqBody: req.body,
         taskType: 'embeddings',

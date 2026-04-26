@@ -151,6 +151,17 @@ function buildConversationInfo(reqBody, endpointType, preview) {
   }
 }
 
+const MAX_MESSAGE_LIST = 20
+
+function buildMessageList(reqBody, endpointType) {
+  if (endpointType !== 'chat') return []
+  const messages = Array.isArray(reqBody?.messages) ? reqBody.messages : []
+  return messages.slice(0, MAX_MESSAGE_LIST).map((msg) => ({
+    role: msg?.role || 'unknown',
+    content: stringifyContent(msg?.content),
+  }))
+}
+
 function buildInputSummary(reqBody, endpointType) {
   if (endpointType === 'embeddings') {
     const input = reqBody?.input
@@ -227,6 +238,7 @@ export class RequestHistoryManager {
       tokensGenerated: 0,
       inputSummary: buildInputSummary(reqBody, endpointType),
       promptPreview: preview,
+      messageList: buildMessageList(reqBody, endpointType),
       analysis: buildAnalysisSummary(analysis),
       candidateCount: 0,
       candidates: [],

@@ -21,6 +21,8 @@ export function loadMetrics(filePath) {
           recentTps: Number(metrics?.recentTps) || 0,
           failures: Number(metrics?.failures) || 0,
           totalRequests: Number(metrics?.totalRequests) || 0,
+          lastRoutedAt: Number(metrics?.lastRoutedAt) || 0,
+          lastRoutingEndpoint: metrics?.lastRoutingEndpoint || null,
         })
       }
       result.set(host, modelMap)
@@ -46,13 +48,16 @@ export function saveMetrics(filePath, nodes) {
         modelInfo.recentLatency > 0 ||
         modelInfo.recentTps > 0 ||
         modelInfo.failures > 0 ||
-        modelInfo.totalRequests > 0
+        modelInfo.totalRequests > 0 ||
+        modelInfo.lastRoutedAt > 0
       ) {
         models[modelName] = {
           recentLatency: modelInfo.recentLatency,
           recentTps: modelInfo.recentTps,
           failures: modelInfo.failures,
           totalRequests: modelInfo.totalRequests || 0,
+          lastRoutedAt: modelInfo.lastRoutedAt || 0,
+          lastRoutingEndpoint: modelInfo.lastRoutingEndpoint || null,
         }
       }
     }

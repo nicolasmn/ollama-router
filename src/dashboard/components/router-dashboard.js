@@ -1,6 +1,7 @@
 import { LitElement, html } from 'lit'
 
 import './dashboard-summary.js'
+import './message-drawer.js'
 import './node-card.js'
 import './request-drawer.js'
 import './request-panel.js'
@@ -12,6 +13,8 @@ export class RouterDashboard extends LitElement {
     payload: { state: true },
     selectedRequestId: { state: true },
     drawerOpen: { state: true },
+    messageDrawerOpen: { state: true },
+    messageRequestId: { state: true },
   }
 
   constructor() {
@@ -20,6 +23,8 @@ export class RouterDashboard extends LitElement {
     this.payload = { timestamp: 0, nodes: {}, requests: [] }
     this.selectedRequestId = null
     this.drawerOpen = false
+    this.messageDrawerOpen = false
+    this.messageRequestId = null
     this.ws = null
     this.retryTimer = null
   }
@@ -97,17 +102,37 @@ export class RouterDashboard extends LitElement {
     )
   }
 
+  get messageRequest() {
+    return this.requests.find(
+      (request) => request.requestId === this.messageRequestId,
+    )
+  }
+
   openRequest(requestId) {
     this.selectedRequestId = requestId
     this.drawerOpen = true
+    this.messageDrawerOpen = false
   }
 
   closeDrawer() {
     this.drawerOpen = false
   }
 
+  openMessageDrawer(requestId) {
+    this.messageRequestId = requestId
+    this.messageDrawerOpen = true
+  }
+
+  closeMessageDrawer() {
+    this.messageDrawerOpen = false
+  }
+
   handleRequestSelected(event) {
     this.openRequest(event.detail.requestId)
+  }
+
+  handleViewMessages(event) {
+    this.openMessageDrawer(event.detail.requestId)
   }
 
   render() {
@@ -141,6 +166,7 @@ export class RouterDashboard extends LitElement {
           .selectedRequestId=${this.selectedRequestId}
           .drawerOpen=${this.drawerOpen}
           @request-selected=${this.handleRequestSelected}
+          @view-messages=${this.handleViewMessages}
         ></request-panel>
 
         <div class="nodes">
@@ -164,6 +190,12 @@ export class RouterDashboard extends LitElement {
         .request=${this.selectedRequest}
         @drawer-close=${this.closeDrawer}
       ></request-drawer>
+
+      <message-drawer
+        .open=${this.messageDrawerOpen}
+        .request=${this.messageRequest}
+        @message-drawer-close=${this.closeMessageDrawer}
+      ></message-drawer>
     `
   }
 }

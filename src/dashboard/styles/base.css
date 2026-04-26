@@ -21,12 +21,35 @@
   padding: 0;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
   font-family: 'Inter', sans-serif;
-  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   line-height: 1.5;
+}
+
+router-dashboard {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+header {
+  flex-shrink: 0;
+}
+
+main {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .green {

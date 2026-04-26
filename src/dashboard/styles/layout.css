@@ -8,6 +8,7 @@ header {
   position: sticky;
   top: 0;
   z-index: 10;
+  gap: 1rem;
 }
 
 .logo,
@@ -44,6 +45,38 @@ header {
 .ws-status {
   font-size: 0.8125rem;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+.header-nav {
+  display: flex;
+  gap: 0.5rem;
+  flex: 1;
+  max-width: 200px;
+  justify-content: center;
+}
+
+.nav-tab {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.nav-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.nav-tab.active {
+  background: rgba(96, 165, 250, 0.15);
+  border-color: rgba(96, 165, 250, 0.3);
+  color: #93c5fd;
 }
 
 .dot {
@@ -82,9 +115,13 @@ header {
 }
 
 main {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
   padding: clamp(1rem, 3vw, 2rem);
-  max-width: 1440px;
-  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1440px);
+  justify-content: center;
 }
 
 .summary {

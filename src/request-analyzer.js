@@ -97,7 +97,6 @@ function deriveComplexityFlags(
   const preferReasoning = reasoningScore >= 2
 
   const preferFast =
-    !needsTools &&
     !preferReasoning &&
     !hasCodeSignals &&
     estimatedUserTokens < 180 &&

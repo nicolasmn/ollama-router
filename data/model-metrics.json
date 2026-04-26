@@ -1,30 +1,12 @@
 {
-  "http://localhost:11434": {
-    "gemma4:26b": {
-      "recentLatency": 7290.880000000001,
-      "recentTps": 0.06503536297861963,
-      "failures": 0,
-      "totalRequests": 2
-    },
-    "gemma4:31b": {
-      "recentLatency": 23190.4,
+  "http://192.168.178.74:11434": {
+    "qwen2.5:1.5b-instruct-q4_K_M": {
+      "recentLatency": 0,
       "recentTps": 0,
-      "failures": 0,
-      "totalRequests": 1
-    },
-    "qwen2.5:32b": {
-      "recentLatency": 5200.1,
-      "recentTps": 0.00961519970769793,
-      "failures": 0,
-      "totalRequests": 1
-    }
-  },
-  "http://192.168.178.69:11434": {
-    "gemma4:26b": {
-      "recentLatency": 3453.0551919300005,
-      "recentTps": 8.948615745455744,
-      "failures": 0,
-      "totalRequests": 9
+      "failures": 1,
+      "totalRequests": 0,
+      "lastRoutedAt": 0,
+      "lastRoutingEndpoint": null
     }
   }
 }

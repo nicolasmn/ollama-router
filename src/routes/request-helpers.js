@@ -22,7 +22,7 @@ function respondNoCandidates(requestId, taskType, res, logger) {
   res.status(503).json({ error: 'No suitable models available' })
 }
 
-export function selectCandidatesOrHandleError({
+export async function selectCandidatesOrHandleError({
   requestId,
   reqBody,
   taskType,
@@ -32,7 +32,7 @@ export function selectCandidatesOrHandleError({
   logger,
 }) {
   try {
-    const candidates = selectFn(reqBody)
+    const candidates = await selectFn(reqBody)
     if (hasNoCandidates(candidates)) {
       respondNoCandidates(requestId, taskType, res, logger)
       return null

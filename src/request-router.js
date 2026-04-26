@@ -26,7 +26,12 @@ export class RequestRouter {
   selectModel(requirements, options = {}) {
     const candidates = this._collectCandidates(requirements, options)
 
-    if (candidates.length === 0) return null
+    if (candidates.length === 0) {
+      // No reachable node can serve this request right now — attempt to wake
+      // any offline node that has matching models.
+      this.discovery.tryWakeNodesForRequest(requirements)
+      return null
+    }
 
     candidates.sort((a, b) => b.score - a.score)
 
@@ -39,6 +44,41 @@ export class RequestRouter {
       this._recordRoutingMetadata(top, requirements)
       return top
     }
+  }
+
+  /**
+   * Like selectModel but waits up to maxWaitMs for a node to come online
+   * after a WoL wake is triggered. Polls every pollIntervalMs.
+   * Returns null only if no candidate becomes available within the timeout.
+   * @param {object} requirements
+   * @param {object} [options]
+   * @param {number} [maxWaitMs=30000]
+   * @param {number} [pollIntervalMs=2000]
+   * @returns {Promise<object|Array|null>}
+   */
+  async selectModelOrWait(requirements, options = {}, maxWaitMs = 30_000, pollIntervalMs = 2_000) {
+    const initial = this.selectModel(requirements, options)
+    if (initial !== null) return initial
+
+    // WoL was triggered inside selectModel; now wait for a node to appear.
+    const deadline = Date.now() + maxWaitMs
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollIntervalMs))
+      const candidates = this._collectCandidates(requirements, options)
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => b.score - a.score)
+        if (requirements.isStreaming) {
+          const best = candidates[0]
+          this._recordRoutingMetadata([best], requirements)
+          return best
+        } else {
+          const top = candidates.slice(0, 3)
+          this._recordRoutingMetadata(top, requirements)
+          return top
+        }
+      }
+    }
+    return null
   }
 
   _collectCandidates(requirements, options = {}) {
@@ -186,12 +226,12 @@ export class RequestRouter {
     return null
   }
 
-  selectForRequest(reqBody, endpointType) {
+  async selectForRequest(reqBody, endpointType) {
     const requirements = this.requestAnalyzer.analyze(reqBody, endpointType)
     const requestedModel = reqBody?.model
 
     if (!requestedModel) {
-      return this.selectModel(requirements)
+      return this.selectModelOrWait(requirements)
     }
 
     if (VIRTUAL_MODELS.has(requestedModel)) {
@@ -204,7 +244,7 @@ export class RequestRouter {
       throw this._createModelNotFoundError(requestedModel)
     }
 
-    return this.selectModel(requirements, {
+    return this.selectModelOrWait(requirements, {
       candidateFilter: ({ modelName }) => modelName === resolvedModel,
     })
   }
@@ -213,15 +253,15 @@ export class RequestRouter {
     return this.requestAnalyzer.analyze(reqBody, endpointType)
   }
 
-  selectForChat(reqBody) {
+  async selectForChat(reqBody) {
     return this.selectForRequest(reqBody, 'chat')
   }
 
-  selectForCompletions(reqBody) {
+  async selectForCompletions(reqBody) {
     return this.selectForRequest(reqBody, 'completions')
   }
 
-  selectForEmbeddings(reqBody) {
+  async selectForEmbeddings(reqBody) {
     return this.selectForRequest(reqBody, 'embeddings')
   }
 
