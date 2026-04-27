@@ -169,6 +169,64 @@ export class RequestRouter {
     return err
   }
 
+  /**
+   * Determine whether an on-request scan should be blocking or async.
+   * Hybrid strategy: block only if last scan was > 5 minutes ago, with 3-sec timeout.
+   * @returns {{ shouldBlock: boolean, timeoutMs: number }}
+   * @private
+   */
+  _shouldScanForRequest() {
+    const RECENCY_THRESHOLD = 5 * 60 * 1000 // 5 minutes
+    const SCAN_TIMEOUT = 3000 // 3 seconds
+
+    const scanStatus = this.discovery.getScanStatus()
+    const lastScanMs = scanStatus.lastScanMs
+    const now = Date.now()
+
+    // If last scan is fresh (< 5 min ago), use async
+    if (lastScanMs > 0 && now - lastScanMs < RECENCY_THRESHOLD) {
+      return { shouldBlock: false, timeoutMs: 0 }
+    }
+
+    // If last scan is stale (> 5 min) or never run, block with timeout
+    return { shouldBlock: true, timeoutMs: SCAN_TIMEOUT }
+  }
+
+  /**
+   * Perform on-request network scan with optional blocking behavior.
+   * @param {boolean} shouldBlock - if true, wait for scan with timeout; if false, fire-and-forget
+   * @param {number} timeoutMs - timeout in ms if blocking
+   * @private
+   */
+  async _performOnRequestScan(shouldBlock, timeoutMs) {
+    if (!shouldBlock) {
+      // Fire-and-forget: scan in background
+      this.discovery.discoverNetworkNodes().catch((err) => {
+        // Log but don't throw - background scan failure shouldn't break request
+        console.debug('Background on-request scan failed:', err.message)
+      })
+      return
+    }
+
+    // Blocking with timeout
+    try {
+      const scanPromise = this.discovery.discoverNetworkNodes()
+      await Promise.race([
+        scanPromise,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('On-request scan timeout')),
+            timeoutMs,
+          ),
+        ),
+      ])
+    } catch (err) {
+      // Timeout or scan error - log and continue
+      // Request will proceed with current nodes
+      console.debug('On-request scan failed or timed out:', err.message)
+    }
+  }
+
   _resolveByAlias(modelName, requirements) {
     if (modelName === AUTO_MODEL) {
       return this.selectModel(requirements)
@@ -188,9 +246,16 @@ export class RequestRouter {
     return null
   }
 
-  selectForRequest(reqBody, endpointType) {
+  async selectForRequest(reqBody, endpointType) {
     const requirements = this.requestAnalyzer.analyze(reqBody, endpointType)
     const requestedModel = reqBody?.model
+
+    // Trigger on-request scan for virtual models
+    if (VIRTUAL_MODELS.has(requestedModel)) {
+      const { shouldBlock, timeoutMs } =
+        this._shouldScanForRequest(requestedModel)
+      await this._performOnRequestScan(shouldBlock, timeoutMs)
+    }
 
     if (!requestedModel) {
       return this.selectModel(requirements)

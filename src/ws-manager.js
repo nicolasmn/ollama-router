@@ -74,6 +74,7 @@ export class WsManager {
     const recentRequests = deriveDisplayStatuses(
       this.#requestHistoryManager.getRecentRequests(),
     )
+    const scanStatus = this.#discoveryManager.getScanStatus()
 
     // Derive which models are actively serving running requests
     const activeModels = new Map() // nodeHost -> Map<modelName, count>
@@ -125,6 +126,14 @@ export class WsManager {
         timestamp: Date.now(),
         nodes,
         requests: recentRequests,
+        scan: {
+          inProgress: scanStatus.inProgress,
+          lastScanMs: scanStatus.lastScanMs,
+          lastScanAgo: scanStatus.lastScanAgo,
+          nextScanInterval: this.#discoveryManager._determineNextScanInterval(),
+          isNetworkConnected:
+            this.#discoveryManager.isConnectedToNetworkNodes(),
+        },
       },
     }
   }

@@ -23,6 +23,94 @@ header {
   flex-wrap: wrap;
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.scan-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.scan-text {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.rescan-btn {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(96, 165, 250, 0.08);
+  color: #93c5fd;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.rescan-icon {
+  display: inline-flex;
+  line-height: 1;
+}
+
+.rescan-label {
+  line-height: 1;
+}
+
+.rescan-btn:hover:not(:disabled) {
+  background: rgba(96, 165, 250, 0.15);
+  border-color: rgba(96, 165, 250, 0.5);
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.2);
+}
+
+.rescan-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rescan-btn.scanning .rescan-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rescan-message {
+  font-size: 0.75rem;
+  color: var(--green);
+  white-space: nowrap;
+  animation: fadeInOut 3s ease-in-out forwards;
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 1;
+  }
+  95% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .logo {
   gap: 0.625rem;
 }

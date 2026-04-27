@@ -10,6 +10,43 @@ const DASHBOARD_HTML = readFileSync(
 )
 
 export function setupAdminRoutes(app, discoveryManager, loadManager) {
+  const handleScanNow = async (req, res) => {
+    try {
+      const scanStatus = discoveryManager.getScanStatus()
+      if (scanStatus.inProgress) {
+        return res.status(409).json({
+          error: 'Scan already in progress',
+          status: scanStatus,
+        })
+      }
+
+      // Trigger scan and wait for completion with timeout
+      const scanPromise = discoveryManager.discoverNetworkNodes()
+      await Promise.race([
+        scanPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Scan timeout')), 30000),
+        ),
+      ])
+
+      const finalStatus = discoveryManager.getScanStatus()
+      const inventory = discoveryManager.getNodes()
+
+      res.json({
+        success: true,
+        message: 'Network scan completed',
+        status: finalStatus,
+        nodeCount: inventory.size,
+        nodes: Array.from(inventory.keys()),
+      })
+    } catch (err) {
+      res.status(500).json({
+        error: 'Scan failed',
+        message: err.message,
+      })
+    }
+  }
+
   /**
    * GET /health - Health check endpoint
    */
@@ -69,8 +106,12 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
   })
 
   /**
-   * GET /dashboard - Beautiful real-time dashboard powered by WebSocket
+   * POST /discovery/scan-now - Trigger immediate network scan
+   * POST /admin/discovery/scan-now - Backward-compatible alias
    */
+  app.post('/discovery/scan-now', handleScanNow)
+  app.post('/admin/discovery/scan-now', handleScanNow)
+
   app.get('/dashboard', (req, res) => {
     res.setHeader('Content-Type', 'text/html')
     res.send(DASHBOARD_HTML)

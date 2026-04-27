@@ -15,16 +15,20 @@ export class RouterDashboard extends LitElement {
     drawerOpen: { state: true },
     messageDrawerOpen: { state: true },
     messageRequestId: { state: true },
+    scanInProgress: { state: true },
+    rescanMessage: { state: true },
   }
 
   constructor() {
     super()
     this.wsState = 'connecting'
-    this.payload = { timestamp: 0, nodes: {}, requests: [] }
+    this.payload = { timestamp: 0, nodes: {}, requests: [], scan: {} }
     this.selectedRequestId = null
     this.drawerOpen = false
     this.messageDrawerOpen = false
     this.messageRequestId = null
+    this.scanInProgress = false
+    this.rescanMessage = ''
     this.ws = null
     this.retryTimer = null
   }
@@ -96,6 +100,25 @@ export class RouterDashboard extends LitElement {
     return summarizePayload(this.nodes)
   }
 
+  get scanStatus() {
+    const scan = this.payload.scan || {}
+    if (scan.lastScanAgo === -1) {
+      return 'Never scanned'
+    }
+    return `Scanned ${this._formatTime(scan.lastScanAgo)} ago`
+  }
+
+  _formatTime(ms) {
+    if (ms < 0) return 'never'
+    if (ms < 1000) return 'now'
+    const sec = Math.floor(ms / 1000)
+    if (sec < 60) return `${sec}s`
+    const min = Math.floor(sec / 60)
+    if (min < 60) return `${min}m`
+    const hr = Math.floor(min / 60)
+    return `${hr}h`
+  }
+
   get selectedRequest() {
     return this.requests.find(
       (request) => request.requestId === this.selectedRequestId,
@@ -127,6 +150,45 @@ export class RouterDashboard extends LitElement {
     this.messageDrawerOpen = false
   }
 
+  async onRescanClick() {
+    if (this.scanInProgress) return
+
+    this.scanInProgress = true
+    this.rescanMessage = ''
+
+    try {
+      let response = await fetch('/admin/discovery/scan-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      // Fallback for deployments exposing the endpoint without /admin prefix.
+      if (response.status === 404) {
+        response = await fetch('/discovery/scan-now', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (!response.ok) {
+        throw new Error(`Scan failed: ${response.statusText}`)
+      }
+
+      const result = await response.json()
+      this.rescanMessage = `Scan complete: ${result.nodeCount} nodes found`
+      setTimeout(() => {
+        this.rescanMessage = ''
+      }, 3000)
+    } catch (err) {
+      this.rescanMessage = `Scan error: ${err.message}`
+      setTimeout(() => {
+        this.rescanMessage = ''
+      }, 5000)
+    } finally {
+      this.scanInProgress = false
+    }
+  }
+
   handleRequestSelected(event) {
     this.openRequest(event.detail.requestId)
   }
@@ -144,17 +206,36 @@ export class RouterDashboard extends LitElement {
           <span class="logo-icon">🦙</span>
           <h1>Ollama Router <span>/ Dashboard</span></h1>
         </div>
-        <div class="ws-status">
-          <div class="dot ${this.wsState}"></div>
-          <span>
-            ${this.wsState === 'connected'
-              ? 'Live'
-              : this.wsState === 'reconnecting'
-                ? 'Reconnecting…'
-                : this.wsState === 'disconnected'
-                  ? 'Error'
-                  : 'Connecting…'}
-          </span>
+        <div class="header-controls">
+          <div class="scan-status">
+            <span class="scan-text">${this.scanStatus}</span>
+            <button
+              class="rescan-btn ${this.scanInProgress ? 'scanning' : ''}"
+              @click=${this.onRescanClick}
+              ?disabled=${this.scanInProgress}
+              title="Trigger immediate network scan"
+            >
+              <span class="rescan-icon" aria-hidden="true">⟳</span>
+              <span class="rescan-label"
+                >${this.scanInProgress ? 'Scanning...' : 'Rescan'}</span
+              >
+            </button>
+            ${this.rescanMessage
+              ? html`<span class="rescan-message">${this.rescanMessage}</span>`
+              : ''}
+          </div>
+          <div class="ws-status">
+            <div class="dot ${this.wsState}"></div>
+            <span>
+              ${this.wsState === 'connected'
+                ? 'Live'
+                : this.wsState === 'reconnecting'
+                  ? 'Reconnecting…'
+                  : this.wsState === 'disconnected'
+                    ? 'Error'
+                    : 'Connecting…'}
+            </span>
+          </div>
         </div>
       </header>
 
