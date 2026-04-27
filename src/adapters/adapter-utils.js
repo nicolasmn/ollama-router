@@ -24,12 +24,26 @@ export const OPTION_MAP = {
  * @param {Array} messages - OpenAI-format messages
  * @returns {Array} Ollama-compatible messages
  */
+function flattenContent(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part
+        if (part?.type === 'text') return part.text ?? ''
+        return ''
+      })
+      .join('')
+  }
+  return content ?? ''
+}
+
 export function translateMessages(messages) {
   return messages.map((msg) => {
     if (msg.role === 'assistant' && msg.tool_calls?.length) {
       return {
         role: 'assistant',
-        content: msg.content ?? '',
+        content: flattenContent(msg.content),
         tool_calls: msg.tool_calls.map((tc) => {
           const args = tc.function?.arguments
           let parsedArgs
@@ -50,10 +64,10 @@ export function translateMessages(messages) {
     if (msg.role === 'tool') {
       // eslint-disable-next-line no-unused-vars
       const { tool_call_id, ...rest } = msg
-      return rest
+      return { ...rest, content: flattenContent(rest.content) }
     }
 
-    return msg
+    return { ...msg, content: flattenContent(msg.content) }
   })
 }
 

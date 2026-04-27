@@ -70,7 +70,9 @@ async function handleStreamingChatRequest({
 
     if (resp.statusCode === 503) throw new Error('Node busy')
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw new Error(`HTTP ${resp.statusCode}`)
+      let detail = ''
+      try { detail = await resp.body.text() } catch { /* ignore */ }
+      throw new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`)
     }
 
     res.setHeader('Content-Type', 'text/event-stream')
