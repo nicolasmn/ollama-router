@@ -117,6 +117,60 @@ Development mode:
 npm run dev
 ```
 
+## Raspberry Pi Service
+
+The repository includes three helper scripts for Raspberry Pi OS with systemd:
+
+- `scripts/install-rpi-service.sh`: first-time installation as a persistent service
+- `scripts/update-rpi-service.sh`: deploy code updates without replacing your existing service configuration
+- `scripts/uninstall-rpi-service.sh`: remove the systemd service, with optional full cleanup via `--purge`
+
+Run the first install on the Pi from the repository root:
+
+```bash
+sudo ./scripts/install-rpi-service.sh
+```
+
+Run later updates on the Pi after pulling changes:
+
+```bash
+sudo ./scripts/update-rpi-service.sh
+```
+
+Remove the service from the Pi:
+
+```bash
+sudo ./scripts/uninstall-rpi-service.sh
+```
+
+Remove the service and also delete application files, metrics, configuration, and the service user:
+
+```bash
+sudo ./scripts/uninstall-rpi-service.sh --purge
+```
+
+Default service settings created by the installer:
+
+- Install directory: `/opt/ollama-router`
+- Persistent metrics: `/var/lib/ollama-router/model-metrics.json`
+- Environment file: `/etc/ollama-router.env`
+- Service name: `ollama-router`
+
+The installer creates `/etc/ollama-router.env` only if it does not already exist. Adjust it after installation if your Ollama nodes are remote, for example:
+
+```bash
+OLLAMA_NODES=192.168.1.50:11434,192.168.1.51:11434
+AUTO_DISCOVER=false
+```
+
+Useful service commands:
+
+```bash
+systemctl status ollama-router
+journalctl -u ollama-router -f
+curl http://127.0.0.1:8000/health
+```
+
 ## Example
 
 Point an OpenAI-compatible client to the router:
