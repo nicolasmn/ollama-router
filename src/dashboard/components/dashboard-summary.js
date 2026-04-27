@@ -1,6 +1,6 @@
 import { LitElement, html } from 'lit'
 
-import { latCls } from './dashboard-utils.js'
+import { fmt, latCls } from './dashboard-utils.js'
 
 export class DashboardSummary extends LitElement {
   static properties = {
@@ -44,25 +44,25 @@ export class DashboardSummary extends LitElement {
           </div>
         </div>
         <div class="stat">
-          <div class="stat-label">Avg Latency</div>
+          <div class="stat-label">Average Latency</div>
           <div
             class="stat-val ${this.summary.avgLat > 0
               ? latCls(this.summary.avgLat)
               : 'muted'}"
           >
-            ${this.summary.avgLat > 0
-              ? `${Math.round(this.summary.avgLat)} ms`
-              : '—'}
+            ${fmt.duration(this.summary.avgLat)}
           </div>
         </div>
         <div class="stat">
-          <div class="stat-label">Avg TPS</div>
+          <div class="stat-label">
+            Average <abbr title="Tokens Per Second">TPS</abbr>
+          </div>
           <div
             class="stat-val ${this.summary.avgTps > 0
               ? 'blue'
               : 'muted stat-val-empty'}"
           >
-            ${this.summary.avgTps > 0 ? this.summary.avgTps.toFixed(1) : '—'}
+            ${fmt.tps(this.summary.avgTps)}
           </div>
         </div>
       </div>

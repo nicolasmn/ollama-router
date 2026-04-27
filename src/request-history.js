@@ -3,14 +3,6 @@
 const DEFAULT_LIMIT = 40
 const MAX_ATTEMPTS = 8
 const MAX_CANDIDATES = 3
-const PREVIEW_LENGTH = 160
-const MAX_CONVERSATION_LABEL = 48
-
-function truncateText(text, maxLength = PREVIEW_LENGTH) {
-  if (!text) return ''
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, maxLength - 1)}…`
-}
 
 function normalizeInlineText(value) {
   return String(value || '')
@@ -66,13 +58,11 @@ function stringifyEmbeddingInput(input) {
 
 function buildPreview(reqBody, endpointType) {
   if (endpointType === 'embeddings') {
-    return truncateText(stringifyEmbeddingInput(reqBody?.input))
+    return stringifyEmbeddingInput(reqBody?.input)
   }
 
   if (endpointType === 'completions') {
-    return truncateText(
-      typeof reqBody?.prompt === 'string' ? reqBody.prompt : '',
-    )
+    return typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
   }
 
   const messages = Array.isArray(reqBody?.messages) ? reqBody.messages : []
@@ -82,7 +72,7 @@ function buildPreview(reqBody, endpointType) {
   const previewSource = lastUserMessage
     ? stringifyContent(lastUserMessage.content)
     : stringifyContent(messages.at(-1)?.content)
-  return truncateText(previewSource)
+  return previewSource
 }
 
 function getNestedValue(source, keys) {
@@ -138,7 +128,7 @@ function buildConversationInfo(reqBody, endpointType, preview) {
       const digest = hashString(anchor.toLowerCase())
       return {
         id: `chat:${digest}`,
-        label: truncateText(anchor, MAX_CONVERSATION_LABEL),
+        label: anchor,
         source: 'derived',
       }
     }
@@ -151,12 +141,10 @@ function buildConversationInfo(reqBody, endpointType, preview) {
   }
 }
 
-const MAX_MESSAGE_LIST = 20
-
 function buildMessageList(reqBody, endpointType) {
   if (endpointType !== 'chat') return []
   const messages = Array.isArray(reqBody?.messages) ? reqBody.messages : []
-  return messages.slice(0, MAX_MESSAGE_LIST).map((msg) => ({
+  return messages.map((msg) => ({
     role: msg?.role || 'unknown',
     content: stringifyContent(msg?.content),
   }))
@@ -250,7 +238,6 @@ export class RequestHistoryManager {
       entry,
       ...this.requests.filter((item) => item.requestId !== requestId),
     ]
-    this.#trim()
     return entry
   }
 
@@ -300,7 +287,7 @@ export class RequestHistoryManager {
 
   finishRequest(requestId, result = {}) {
     const entry = this.#findRequest(requestId)
-    if (!entry) return
+    if (!entry) return false
 
     entry.status = result.status || entry.status || 'success'
     entry.finishedAt = Date.now()
@@ -325,11 +312,5 @@ export class RequestHistoryManager {
     return (
       this.requests.find((request) => request.requestId === requestId) || null
     )
-  }
-
-  #trim() {
-    if (this.requests.length > this.limit) {
-      this.requests.length = this.limit
-    }
   }
 }

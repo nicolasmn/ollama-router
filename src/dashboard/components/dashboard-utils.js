@@ -10,10 +10,13 @@ export const fmt = {
       : value >= 1000
         ? `${(value / 1000).toFixed(0)}k`
         : String(value),
-  ms: (value) => {
+  duration: (value) => {
     if (!value || value <= 0) return '—'
-    if (value >= 1000) return `${(value / 1000).toFixed(1)}s`
-    return `${Math.round(value)} ms`
+    if (value < 10000) return `${Math.round(value)}ms`
+    if (value < 60000) return `${(value / 1000).toFixed(1)}s`
+    return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(
+      0,
+    )}s`
   },
   tps: (value) => (value > 0 ? value.toFixed(1) : '—'),
   params: (value) => (value > 0 ? `${value.toFixed(1)}B` : '—'),

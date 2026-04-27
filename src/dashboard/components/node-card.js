@@ -107,7 +107,7 @@ export class NodeCard extends LitElement {
                           </td>
                           <td>
                             <span class="mono ${latCls(model.recentLatency)}">
-                              ${fmt.ms(model.recentLatency)}
+                              ${fmt.duration(model.recentLatency)}
                             </span>
                           </td>
                           <td class="mono">${fmt.tps(model.recentTps)}</td>

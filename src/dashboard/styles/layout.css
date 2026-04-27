@@ -166,11 +166,11 @@ main {
   transition:
     border-color 0.2s,
     transform 0.2s;
-}
 
-.stat:hover {
-  border-color: var(--blue);
-  transform: translateY(-2px);
+  &:hover {
+    border-color: var(--blue);
+    transform: translateY(-2px);
+  }
 }
 
 .stat-label,
@@ -181,6 +181,12 @@ main {
   letter-spacing: 0.09em;
   color: var(--muted);
   margin-bottom: 0.5rem;
+
+  abbr {
+    text-decoration: none;
+    border-bottom: .5px solid color-mix(in srgb, var(--muted) 50%, transparent 50%);
+    cursor: help;
+  }
 }
 
 .stat-val {

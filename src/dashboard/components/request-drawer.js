@@ -63,7 +63,9 @@ export class RequestDrawer extends LitElement {
       <div class="detail-grid">
         <div class="detail-card">
           <div class="detail-label">Conversation</div>
-          <div class="detail-value">${this.request.conversationLabel || 'Single request'}</div>
+          <div class="detail-value">
+            ${this.request.conversationLabel || 'Single request'}
+          </div>
         </div>
         <div class="detail-card">
           <div class="detail-label">Status</div>
@@ -71,19 +73,25 @@ export class RequestDrawer extends LitElement {
         </div>
         <div class="detail-card">
           <div class="detail-label">Latency</div>
-          <div class="detail-value">${fmt.ms(this.request.latency)}</div>
+          <div class="detail-value">${fmt.duration(this.request.latency)}</div>
         </div>
         <div class="detail-card">
           <div class="detail-label">Requested Model</div>
-          <div class="detail-value mono">${this.request.requestedModel || 'auto'}</div>
+          <div class="detail-value mono">
+            ${this.request.requestedModel || 'auto'}
+          </div>
         </div>
         <div class="detail-card">
           <div class="detail-label">Selected Target</div>
-          <div class="detail-value mono">${this.request.selectedModel || routeTarget(this.request)}</div>
+          <div class="detail-value mono">
+            ${this.request.selectedModel || routeTarget(this.request)}
+          </div>
         </div>
         <div class="detail-card">
           <div class="detail-label">Node</div>
-          <div class="detail-value mono">${this.request.selectedNode || '—'}</div>
+          <div class="detail-value mono">
+            ${this.request.selectedNode || '—'}
+          </div>
         </div>
         <div class="detail-card">
           <div class="detail-label">HTTP</div>
@@ -97,7 +105,9 @@ export class RequestDrawer extends LitElement {
 
       <div class="detail-section">
         <h3>Routing Signals</h3>
-        <div class="node-meta">${renderFlagBadges(this.request.analysis || {})}</div>
+        <div class="node-meta">
+          ${renderFlagBadges(this.request.analysis || {})}
+        </div>
         <div class="detail-grid">
           <div class="detail-card">
             <div class="detail-label">Input Summary</div>
@@ -105,15 +115,21 @@ export class RequestDrawer extends LitElement {
           </div>
           <div class="detail-card">
             <div class="detail-label">Streaming</div>
-            <div class="detail-value">${this.request.stream ? 'yes' : 'no'}</div>
+            <div class="detail-value">
+              ${this.request.stream ? 'yes' : 'no'}
+            </div>
           </div>
           <div class="detail-card">
             <div class="detail-label">Estimated Input</div>
-            <div class="detail-value">${this.request.analysis?.estimatedInputTokens || 0} tokens</div>
+            <div class="detail-value">
+              ${this.request.analysis?.estimatedInputTokens || 0} tokens
+            </div>
           </div>
           <div class="detail-card">
             <div class="detail-label">Max Output</div>
-            <div class="detail-value">${this.request.analysis?.maxOutputTokens || 0} tokens</div>
+            <div class="detail-value">
+              ${this.request.analysis?.maxOutputTokens || 0} tokens
+            </div>
           </div>
         </div>
       </div>
@@ -127,7 +143,9 @@ export class RequestDrawer extends LitElement {
                   <div class="detail-row">
                     <div class="detail-row-main">
                       <div class="detail-row-title">${candidate.modelName}</div>
-                      <div class="detail-row-sub">${candidate.nodeHost || 'unknown node'}</div>
+                      <div class="detail-row-sub">
+                        ${candidate.nodeHost || 'unknown node'}
+                      </div>
                     </div>
                     <div class="mono muted">${candidate.score ?? '—'}</div>
                   </div>
@@ -158,8 +176,12 @@ export class RequestDrawer extends LitElement {
                       </div>
                     </div>
                     <div class="request-side">
-                      <span class="badge ${statusBadgeClass}">${attempt.status}</span>
-                      <span class="mono muted">${fmt.ms(attempt.latency)}</span>
+                      <span class="badge ${statusBadgeClass}"
+                        >${attempt.status}</span
+                      >
+                      <span class="mono muted"
+                        >${fmt.duration(attempt.latency)}</span
+                      >
                     </div>
                   </div>
                 `

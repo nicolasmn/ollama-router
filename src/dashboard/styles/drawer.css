@@ -233,7 +233,6 @@
 }
 
 .msg-body {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 0.84rem;
   line-height: 1.6;

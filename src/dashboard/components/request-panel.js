@@ -134,7 +134,7 @@ export class RequestPanel extends LitElement {
             <span class="request-side-bottom">
               ${request.latency > 0
                 ? html`<span class="mono muted"
-                    >took ${fmt.ms(request.latency)}</span
+                    >took ${fmt.duration(request.latency)}</span
                   >`
                 : ''}
               <span class="mono muted"
