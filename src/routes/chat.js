@@ -51,6 +51,9 @@ async function handleStreamingChatRequest({
   const completionId = `chatcmpl-${makeRequestId()}`
   const created = Math.floor(Date.now() / 1000)
   const startTime = Date.now()
+  const abortController = new AbortController()
+  const onClientClose = () => abortController.abort()
+  res.once('close', onClientClose)
   try {
     requestHistoryManager.recordAttempt(requestId, {
       nodeHost,
@@ -66,6 +69,7 @@ async function handleStreamingChatRequest({
       body: JSON.stringify(ollamaBody),
       headersTimeout: INFERENCE_TIMEOUT,
       bodyTimeout: INFERENCE_TIMEOUT,
+      signal: abortController.signal,
     })
 
     if (resp.statusCode === 503) throw new Error('Node busy')
@@ -106,6 +110,7 @@ async function handleStreamingChatRequest({
     )
   } catch (err) {
     const clientDisconnected =
+      err.name === 'AbortError' ||
       err.code === 'ERR_STREAM_DESTROYED' ||
       err.code === 'ECONNRESET' ||
       err.code === 'ECONNABORTED' ||
@@ -160,6 +165,7 @@ async function handleStreamingChatRequest({
       }
     }
   } finally {
+    res.off('close', onClientClose)
     loadManager.decrementLoad(nodeHost)
   }
 }
