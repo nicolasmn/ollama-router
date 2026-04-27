@@ -3,6 +3,7 @@
 const DEFAULT_LIMIT = 40
 const MAX_ATTEMPTS = 8
 const MAX_CANDIDATES = 3
+const ACTIVE_ATTEMPT_STATUSES = new Set(['waiting', 'running'])
 
 function normalizeInlineText(value) {
   return String(value || '')
@@ -186,6 +187,11 @@ function buildAnalysisSummary(analysis) {
   }
 }
 
+function normalizeResponseContent(content) {
+  if (typeof content === 'string') return content.trim()
+  return stringifyContent(content).trim()
+}
+
 function summariseCandidate(candidate) {
   return {
     nodeHost: candidate.nodeHost,
@@ -214,7 +220,7 @@ export class RequestHistoryManager {
       conversationLabel: conversation.label,
       conversationSource: conversation.source,
       requestedModel: reqBody?.model || 'auto',
-      status: 'running',
+      status: 'waiting',
       stream: Boolean(reqBody?.stream),
       createdAt: Date.now(),
       finishedAt: 0,
@@ -264,11 +270,14 @@ export class RequestHistoryManager {
       last &&
       last.nodeHost === attempt.nodeHost &&
       last.modelName === attempt.modelName &&
-      last.status === 'running'
+      ACTIVE_ATTEMPT_STATUSES.has(last.status)
     ) {
       last.status = attempt.status
       last.latency = attempt.latency || last.latency
       last.error = attempt.error || null
+      if (ACTIVE_ATTEMPT_STATUSES.has(attempt.status)) {
+        entry.status = attempt.status
+      }
       entry.attemptCount = entry.attempts.length
       return
     }
@@ -283,6 +292,9 @@ export class RequestHistoryManager {
     })
     entry.attempts = entry.attempts.slice(-MAX_ATTEMPTS)
     entry.attemptCount = entry.attempts.length
+    if (ACTIVE_ATTEMPT_STATUSES.has(attempt.status)) {
+      entry.status = attempt.status
+    }
   }
 
   finishRequest(requestId, result = {}) {
@@ -297,6 +309,25 @@ export class RequestHistoryManager {
     entry.tokensGenerated = result.tokensGenerated || entry.tokensGenerated || 0
     entry.selectedModel = result.modelName || entry.selectedModel || null
     entry.selectedNode = result.nodeHost || entry.selectedNode || null
+    return true
+  }
+
+  updateResponseContent(requestId, responseContent) {
+    const entry = this.#findRequest(requestId)
+    if (!entry) return false
+
+    if (!Array.isArray(entry.messageList)) {
+      entry.messageList = []
+    }
+
+    const normalizedContent = normalizeResponseContent(responseContent)
+    if (!normalizedContent) return false
+
+    entry.messageList.push({
+      role: 'assistant',
+      content: normalizedContent,
+    })
+    return true
   }
 
   getRecentRequests() {

@@ -52,7 +52,7 @@ async function tryCandidatesWithRetry({
       requestHistoryManager.recordAttempt(requestId, {
         nodeHost,
         modelName,
-        status: 'running',
+        status: 'waiting',
       })
       const ollamaBody = requestTransformer
         ? requestTransformer(reqBody, modelName)

@@ -30,7 +30,10 @@ export const fmt = {
   },
   status: (status) => {
     if (status === 'success') return 'Success'
+    if (status === 'waiting') return 'Waiting'
     if (status === 'running') return 'Running'
+    if (status === 'aborted') return 'Aborted'
+    if (status === 'capacity') return 'Capacity'
     if (status === 'rejected') return 'Rejected'
     return 'Failed'
   },
@@ -50,9 +53,12 @@ export function endpointLabel(endpointType) {
 }
 
 export function statusClass(status) {
+  if (status === 'waiting') return 'waiting'
   if (status === 'running') return 'running'
   if (status === 'success') return 'success'
   if (status === 'rejected') return 'rejected'
+  if (status === 'capacity') return 'capacity'
+  if (status === 'aborted') return 'aborted'
   return 'failed'
 }
 
@@ -85,7 +91,11 @@ export function requestMetaItems(request) {
   }
   if (request.attemptCount > 1) {
     items.push(`${request.attemptCount} attempts`)
-  } else if (request.attemptCount === 1 && request.status !== 'running') {
+  } else if (
+    request.attemptCount === 1 &&
+    request.status !== 'running' &&
+    request.status !== 'waiting'
+  ) {
     items.push('1 attempt')
   }
   if (request.stream) items.push('stream')

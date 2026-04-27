@@ -15,7 +15,10 @@ function renderMessageThread(request) {
 
   return html`
     <div class="message-thread">
-      ${request.messageList.map(
+      ${request.messageList
+        .slice()
+        .reverse()
+        .map(
         (msg, i) => html`
           <div class="msg msg--${msg.role}">
             <div class="msg-header">

@@ -58,7 +58,7 @@ async function handleStreamingChatRequest({
     requestHistoryManager.recordAttempt(requestId, {
       nodeHost,
       modelName,
-      status: 'running',
+      status: 'waiting',
     })
     const supportsThinking =
       discoveryManager.inventory.get(nodeHost)?.models.get(modelName)?.profile?.supportsThinking ?? false
@@ -209,7 +209,7 @@ async function tryCandidatesWithRetry({
       requestHistoryManager.recordAttempt(requestId, {
         nodeHost,
         modelName,
-        status: 'running',
+        status: 'waiting',
       })
       const supportsThinking =
         discoveryManager.inventory.get(nodeHost)?.models.get(modelName)?.profile?.supportsThinking ?? false
@@ -226,6 +226,8 @@ async function tryCandidatesWithRetry({
       const transformed = responseTransformer
         ? responseTransformer(result, reqBody.model ?? modelName)
         : result
+      const responseContent = transformed?.choices?.[0]?.message?.content
+      requestHistoryManager.updateResponseContent(requestId, responseContent)
       const tokensGenerated = tokensFromResult(transformed)
       discoveryManager.updateModelMetrics(
         nodeHost,

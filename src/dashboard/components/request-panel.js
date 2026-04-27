@@ -14,6 +14,9 @@ function requestSummaryBadges(requests = []) {
   const running = requests.filter(
     (request) => request.status === 'running',
   ).length
+  const waiting = requests.filter(
+    (request) => request.status === 'waiting',
+  ).length
   const failed = requests.filter(
     (request) => request.status === 'failed' || request.status === 'rejected',
   ).length
@@ -22,6 +25,9 @@ function requestSummaryBadges(requests = []) {
     <span class="badge b-blue">${requests.length} tracked</span>
     <span class="badge ${running > 0 ? 'b-yellow' : ''}"
       >${running} running</span
+    >
+    <span class="badge ${waiting > 0 ? 'b-yellow' : ''}"
+      >${waiting} waiting</span
     >
     <span class="badge ${failed > 0 ? 'b-red' : ''}">${failed} failed</span>
   `
@@ -74,7 +80,7 @@ export class RequestPanel extends LitElement {
     if (!this.collapsed) this.page = 0
   }
 
-  prevPage(totalPages) {
+  prevPage() {
     this.page = Math.max(0, this.page - 1)
   }
 
@@ -86,9 +92,11 @@ export class RequestPanel extends LitElement {
     const statusBadgeClass =
       request.status === 'success'
         ? 'b-green'
-        : request.status === 'running'
-          ? 'b-blue'
-          : 'b-red'
+        : request.status === 'waiting'
+          ? 'b-yellow'
+          : request.status === 'running'
+            ? 'b-blue'
+            : 'b-red'
     const metaItems = requestMetaItems(request)
 
     const isActive =
@@ -241,7 +249,7 @@ export class RequestPanel extends LitElement {
                         class="pager-btn"
                         type="button"
                         ?disabled=${this.page === 0}
-                        @click=${() => this.prevPage(totalPages)}
+                        @click=${() => this.prevPage()}
                       >
                         ‹
                       </button>

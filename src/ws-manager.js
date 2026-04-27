@@ -2,6 +2,36 @@
 import { WebSocketServer } from 'ws'
 
 const BROADCAST_INTERVAL_MS = 2000
+const ACTIVE_STATUSES = new Set(['waiting', 'running'])
+
+function getLastAttempt(request) {
+  const attempts = Array.isArray(request.attempts) ? request.attempts : []
+  return attempts[attempts.length - 1] || null
+}
+
+function deriveDisplayStatuses(requests) {
+  const byNode = new Map()
+
+  for (const request of requests) {
+    if (!ACTIVE_STATUSES.has(request.status)) continue
+    const lastAttempt = getLastAttempt(request)
+    if (!lastAttempt?.nodeHost) continue
+
+    if (!byNode.has(lastAttempt.nodeHost)) {
+      byNode.set(lastAttempt.nodeHost, [])
+    }
+    byNode.get(lastAttempt.nodeHost).push(request)
+  }
+
+  for (const pending of byNode.values()) {
+    pending.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    for (let index = 0; index < pending.length; index += 1) {
+      pending[index].status = index === 0 ? 'running' : 'waiting'
+    }
+  }
+
+  return requests
+}
 
 export class WsManager {
   /** @type {WebSocketServer} */
@@ -41,13 +71,15 @@ export class WsManager {
 
   #buildPayload() {
     const inventory = this.#discoveryManager.getNodes()
-    const recentRequests = this.#requestHistoryManager.getRecentRequests()
+    const recentRequests = deriveDisplayStatuses(
+      this.#requestHistoryManager.getRecentRequests(),
+    )
 
     // Derive which models are actively serving running requests
     const activeModels = new Map() // nodeHost -> Map<modelName, count>
     for (const req of recentRequests) {
       if (req.status !== 'running') continue
-      const lastAttempt = req.attempts[req.attempts.length - 1]
+      const lastAttempt = getLastAttempt(req)
       if (!lastAttempt) continue
       const byModel = activeModels.get(lastAttempt.nodeHost) || new Map()
       byModel.set(

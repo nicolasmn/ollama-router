@@ -103,4 +103,63 @@ describe('RequestHistoryManager', () => {
     expect(entry.conversationLabel).toBe('Conversation thread-42')
     expect(entry.conversationSource).toBe('explicit')
   })
+
+  it('starts requests as waiting and updates active status from attempts', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-waiting',
+      endpointType: 'chat',
+      reqBody: {
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+      analysis: {},
+    })
+
+    history.recordAttempt('req-waiting', {
+      nodeHost: 'http://node-a:11434',
+      modelName: 'gemma4:e4b',
+      status: 'waiting',
+    })
+
+    const [waitingEntry] = history.getRecentRequests()
+    expect(waitingEntry.status).toBe('waiting')
+
+    history.recordAttempt('req-waiting', {
+      nodeHost: 'http://node-a:11434',
+      modelName: 'gemma4:e4b',
+      status: 'running',
+    })
+
+    const [runningEntry] = history.getRecentRequests()
+    expect(runningEntry.status).toBe('running')
+    expect(runningEntry.attempts).toHaveLength(1)
+  })
+
+  it('appends final assistant response content for chat requests', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-response',
+      endpointType: 'chat',
+      reqBody: {
+        messages: [{ role: 'user', content: 'Summarize this text.' }],
+      },
+      analysis: {},
+    })
+
+    const updated = history.updateResponseContent(
+      'req-response',
+      'Here is the concise summary.',
+    )
+
+    expect(updated).toBe(true)
+
+    const [entry] = history.getRecentRequests()
+    const assistantMessage = entry.messageList.at(-1)
+    expect(assistantMessage).toEqual({
+      role: 'assistant',
+      content: 'Here is the concise summary.',
+    })
+  })
 })
