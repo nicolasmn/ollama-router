@@ -152,6 +152,9 @@ async function handleStreamingChatRequest({
       })
       if (!res.headersSent) {
         res.status(503).json({ error: err.message })
+      } else if (!res.writableEnded) {
+        res.write('data: [DONE]\n\n')
+        res.end()
       }
     }
   } finally {
@@ -367,11 +370,13 @@ export function setupChatRoutes(
 
       requestHistoryManager.finishRequest(requestId, {
         status: 'failed',
-        responseStatus: 500,
+        responseStatus: res.headersSent ? res.statusCode : 500,
         error: err.message,
       })
       logger.error({ requestId, error: err.message }, 'Chat request error')
-      res.status(500).json({ error: 'Internal server error' })
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' })
+      }
     }
   })
 }

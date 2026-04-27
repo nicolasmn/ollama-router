@@ -4,7 +4,6 @@ import pino from 'pino'
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
 import { NetworkScanner } from './network-scanner.js'
 import { loadMetrics, saveMetrics } from './metrics-store.js'
-import { sendWakeOnLan, arpLookup } from './wol.js'
 
 const logger = pino()
 
@@ -16,12 +15,6 @@ export class DiscoveryManager {
     this.NETWORK_SCAN_INTERVAL = config.networkScanInterval || 60000
     this.onInventoryUpdated = config.onInventoryUpdated || null
     this.metricsFile = config.metricsFile || null
-    // Cooldown tracking: prevent spamming WoL packets — Map<host, lastSentMs>
-    this._wolLastSent = new Map()
-    this._wolCooldownMs = config.wolCooldownMs ?? 60_000
-    // Fast-probe handles after WoL: poll woken nodes every few seconds until
-    // they respond, keeping network activity alive to prevent re-sleep.
-    this._wakeProbes = new Map()
     this.inventory = new Map() // Maps nodeHost -> NodeInfo
     this.periodicProbeHandle = null
     this.networkScanHandle = null
@@ -45,98 +38,6 @@ export class DiscoveryManager {
   normalizeBaseUrl(host) {
     if (host.startsWith('http')) return host
     return `http://${host}`
-  }
-
-  /**
-   * Send a WoL magic packet for an offline node if the MAC is known (learned
-   * from the ARP table while it was last reachable) and the cooldown has elapsed.
-   * @param {string} nodeHost
-   * @param {string|null} mac - MAC address carried over from the previous reachable probe
-   */
-  triggerWol(nodeHost, mac) {
-    if (!mac) {
-      logger.warn(
-        { nodeHost },
-        'WoL skipped — no MAC known for this node (ARP lookup may have failed while it was reachable)',
-      )
-      return
-    }
-
-    const now = Date.now()
-    const lastSent = this._wolLastSent.get(nodeHost) ?? 0
-    if (now - lastSent < this._wolCooldownMs) {
-      logger.debug({ nodeHost }, 'WoL skipped — cooldown active')
-      return
-    }
-
-    this._wolLastSent.set(nodeHost, now)
-    logger.info({ nodeHost, mac }, 'Sending WoL magic packet to offline node')
-
-    sendWakeOnLan(mac, { nodeHost }).catch((err) => {
-      logger.warn({ nodeHost, err: err.message }, 'WoL send failed')
-    })
-
-    // Start rapid polling so we detect the node coming back quickly and
-    // keep enough network activity to discourage macOS from re-sleeping.
-    this._startWakeProbe(nodeHost)
-  }
-
-  /**
-   * Poll a just-woken node every few seconds until it responds or times out.
-   * The repeated probes generate network activity which helps prevent macOS
-   * from going back to sleep before inference begins.
-   * @param {string} nodeHost
-   * @private
-   */
-  _startWakeProbe(nodeHost) {
-    if (this._wakeProbes.has(nodeHost)) return
-
-    const INTERVAL_MS = 3_000
-    const TIMEOUT_MS = 120_000
-    const startedAt = Date.now()
-
-    logger.info({ nodeHost }, 'Starting rapid wake probe after WoL (every 3s, up to 2 min)')
-
-    const handle = setInterval(async () => {
-      const elapsed = Date.now() - startedAt
-
-      if (elapsed > TIMEOUT_MS) {
-        clearInterval(handle)
-        this._wakeProbes.delete(nodeHost)
-        logger.warn({ nodeHost }, 'Wake probe timed out — node did not respond within 2 minutes')
-        return
-      }
-
-      const freshNode = await this.probeNode(nodeHost)
-      if (freshNode.reachable) {
-        clearInterval(handle)
-        this._wakeProbes.delete(nodeHost)
-        // Merge the freshNode into inventory so it's immediately routable.
-        const previous = this.inventory.get(nodeHost)
-        if (previous) {
-          freshNode.failures = 0
-          freshNode.lastFailure = previous.lastFailure ?? 0
-          for (const [modelName, freshModel] of freshNode.models) {
-            const prev = previous.models.get(modelName)
-            if (prev) {
-              freshModel.status = prev.status
-              freshModel.activeRequests = prev.activeRequests
-              freshModel.recentLatency = prev.recentLatency
-              freshModel.recentTps = prev.recentTps
-              freshModel.failures = prev.failures
-              freshModel.totalRequests = prev.totalRequests
-              freshModel.lastRoutingEndpoint = prev.lastRoutingEndpoint
-              freshModel.lastRoutedAt = prev.lastRoutedAt
-            }
-          }
-        }
-        this.inventory.set(nodeHost, freshNode)
-        this.notifyInventoryUpdated()
-        logger.info({ nodeHost, elapsed }, 'Node came back online after WoL')
-      }
-    }, INTERVAL_MS)
-
-    this._wakeProbes.set(nodeHost, handle)
   }
 
   /**
@@ -303,24 +204,6 @@ export class DiscoveryManager {
 
       node.reachable = true
       node.lastSeen = Date.now()
-
-      // Learn the MAC address from the ARP table while the node is reachable.
-      // The OS populates ARP automatically after the TCP connections made above.
-      // Loopback (localhost) has no ARP entry and cannot be woken remotely.
-      const ip = new URL(base).hostname
-      const isLoopback =
-        ip === 'localhost' || ip.startsWith('127.') || ip === '::1'
-      if (!isLoopback) {
-        node.mac = await arpLookup(ip)
-        if (node.mac) {
-          logger.debug({ host, mac: node.mac }, 'MAC learned from ARP')
-        } else {
-          logger.warn(
-            { host },
-            'ARP lookup returned no MAC — WoL unavailable until a MAC is found',
-          )
-        }
-      }
     } catch (err) {
       logger.warn(`${host} failed:`, err.message)
       node.reachable = false
@@ -487,59 +370,12 @@ export class DiscoveryManager {
         freshNode.lastFailure = Date.now()
         freshNode.lastSeen = previousNode.lastSeen
         freshNode.models = previousNode.models
-        // Carry over the MAC learned while the node was reachable
-        freshNode.mac = previousNode.mac ?? null
       }
 
       merged.set(host, freshNode)
     }
 
     this.inventory = merged
-  }
-
-  /**
-   * Attempt to wake offline nodes that have models matching the given
-   * requirements. Called only when a real request cannot be served, so WoL
-   * is never triggered by background probes.
-   *
-   * @param {object} requirements - from RequestAnalyzer.analyze()
-   */
-  tryWakeNodesForRequest(requirements) {
-    for (const [host, node] of this.inventory) {
-      if (node.reachable) continue
-      if (this._wakeProbes.has(host)) continue // already waking
-
-      // Check whether this offline node has at least one model that could
-      // serve the request once it's back online.
-      let hasMatch = false
-      for (const modelInfo of node.models.values()) {
-        if (this._modelCouldServe(modelInfo, requirements)) {
-          hasMatch = true
-          break
-        }
-      }
-      if (!hasMatch) continue
-
-      logger.info({ host }, 'Offline node has matching models — sending WoL for incoming request')
-      this.triggerWol(host, node.mac)
-    }
-  }
-
-  /**
-   * Rough capability check mirroring RequestRouter._meetsRequirements,
-   * used to decide whether an offline node is worth waking.
-   * @param {ModelInfo} modelInfo
-   * @param {object} requirements
-   * @returns {boolean}
-   */
-  _modelCouldServe(modelInfo, requirements) {
-    const { profile } = modelInfo
-    if (requirements.needsVision && !profile.supportsVision) return false
-    if (requirements.needsAudio && !profile.supportsAudio) return false
-    if (requirements.needsTools && !profile.supportsTools) return false
-    if (requirements.needsEmbeddings && !profile.isEmbedding) return false
-    if (!requirements.needsEmbeddings && profile.isEmbedding) return false
-    return true
   }
 
   /**
@@ -581,10 +417,6 @@ export class DiscoveryManager {
       clearInterval(this.metricsFlushHandle)
       this.metricsFlushHandle = null
     }
-    for (const handle of this._wakeProbes.values()) {
-      clearInterval(handle)
-    }
-    this._wakeProbes.clear()
     if (this.metricsFile && this.inventory.size > 0) {
       try {
         saveMetrics(this.metricsFile, this.inventory)

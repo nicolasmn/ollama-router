@@ -2,7 +2,6 @@
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sendWakeOnLan } from '../wol.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DASHBOARD_HTML = readFileSync(
@@ -80,26 +79,5 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
   app.get('/dashboard/requests', (req, res) => {
     res.setHeader('Content-Type', 'text/html')
     res.send(DASHBOARD_HTML)
-  })
-
-  /**
-   * POST /nodes/wake - Manually send a WoL magic packet to a node.
-   * Body: { mac: "aa:bb:cc:dd:ee:ff", host?: "http://192.168.1.10:11434" }
-   * The 'mac' field is required. 'host' is used to derive the subnet broadcast
-   * address for better WiFi reliability.
-   */
-  app.post('/nodes/wake', async (req, res) => {
-    const { mac, host } = req.body ?? {}
-
-    if (!mac || typeof mac !== 'string') {
-      return res.status(400).json({ error: 'mac is required' })
-    }
-
-    try {
-      await sendWakeOnLan(mac, { nodeHost: host })
-      res.json({ ok: true, mac, host: host ?? null })
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
   })
 }
