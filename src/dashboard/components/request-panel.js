@@ -65,16 +65,6 @@ export class RequestPanel extends LitElement {
     )
   }
 
-  handleViewMessages(requestId) {
-    this.dispatchEvent(
-      new CustomEvent('view-messages', {
-        detail: { requestId },
-        bubbles: true,
-        composed: true,
-      }),
-    )
-  }
-
   toggleCollapsed() {
     this.collapsed = !this.collapsed
     if (!this.collapsed) this.page = 0
@@ -101,7 +91,6 @@ export class RequestPanel extends LitElement {
 
     const isActive =
       this.drawerOpen && this.selectedRequestId === request.requestId
-    const hasMessages = request.messageList?.length > 0
 
     return html`
       <div class="request-row ${isActive ? 'active' : ''}">
@@ -151,53 +140,6 @@ export class RequestPanel extends LitElement {
             </span>
           </span>
         </button>
-        <div class="request-actions">
-          <button
-            class="request-action-btn"
-            type="button"
-            title="View details"
-            @click=${() => this.handleSelect(request.requestId)}
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="12"></line>
-              <line x1="12" y1="16" x2="12.01" y2="16"></line>
-            </svg>
-          </button>
-          ${hasMessages
-            ? html`<button
-                class="request-action-btn"
-                type="button"
-                title="View messages"
-                @click=${() => this.handleViewMessages(request.requestId)}
-              >
-                <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path
-                    d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-                  ></path>
-                </svg>
-                ${request.messageList.length}
-              </button>`
-            : ''}
-        </div>
       </div>
     `
   }

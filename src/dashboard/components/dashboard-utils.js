@@ -11,12 +11,11 @@ export const fmt = {
         ? `${(value / 1000).toFixed(0)}k`
         : String(value),
   duration: (value) => {
-    if (!value || value <= 0) return '—'
-    if (value < 10000) return `${Math.round(value)}ms`
-    if (value < 60000) return `${(value / 1000).toFixed(1)}s`
-    return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(
-      0,
-    )}s`
+    if (value == null || value < 0) return '—'
+    if (value < 1000) return `${value.toFixed(0)}ms`
+    if (value < 10000) return `${(value / 1000).toFixed(1)}s`
+    if (value < 60000) return `${Math.floor(value / 1000)}s`
+    return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(0)}s`
   },
   tps: (value) => (value > 0 ? value.toFixed(1) : '—'),
   params: (value) => (value > 0 ? `${value.toFixed(1)}B` : '—'),
@@ -151,4 +150,112 @@ export function summarizePayload(nodes = []) {
     avgLat,
     avgTps,
   }
+}
+
+export function renderFlagBadges(analysis = {}) {
+  const badges = []
+  if (analysis.preferReasoning) {
+    badges.push(html`<span class="badge b-yellow">reasoning</span>`)
+  }
+  if (analysis.preferFast) {
+    badges.push(html`<span class="badge b-blue">fast</span>`)
+  }
+  if (analysis.hasCodeSignals) {
+    badges.push(html`<span class="badge">code</span>`)
+  }
+  if (analysis.needsTools) {
+    badges.push(html`<span class="badge b-blue">tools</span>`)
+  }
+  if (analysis.needsVision) {
+    badges.push(html`<span class="badge">vision</span>`)
+  }
+  if (analysis.needsAudio) {
+    badges.push(html`<span class="badge">audio</span>`)
+  }
+  if (analysis.needsEmbeddings) {
+    badges.push(html`<span class="badge b-green">embedding</span>`)
+  }
+
+  return badges.length
+    ? badges
+    : html`<span class="muted">No special routing flags</span>`
+}
+
+export function renderMessageThread(request) {
+  if (!request) {
+    return html`<div class="empty">No request selected.</div>`
+  }
+
+  if (!request.messageList?.length) {
+    return html`<div class="preview-box">
+      ${request.promptPreview || 'No preview available.'}
+    </div>`
+  }
+
+  return html`
+    <div class="message-thread">
+      ${request.messageList
+        .slice()
+        .reverse()
+        .map(
+          (msg, i) => html`
+            <div class="msg msg--${msg.role}">
+              <div class="msg-header">
+                <span class="msg-avatar msg-avatar--${msg.role}"
+                  >${msg.role.charAt(0).toUpperCase()}</span
+                >
+                <span class="msg-role">${msg.role}</span>
+                <span class="msg-index">#${i + 1}</span>
+              </div>
+              <div class="msg-body">
+                ${msg.content || html`<span class="muted">(empty)</span>`}
+              </div>
+            </div>
+          `,
+        )}
+    </div>
+  `
+}
+
+export function renderAttemptTimeline(attempts = []) {
+  if (!attempts.length) {
+    return html`<div class="empty">No attempt history recorded.</div>`
+  }
+
+  return html`
+    <div class="detail-list">
+      ${attempts.map((attempt) => {
+        const statusBadgeClass =
+          attempt.status === 'success'
+            ? 'b-green'
+            : attempt.status === 'capacity'
+              ? 'b-yellow'
+              : 'b-red'
+        const statusIcon =
+          attempt.status === 'success'
+            ? '✓'
+            : attempt.status === 'capacity'
+              ? '⏳'
+              : '✗'
+        return html`
+          <div class="detail-row">
+            <div class="detail-row-main">
+              <div class="detail-row-title">
+                <span class="attempt-icon">${statusIcon}</span>
+                ${attempt.modelName}
+              </div>
+              <div class="detail-row-sub">
+                ${attempt.nodeHost || 'unknown node'}
+                ${attempt.error ? ` · ${attempt.error}` : ''}
+              </div>
+            </div>
+            <div class="request-side">
+              <span class="badge ${statusBadgeClass}">${attempt.status}</span>
+              <span class="mono muted">${fmt.duration(attempt.latency)}</span>
+            </div>
+          </div>
+        `
+      })}
+    </div>
+  `
 }

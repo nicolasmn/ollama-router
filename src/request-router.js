@@ -108,6 +108,7 @@ export class RequestRouter {
     if (requirements.needsVision && !profile.supportsVision) return false
     if (requirements.needsAudio && !profile.supportsAudio) return false
     if (requirements.needsTools && !profile.supportsTools) return false
+    if (requirements.needsThinking && !profile.supportsThinking) return false
     if (requirements.needsEmbeddings && !profile.isEmbedding) return false
 
     // Exclude embedding-only models from non-embedding requests
@@ -290,6 +291,10 @@ export class RequestRouter {
 
   selectForEmbeddings(reqBody) {
     return this.selectForRequest(reqBody, 'embeddings')
+  }
+
+  selectForResponses(reqBody) {
+    return this.selectForRequest(reqBody, 'responses')
   }
 
   _toOpenAiModelObject(id, created, ownedBy = 'router', contextLength = 0) {

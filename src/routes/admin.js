@@ -107,10 +107,8 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
 
   /**
    * POST /discovery/scan-now - Trigger immediate network scan
-   * POST /admin/discovery/scan-now - Backward-compatible alias
    */
   app.post('/discovery/scan-now', handleScanNow)
-  app.post('/admin/discovery/scan-now', handleScanNow)
 
   app.get('/dashboard', (req, res) => {
     res.setHeader('Content-Type', 'text/html')

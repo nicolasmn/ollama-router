@@ -1,9 +1,8 @@
 import { LitElement, html } from 'lit'
 
 import './dashboard-summary.js'
-import './message-drawer.js'
 import './node-card.js'
-import './request-drawer.js'
+import './unified-request-drawer.js'
 import './request-panel.js'
 import { summarizePayload } from './dashboard-utils.js'
 
@@ -13,8 +12,6 @@ export class RouterDashboard extends LitElement {
     payload: { state: true },
     selectedRequestId: { state: true },
     drawerOpen: { state: true },
-    messageDrawerOpen: { state: true },
-    messageRequestId: { state: true },
     scanInProgress: { state: true },
     rescanMessage: { state: true },
   }
@@ -25,8 +22,6 @@ export class RouterDashboard extends LitElement {
     this.payload = { timestamp: 0, nodes: {}, requests: [], scan: {} }
     this.selectedRequestId = null
     this.drawerOpen = false
-    this.messageDrawerOpen = false
-    this.messageRequestId = null
     this.scanInProgress = false
     this.rescanMessage = ''
     this.ws = null
@@ -125,29 +120,13 @@ export class RouterDashboard extends LitElement {
     )
   }
 
-  get messageRequest() {
-    return this.requests.find(
-      (request) => request.requestId === this.messageRequestId,
-    )
-  }
-
   openRequest(requestId) {
     this.selectedRequestId = requestId
     this.drawerOpen = true
-    this.messageDrawerOpen = false
   }
 
   closeDrawer() {
     this.drawerOpen = false
-  }
-
-  openMessageDrawer(requestId) {
-    this.messageRequestId = requestId
-    this.messageDrawerOpen = true
-  }
-
-  closeMessageDrawer() {
-    this.messageDrawerOpen = false
   }
 
   async onRescanClick() {
@@ -157,18 +136,10 @@ export class RouterDashboard extends LitElement {
     this.rescanMessage = ''
 
     try {
-      let response = await fetch('/admin/discovery/scan-now', {
+      const response = await fetch('/discovery/scan-now', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
-
-      // Fallback for deployments exposing the endpoint without /admin prefix.
-      if (response.status === 404) {
-        response = await fetch('/discovery/scan-now', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
 
       if (!response.ok) {
         throw new Error(`Scan failed: ${response.statusText}`)
@@ -191,10 +162,6 @@ export class RouterDashboard extends LitElement {
 
   handleRequestSelected(event) {
     this.openRequest(event.detail.requestId)
-  }
-
-  handleViewMessages(event) {
-    this.openMessageDrawer(event.detail.requestId)
   }
 
   render() {
@@ -247,7 +214,6 @@ export class RouterDashboard extends LitElement {
           .selectedRequestId=${this.selectedRequestId}
           .drawerOpen=${this.drawerOpen}
           @request-selected=${this.handleRequestSelected}
-          @view-messages=${this.handleViewMessages}
         ></request-panel>
 
         <div class="nodes">
@@ -266,17 +232,11 @@ export class RouterDashboard extends LitElement {
         </div>
       </main>
 
-      <request-drawer
+      <unified-request-drawer
         .open=${this.drawerOpen}
         .request=${this.selectedRequest}
         @drawer-close=${this.closeDrawer}
-      ></request-drawer>
-
-      <message-drawer
-        .open=${this.messageDrawerOpen}
-        .request=${this.messageRequest}
-        @message-drawer-close=${this.closeMessageDrawer}
-      ></message-drawer>
+      ></unified-request-drawer>
     `
   }
 }

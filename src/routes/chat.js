@@ -3,15 +3,12 @@ import { request } from 'undici'
 import pino from 'pino'
 import { pipeline } from 'node:stream/promises'
 import {
-  translateRequestBody,
-  translateResponseBody,
-  createSSETransform,
-} from '../adapters/index.js'
-import {
   makeRequestId,
   handleSelectionError,
   selectCandidatesOrHandleError,
   forwardRequest,
+  createAbortError,
+  isAbortError,
 } from './request-helpers.js'
 import { INFERENCE_TIMEOUT } from '../config.js'
 
@@ -48,8 +45,6 @@ async function handleStreamingChatRequest({
     return
   }
 
-  const completionId = `chatcmpl-${makeRequestId()}`
-  const created = Math.floor(Date.now() / 1000)
   const startTime = Date.now()
   const abortController = new AbortController()
   const onClientClose = () => abortController.abort()
@@ -60,13 +55,10 @@ async function handleStreamingChatRequest({
       modelName,
       status: 'waiting',
     })
-    const supportsThinking =
-      discoveryManager.inventory.get(nodeHost)?.models.get(modelName)?.profile?.supportsThinking ?? false
-    const ollamaBody = translateRequestBody(reqBody, modelName, supportsThinking)
-    const resp = await request(`${nodeHost}/api/chat`, {
+    const resp = await request(`${nodeHost}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ollamaBody),
+      body: JSON.stringify({ ...reqBody, model: modelName }),
       headersTimeout: INFERENCE_TIMEOUT,
       bodyTimeout: INFERENCE_TIMEOUT,
       signal: abortController.signal,
@@ -83,11 +75,7 @@ async function handleStreamingChatRequest({
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
-    await pipeline(
-      resp.body,
-      createSSETransform(completionId, reqBody.model ?? modelName, created),
-      res,
-    )
+    await pipeline(resp.body, res)
 
     const latency = Date.now() - startTime
     discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0)
@@ -174,18 +162,17 @@ async function tryCandidatesWithRetry({
   requestId,
   candidates,
   reqBody,
-  endpoint,
   tokensFromResult,
   successLog,
   failureLog,
   res,
-  requestTransformer = null,
-  responseTransformer = null,
   discoveryManager,
   loadManager,
   requestHistoryManager,
+  signal,
 }) {
   for (const candidate of candidates) {
+    if (signal?.aborted) throw createAbortError()
     const { nodeHost, modelName } = candidate
 
     try {
@@ -211,24 +198,17 @@ async function tryCandidatesWithRetry({
         modelName,
         status: 'waiting',
       })
-      const supportsThinking =
-        discoveryManager.inventory.get(nodeHost)?.models.get(modelName)?.profile?.supportsThinking ?? false
-      const ollamaBody = requestTransformer
-        ? requestTransformer(reqBody, modelName, supportsThinking)
-        : { ...reqBody, model: modelName }
       const result = await forwardRequest(
         nodeHost,
         modelName,
-        ollamaBody,
-        endpoint,
+        { ...reqBody, model: modelName },
+        '/v1/chat/completions',
+        { signal },
       )
       const latency = Date.now() - startTime
-      const transformed = responseTransformer
-        ? responseTransformer(result, reqBody.model ?? modelName)
-        : result
-      const responseContent = transformed?.choices?.[0]?.message?.content
+      const responseContent = result?.choices?.[0]?.message?.content
       requestHistoryManager.updateResponseContent(requestId, responseContent)
-      const tokensGenerated = tokensFromResult(transformed)
+      const tokensGenerated = tokensFromResult(result)
       discoveryManager.updateModelMetrics(
         nodeHost,
         modelName,
@@ -250,7 +230,7 @@ async function tryCandidatesWithRetry({
         tokensGenerated,
       })
       logger.info({ requestId, nodeHost, modelName, latency }, successLog)
-      res.json(transformed)
+      res.json(result)
       return true
     } catch (err) {
       logger.warn(
@@ -286,6 +266,9 @@ export function setupChatRoutes(
   app.post('/v1/chat/completions', async (req, res) => {
     const requestId = makeRequestId()
     logger.info({ requestId }, 'Incoming chat completion request')
+    const abortController = new AbortController()
+    const onClientClose = () => abortController.abort()
+    res.once('close', onClientClose)
 
     const isStreaming = Boolean(req.body?.stream)
     const analysis = requestRouter.analyzeRequest(req.body, 'chat')
@@ -339,19 +322,25 @@ export function setupChatRoutes(
         requestId,
         candidates,
         reqBody: req.body,
-        endpoint: '/api/chat',
         tokensFromResult: (result) => result.usage?.completion_tokens ?? 0,
         successLog: 'Chat request successful',
         failureLog: 'Chat model failed, trying next',
         res,
-        requestTransformer: translateRequestBody,
-        responseTransformer: translateResponseBody,
         discoveryManager,
         loadManager,
         requestHistoryManager,
+        signal: abortController.signal,
       })
 
       if (!success) {
+        if (abortController.signal.aborted) {
+          requestHistoryManager.finishRequest(requestId, {
+            status: 'aborted',
+            responseStatus: 0,
+            error: 'Request aborted',
+          })
+          return
+        }
         requestHistoryManager.finishRequest(requestId, {
           status: 'failed',
           responseStatus: 503,
@@ -361,6 +350,14 @@ export function setupChatRoutes(
         res.status(503).json({ error: 'All models failed' })
       }
     } catch (err) {
+      if (isAbortError(err) || abortController.signal.aborted) {
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'aborted',
+          responseStatus: 0,
+          error: 'Request aborted',
+        })
+        return
+      }
       if (
         handleSelectionError(
           err,
@@ -387,6 +384,8 @@ export function setupChatRoutes(
       if (!res.headersSent) {
         res.status(500).json({ error: 'Internal server error' })
       }
+    } finally {
+      res.off('close', onClientClose)
     }
   })
 }

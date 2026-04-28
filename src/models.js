@@ -7,17 +7,16 @@
 export class ModelProfile {
   constructor({
     capabilities = new Set(),
-    parameters = 0,        // in billions (float)
+    parameters = 0, // in billions (float)
     contextLength = 4096,
     supportsTools = false,
     supportsVision = false,
     supportsAudio = false,
     supportsThinking = false,
     isEmbedding = false,
-    embeddingDim = 0,       // output vector dimension (0 = unknown)
-    architecture = '',     // general.architecture from model_info
   } = {}) {
-    this.capabilities = capabilities instanceof Set ? capabilities : new Set(capabilities)
+    this.capabilities =
+      capabilities instanceof Set ? capabilities : new Set(capabilities)
     this.parameters = parameters
     this.contextLength = contextLength
     this.supportsTools = supportsTools
@@ -25,8 +24,6 @@ export class ModelProfile {
     this.supportsAudio = supportsAudio
     this.supportsThinking = supportsThinking
     this.isEmbedding = isEmbedding
-    this.embeddingDim = embeddingDim
-    this.architecture = architecture
   }
 
   toJSON() {
@@ -39,8 +36,6 @@ export class ModelProfile {
       supportsAudio: this.supportsAudio,
       supportsThinking: this.supportsThinking,
       isEmbedding: this.isEmbedding,
-      embeddingDim: this.embeddingDim,
-      architecture: this.architecture,
     }
   }
 }

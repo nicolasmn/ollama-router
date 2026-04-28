@@ -52,14 +52,37 @@ export async function selectCandidatesOrHandleError({
   }
 }
 
+export function createAbortError() {
+  const err = new Error('Request aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+export function isAbortError(err) {
+  return (
+    err?.name === 'AbortError' ||
+    err?.code === 'ABORT_ERR' ||
+    err?.code === 'ERR_ABORTED' ||
+    err?.code === 'ECONNRESET' ||
+    err?.code === 'ECONNABORTED'
+  )
+}
+
 /**
  * Forward a request to Ollama
  * @param {string} baseUrl
  * @param {string} modelName
  * @param {Object} reqBody - already-translated Ollama body
  * @param {string} endpoint
+ * @param {{ signal?: AbortSignal }} [options]
  */
-export async function forwardRequest(baseUrl, modelName, reqBody, endpoint) {
+export async function forwardRequest(
+  baseUrl,
+  modelName,
+  reqBody,
+  endpoint,
+  options = {},
+) {
   const { request } = await import('undici')
   const { INFERENCE_TIMEOUT } = await import('../config.js')
   const resp = await request(`${baseUrl}${endpoint}`, {
@@ -68,12 +91,17 @@ export async function forwardRequest(baseUrl, modelName, reqBody, endpoint) {
     body: JSON.stringify(reqBody),
     headersTimeout: INFERENCE_TIMEOUT,
     bodyTimeout: INFERENCE_TIMEOUT,
+    signal: options.signal,
   })
 
   if (resp.statusCode === 503) throw new Error('Node busy')
   if (resp.statusCode < 200 || resp.statusCode >= 300) {
     let detail = ''
-    try { detail = await resp.body.text() } catch { /* ignore */ }
+    try {
+      detail = await resp.body.text()
+    } catch {
+      /* ignore */
+    }
     throw new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`)
   }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from '@jest/globals'
+import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import { RequestRouter } from '../src/request-router.js'
 import { LoadManager } from '../src/load-manager.js'
 import { DiscoveryManager } from '../src/discovery-manager.js'
@@ -6,6 +6,8 @@ import { ModelInfo, ModelProfile, NodeInfo } from '../src/models.js'
 
 function makeDiscovery(nodes) {
   const dm = new DiscoveryManager({ ollamaNodes: [] })
+  dm.getScanStatus = () => ({ inProgress: false, lastScanMs: Date.now() })
+  dm.discoverNetworkNodes = jest.fn(async () => {})
   for (const [host, models] of Object.entries(nodes)) {
     const node = new NodeInfo(host)
     node.reachable = true
@@ -64,8 +66,8 @@ describe('RequestRouter', () => {
   })
 
   describe('selectForChat', () => {
-    it('returns candidates for simple request', () => {
-      const result = router.selectForChat({
+    it('returns candidates for simple request', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
       })
@@ -77,8 +79,8 @@ describe('RequestRouter', () => {
       })
     })
 
-    it('returns single candidate for streaming request', () => {
-      const result = router.selectForChat({
+    it('returns single candidate for streaming request', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
@@ -91,8 +93,8 @@ describe('RequestRouter', () => {
       })
     })
 
-    it('filters to tool-capable models when tools present', () => {
-      const result = router.selectForChat({
+    it('filters to tool-capable models when tools present', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'use a tool' }],
         tools: [{ type: 'function', function: { name: 'get_time' } }],
@@ -104,8 +106,8 @@ describe('RequestRouter', () => {
       }
     })
 
-    it('prefers capable small thinking models for day-to-day reasoning prompts', () => {
-      const result = router.selectForChat({
+    it('prefers capable small thinking models for day-to-day reasoning prompts', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [
           {
@@ -119,8 +121,8 @@ describe('RequestRouter', () => {
       expect(result[0].modelName).toBe('gemma4:e4b')
     })
 
-    it('still prefers larger thinking models for code-heavy reasoning', () => {
-      const result = router.selectForChat({
+    it('still prefers larger thinking models for code-heavy reasoning', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [
           {
@@ -134,7 +136,7 @@ describe('RequestRouter', () => {
       expect(result[0].modelName).toBe('gemma4:26b')
     })
 
-    it('returns null when no tool-capable model available', () => {
+    it('returns null when no tool-capable model available', async () => {
       loadManager = new LoadManager({ maxConcurrentPerNode: 3 })
       const discovery = makeDiscovery({
         'http://node-c:11434': {
@@ -146,7 +148,7 @@ describe('RequestRouter', () => {
         },
       })
       const r = new RequestRouter(discovery, loadManager)
-      const result = r.selectForChat({
+      const result = await r.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'use tool' }],
         tools: [{ type: 'function', function: { name: 'x' } }],
@@ -154,8 +156,8 @@ describe('RequestRouter', () => {
       expect(result).toBeNull()
     })
 
-    it('resolves concrete model name', () => {
-      const result = router.selectForChat({
+    it('resolves concrete model name', async () => {
+      const result = await router.selectForChat({
         model: 'qwen2.5:1.5b',
         messages: [{ role: 'user', content: 'hi' }],
       })
@@ -163,20 +165,18 @@ describe('RequestRouter', () => {
       expect(result[0].modelName).toBe('qwen2.5:1.5b')
     })
 
-    it('throws 404 for unknown model', () => {
-      expect(() =>
+    it('throws 404 for unknown model', async () => {
+      await expect(
         router.selectForChat({ model: 'does-not-exist', messages: [] }),
-      ).toThrow(
-        expect.objectContaining({ statusCode: 404, code: 'MODEL_NOT_FOUND' }),
-      )
+      ).rejects.toMatchObject({ statusCode: 404, code: 'MODEL_NOT_FOUND' })
     })
 
-    it('prefers 26B for long conversations regardless of message complexity', () => {
+    it('prefers 26B for long conversations regardless of message complexity', async () => {
       const messages = Array.from({ length: 12 }, (_, i) => ({
         role: i % 2 === 0 ? 'user' : 'assistant',
         content: 'hi',
       }))
-      const result = router.selectForChat({
+      const result = await router.selectForChat({
         model: 'auto',
         messages,
       })
@@ -184,8 +184,8 @@ describe('RequestRouter', () => {
       expect(result[0].modelName).toBe('gemma4:26b')
     })
 
-    it('excludes embedding models from chat requests', () => {
-      const result = router.selectForChat({
+    it('excludes embedding models from chat requests', async () => {
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
       })
@@ -196,8 +196,8 @@ describe('RequestRouter', () => {
   })
 
   describe('selectForEmbeddings', () => {
-    it('routes to embedding model', () => {
-      const result = router.selectForEmbeddings({
+    it('routes to embedding model', async () => {
+      const result = await router.selectForEmbeddings({
         model: 'auto',
         input: 'hello',
       })
@@ -210,8 +210,8 @@ describe('RequestRouter', () => {
   })
 
   describe('auto-fast alias', () => {
-    it('prefers small models for auto-fast', () => {
-      const result = router.selectForChat({
+    it('prefers small models for auto-fast', async () => {
+      const result = await router.selectForChat({
         model: 'auto-fast',
         messages: [{ role: 'user', content: 'hi' }],
       })
@@ -221,13 +221,13 @@ describe('RequestRouter', () => {
   })
 
   describe('capacity handling', () => {
-    it('excludes saturated nodes', () => {
+    it('excludes saturated nodes', async () => {
       // Saturate node-a
       loadManager.incrementLoad('http://node-a:11434')
       loadManager.incrementLoad('http://node-a:11434')
       loadManager.incrementLoad('http://node-a:11434')
 
-      const result = router.selectForChat({
+      const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
       })

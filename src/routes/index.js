@@ -4,6 +4,7 @@ import { setupEmbeddingsRoutes } from './embeddings.js'
 import { setupModelsRoutes } from './models.js'
 import { setupAdminRoutes } from './admin.js'
 import { setupOllamaRoutes } from './ollama.js'
+import { setupResponsesRoutes } from './responses.js'
 
 /**
  * Create and attach route handlers to the Express app
@@ -27,6 +28,13 @@ export function createRoutes(
     requestHistoryManager,
   )
   setupEmbeddingsRoutes(
+    app,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  )
+  setupResponsesRoutes(
     app,
     discoveryManager,
     loadManager,

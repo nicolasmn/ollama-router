@@ -5,6 +5,8 @@ Ollama Router is a lightweight OpenAI-compatible gateway in front of multiple Ol
 
 Instead of hardcoding one model endpoint, clients can call one router URL. The router discovers available models across nodes, understands request requirements, and forwards each request to the best currently available target.
 
+The proxy uses native OpenAI-compatible pass-through to Ollama `/v1` endpoints. It is intentionally thin at the API payload level and focuses on routing, failover, abort handling, and observability.
+
 ## What This App Does
 
 At its core, this service solves three problems:
@@ -20,8 +22,8 @@ At its core, this service solves three problems:
 
 ## Key Routing Behavior
 
-- Streaming chat requests: routed to one best candidate (no transparent mid-stream failover).
-- Non-streaming chat/completions/embeddings: ranked candidates with retry fallback.
+- Streaming chat/responses requests: routed to one best candidate (no transparent mid-stream failover).
+- Non-streaming chat/responses/embeddings: ranked candidates with retry fallback.
 - Capacity guardrails: per-node concurrent request limits.
 - Adaptive scoring: considers observed latency, throughput, context headroom, and model profile.
 
@@ -30,7 +32,7 @@ At its core, this service solves three problems:
 The router exposes OpenAI-style endpoints:
 
 - POST /v1/chat/completions
-- POST /v1/completions
+- POST /v1/responses
 - POST /v1/embeddings
 - GET /v1/models
 - GET /v1/models/{model}
@@ -40,6 +42,8 @@ Operational endpoints:
 - GET /health
 - GET /inventory
 - GET /dashboard
+- GET /dashboard/requests
+- POST /discovery/scan-now
 
 ## Ollama OpenAI Compatibility (Minimal)
 
@@ -61,15 +65,20 @@ Upstream Ollama currently documents support for:
 This router currently implements:
 
 - /v1/chat/completions
-- /v1/completions
+- /v1/responses (non-stateful)
 - /v1/embeddings
 - /v1/models and /v1/models/{model}
 
 Not implemented in this router right now:
 
-- /v1/responses
+- /v1/completions
 - /v1/images/generations
 - OpenAI audio endpoints (e.g. /v1/audio/*)
+
+Notes for `/v1/responses`:
+
+- The proxy currently supports non-stateful usage.
+- `previous_response_id` and `conversation` are rejected with `400`.
 
 ## Model Targeting
 
@@ -94,8 +103,31 @@ Environment variables:
 
 Current defaults in code:
 
-- Discovery interval: 15000 ms
+- Health probe interval: 15000 ms
+- Tags/model refresh interval: 60000 ms
 - Max concurrent requests per node: 3
+- Network scan interval (localhost-only mode): 60000 ms
+- Network scan interval (network-node mode): 1800000 ms (30 min)
+
+## Network Scan Strategy
+
+Discovery is adaptive and uses three triggers:
+
+1. Periodic background scan
+	- If connected only to localhost nodes, scans every 60 seconds.
+	- If connected to at least one non-localhost node, scans every 30 minutes.
+
+2. On-request scan for virtual models (`auto`, `auto-fast`, `auto-think`)
+	- If the previous scan is fresh (< 5 minutes), scan runs async in background.
+	- If scan data is stale (>= 5 minutes), router waits up to 3 seconds for a fresh scan, then falls back to current inventory.
+
+3. Manual scan from dashboard
+	- The Rescan button triggers an immediate scan via POST `/discovery/scan-now`.
+
+Notes:
+
+- Concurrent scans are prevented.
+- Dashboard header shows scan recency (for example, `Scanned 4m ago`).
 
 ## Quick Start
 
@@ -164,6 +196,7 @@ Example chat request:
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
+	 "model": "auto",
 	 "messages": [{"role": "user", "content": "Explain retrieval-augmented generation in simple terms."}],
 	 "max_tokens": 300
   }'

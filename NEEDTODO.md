@@ -1,4 +1,3 @@
-Fix WoL
-If node goes offline while request running -> shows as running
-all nodes wake up when only one node needs to wake
-can we cancel requests in ollama?
+Add Wake-on-LAN support for offline nodes.
+Mark in-flight requests as failed or aborted when a node drops offline.
+Verify whether upstream Ollama supports hard cancellation of running inference.

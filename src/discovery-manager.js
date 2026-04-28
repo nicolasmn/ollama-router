@@ -13,7 +13,6 @@ export class DiscoveryManager {
     this.DISCOVERY_INTERVAL = config.discoveryInterval || 15000
     this.autoDiscover = config.autoDiscover ?? false
     this.NETWORK_SCAN_INTERVAL = config.networkScanInterval || 60000
-    this.NETWORK_SCAN_INTERVAL_ACTIVE = config.networkScanIntervalActive || 1800000 // 30 min
     this.onInventoryUpdated = config.onInventoryUpdated || null
     this.metricsFile = config.metricsFile || null
     this.inventory = new Map() // Maps nodeHost -> NodeInfo
@@ -24,9 +23,6 @@ export class DiscoveryManager {
     this._persistedMetrics = this.metricsFile
       ? loadMetrics(this.metricsFile)
       : new Map()
-    // Scan state tracking
-    this.lastScanTime = 0
-    this.currentScanInProgress = false
   }
 
   notifyInventoryUpdated() {
@@ -80,8 +76,6 @@ export class DiscoveryManager {
 
     let parameters = 0
     let contextLength = 4096
-    let architecture = ''
-    let embeddingDim = 0
 
     if (showData?.model_info && typeof showData.model_info === 'object') {
       const info = showData.model_info
@@ -92,11 +86,6 @@ export class DiscoveryManager {
         parameters = rawParams / 1e9
       }
 
-      architecture =
-        typeof info['general.architecture'] === 'string'
-          ? info['general.architecture']
-          : ''
-
       // Find context length: different model families use different key names
       const contextKey = Object.keys(info).find((k) =>
         k.endsWith('.context_length'),
@@ -104,21 +93,12 @@ export class DiscoveryManager {
       if (contextKey && typeof info[contextKey] === 'number') {
         contextLength = info[contextKey]
       }
-
-      if (architecture) {
-        const dimVal = info[`${architecture}.embedding_length`]
-        if (typeof dimVal === 'number' && dimVal > 0) {
-          embeddingDim = dimVal
-        }
-      }
     }
 
     return new ModelProfile({
       capabilities,
       parameters,
       contextLength,
-      architecture,
-      embeddingDim,
       supportsTools: capabilities.has('tools'),
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),
@@ -236,83 +216,12 @@ export class DiscoveryManager {
   }
 
   /**
-   * Check if connected to any network nodes (NOT localhost)
-   * @returns {boolean}
-   */
-  isConnectedToNetworkNodes() {
-    for (const nodeHost of this.inventory.keys()) {
-      if (!this._isLocalhost(nodeHost)) {
-        return true
-      }
-    }
-    return false
-  }
-
-  /**
-   * Check if a host is localhost or 127.0.0.1
-   * @param {string} nodeHost - normalized host URL or hostname
-   * @returns {boolean}
-   * @private
-   */
-  _isLocalhost(nodeHost) {
-    // Remove protocol
-    let host = nodeHost.replace(/^https?:\/\//, '')
-
-    // Remove port (handle IPv6 with brackets)
-    if (host.startsWith('[')) {
-      // IPv6 format: [::1]:11434
-      host = host.substring(1, host.indexOf(']'))
-    } else {
-      // IPv4 or hostname: split by colon and take first part
-      host = host.split(':')[0]
-    }
-
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  }
-
-  /**
-   * Get current scan status
-   * @returns {{ inProgress: boolean, lastScanMs: number, nodeCount: number, lastScanAgo: number }}
-   */
-  getScanStatus() {
-    const now = Date.now()
-    return {
-      inProgress: this.currentScanInProgress,
-      lastScanMs: this.lastScanTime,
-      nodeCount: this.inventory.size,
-      lastScanAgo: this.lastScanTime > 0 ? now - this.lastScanTime : -1,
-    }
-  }
-
-  /**
-   * Determine the next scan interval based on network connectivity
-   * @returns {number} interval in milliseconds
-   * @private
-   */
-  _determineNextScanInterval() {
-    return this.isConnectedToNetworkNodes()
-      ? this.NETWORK_SCAN_INTERVAL_ACTIVE
-      : this.NETWORK_SCAN_INTERVAL
-  }
-
-  /**
    * Run a network scan and merge any newly found nodes, then probe them.
    */
   async discoverNetworkNodes() {
-    if (this.currentScanInProgress) {
-      logger.debug('Network scan already in progress, skipping')
-      return
-    }
-
-    this.currentScanInProgress = true
-    try {
-      const discovered = await this.networkScanner.scanLocalNetwork()
-      if (discovered.length > 0) {
-        this.mergeDiscoveredNodes(discovered)
-      }
-      this.lastScanTime = Date.now()
-    } finally {
-      this.currentScanInProgress = false
+    const discovered = await this.networkScanner.scanLocalNetwork()
+    if (discovered.length > 0) {
+      this.mergeDiscoveredNodes(discovered)
     }
   }
 
@@ -370,13 +279,11 @@ export class DiscoveryManager {
 
     if (this.autoDiscover) {
       logger.info(
-        `Starting periodic network scan with adaptive intervals`,
+        `Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`,
       )
       this.networkScanHandle = setInterval(async () => {
-        if (!this.currentScanInProgress) {
-          await this.discoverNetworkNodes()
-        }
-      }, this._determineNextScanInterval())
+        await this.discoverNetworkNodes()
+      }, this.NETWORK_SCAN_INTERVAL)
     }
   }
 
@@ -452,14 +359,7 @@ export class DiscoveryManager {
       merged.set(host, freshNode)
     }
 
-    const wasConnected = this.isConnectedToNetworkNodes()
     this.inventory = merged
-    const isNowConnected = this.isConnectedToNetworkNodes()
-
-    // Reschedule scan if connectivity state changed
-    if (wasConnected !== isNowConnected) {
-      this._rescheduleNetworkScan()
-    }
   }
 
   /**
@@ -508,29 +408,6 @@ export class DiscoveryManager {
         logger.warn({ err }, 'Failed to flush metrics on shutdown')
       }
     }
-  }
-
-  /**
-   * Reschedule network scan interval based on current connectivity state.
-   * Called after inventory changes to adapt scan frequency.
-   * @private
-   */
-  _rescheduleNetworkScan() {
-    if (!this.autoDiscover || !this.networkScanHandle) {
-      return
-    }
-
-    clearInterval(this.networkScanHandle)
-    const nextInterval = this._determineNextScanInterval()
-    logger.debug(
-      `Rescheduling network scan to interval: ${nextInterval}ms (${this.isConnectedToNetworkNodes() ? 'network connected' : 'localhost only'})`,
-    )
-
-    this.networkScanHandle = setInterval(async () => {
-      if (!this.currentScanInProgress) {
-        await this.discoverNetworkNodes()
-      }
-    }, nextInterval)
   }
 
   /**

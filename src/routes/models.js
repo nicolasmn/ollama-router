@@ -1,10 +1,5 @@
 // models.js - Model catalog endpoints
 export function setupModelsRoutes(app, requestRouter) {
-  // Alias without /v1 prefix (used by some Letta provider health checks)
-  app.get('/models', (req, res) => {
-    res.json({ object: 'list', data: requestRouter.getModelCatalog() })
-  })
-
   /**
    * GET /v1/models - OpenAI-style model listing
    */
