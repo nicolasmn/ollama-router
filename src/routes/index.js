@@ -4,6 +4,8 @@ import { setupEmbeddingsRoutes } from './embeddings.js'
 import { setupModelsRoutes } from './models.js'
 import { setupAdminRoutes } from './admin.js'
 import { setupOllamaRoutes } from './ollama.js'
+import { setupOllamaInferenceRoutes } from './ollama-inference.js'
+import { setupMessagesRoutes } from './messages.js'
 import { setupResponsesRoutes } from './responses.js'
 
 /**
@@ -35,6 +37,20 @@ export function createRoutes(
     requestHistoryManager,
   )
   setupResponsesRoutes(
+    app,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  )
+  setupMessagesRoutes(
+    app,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  )
+  setupOllamaInferenceRoutes(
     app,
     discoveryManager,
     loadManager,

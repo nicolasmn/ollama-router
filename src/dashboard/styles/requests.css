@@ -165,7 +165,8 @@
 }
 
 .request-status.failed,
-.request-status.rejected {
+.request-status.rejected,
+.request-status.aborted {
   background: var(--red);
 }
 

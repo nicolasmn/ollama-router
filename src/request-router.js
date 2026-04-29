@@ -33,13 +33,9 @@ export class RequestRouter {
     candidates.sort((a, b) => b.score - a.score)
 
     if (requirements.isStreaming) {
-      const best = candidates[0]
-      this._recordRoutingMetadata([best], requirements)
-      return best
+      return candidates[0]
     } else {
-      const top = candidates.slice(0, 3)
-      this._recordRoutingMetadata(top, requirements)
-      return top
+      return candidates.slice(0, 3)
     }
   }
 

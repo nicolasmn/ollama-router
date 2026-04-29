@@ -4,104 +4,12 @@ import {
   makeRequestId,
   handleSelectionError,
   selectCandidatesOrHandleError,
-  forwardRequest,
-  createAbortError,
+  tryCandidatesWithRetry,
   isAbortError,
 } from './request-helpers.js'
 
 const logger = pino()
 
-async function tryCandidatesWithRetry({
-  requestId,
-  candidates,
-  reqBody,
-  successLog,
-  failureLog,
-  res,
-  discoveryManager,
-  loadManager,
-  requestHistoryManager,
-  signal,
-}) {
-  for (const candidate of candidates) {
-    if (signal?.aborted) throw createAbortError()
-    const { nodeHost, modelName } = candidate
-
-    try {
-      loadManager.incrementLoad(nodeHost)
-    } catch {
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'capacity',
-      })
-      logger.debug(
-        { requestId, nodeHost },
-        'Node capacity exceeded, trying next',
-      )
-      continue
-    }
-
-    const startTime = Date.now()
-
-    try {
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'waiting',
-      })
-      const result = await forwardRequest(
-        nodeHost,
-        modelName,
-        { ...reqBody, model: modelName },
-        '/v1/embeddings',
-        { signal },
-      )
-      const latency = Date.now() - startTime
-      const tokensGenerated = result.usage?.prompt_tokens ?? 0
-      discoveryManager.updateModelMetrics(
-        nodeHost,
-        modelName,
-        latency,
-        tokensGenerated,
-      )
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'success',
-        latency,
-      })
-      requestHistoryManager.finishRequest(requestId, {
-        status: 'success',
-        responseStatus: 200,
-        latency,
-        nodeHost,
-        modelName,
-        tokensGenerated,
-      })
-      logger.info({ requestId, nodeHost, modelName, latency }, successLog)
-      res.json(result)
-      return true
-    } catch (err) {
-      logger.warn(
-        { requestId, nodeHost, modelName, error: err.message },
-        failureLog,
-      )
-      discoveryManager.recordModelFailure(nodeHost, modelName, err)
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'failed',
-        latency: Date.now() - startTime,
-        error: err.message,
-      })
-    } finally {
-      loadManager.decrementLoad(nodeHost)
-    }
-  }
-
-  return false
-}
 
 export function setupEmbeddingsRoutes(
   app,
@@ -155,6 +63,8 @@ export function setupEmbeddingsRoutes(
         requestId,
         candidates,
         reqBody: req.body,
+        endpoint: '/v1/embeddings',
+        tokensFromResult: (result) => result.usage?.prompt_tokens ?? 0,
         successLog: 'Embeddings request successful',
         failureLog: 'Embeddings model failed, trying next',
         res,

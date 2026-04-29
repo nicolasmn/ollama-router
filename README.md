@@ -151,11 +151,20 @@ npm run dev
 
 ## Raspberry Pi Service
 
-`scripts/service.js` manages the systemd service lifecycle on Raspberry Pi OS. Prerequisites: Node.js 18+, npm.
+`scripts/service.js` is a Linux-only systemd CLI for service registration and lifecycle management. Prerequisites: Linux with systemd, Node.js 18+, npm.
 
 ```bash
-# first-time install
+# register service (deploy + enable + start)
+sudo node scripts/service.js register
+
+# alias (backward compatibility)
 sudo node scripts/service.js install
+
+# service lifecycle
+sudo node scripts/service.js start
+sudo node scripts/service.js stop
+sudo node scripts/service.js restart
+sudo node scripts/service.js status
 
 # deploy updates after pulling changes
 sudo node scripts/service.js update
@@ -165,6 +174,13 @@ sudo node scripts/service.js uninstall
 
 # remove everything including files, data, config, and service user
 sudo node scripts/service.js uninstall --purge
+```
+
+You can also run through npm:
+
+```bash
+npm run service -- --help
+npm run service -- status
 ```
 
 The installer copies the application to `/opt/ollama-router`, installs production dependencies, creates a locked-down `ollama-router` system user, and registers a systemd unit. It creates `/etc/ollama-router.env` only if it does not already exist, so updates never overwrite your configuration.
@@ -183,6 +199,12 @@ systemctl status ollama-router
 journalctl -u ollama-router -f
 curl http://127.0.0.1:8000/health
 ```
+
+`status` exit codes:
+
+- `0`: service is active
+- `1`: service is not active
+- `2`: status check error
 
 ## Example
 

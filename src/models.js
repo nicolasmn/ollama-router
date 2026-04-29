@@ -53,7 +53,7 @@ export class ModelInfo {
     this.recentLatency = 0
     this.recentTps = 0
     this.failures = 0
-    this.lastSeen = Date.now()
+    this.lastSeen = 0
     this.lastRoutingEndpoint = null
     this.lastRoutedAt = 0
   }

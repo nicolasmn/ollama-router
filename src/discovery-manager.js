@@ -468,7 +468,7 @@ export class DiscoveryManager {
    * @param {number} latency - milliseconds
    * @param {number} tokensGenerated
    */
-  updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0) {
+  updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0, endpoint = null) {
     const node = this.inventory.get(nodeHost)
     if (!node) return
     const modelInfo = node.models.get(modelName)
@@ -479,6 +479,8 @@ export class DiscoveryManager {
     modelInfo.recentTps = 0.9 * modelInfo.recentTps + 0.1 * tps
     modelInfo.totalRequests = (modelInfo.totalRequests || 0) + 1
     modelInfo.lastSeen = Date.now()
+    modelInfo.lastRoutedAt = Date.now()
+    if (endpoint !== null) modelInfo.lastRoutingEndpoint = endpoint
   }
 
   /**

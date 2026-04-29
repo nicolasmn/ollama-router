@@ -115,7 +115,12 @@ export class NodeCard extends LitElement {
                           <td class="mono ${model.failures > 0 ? 'bad' : ''}">
                             ${model.failures || 0}
                           </td>
-                          <td class="mono muted">
+                          <td
+                            class="mono muted"
+                            title="${model.lastRoutedAt
+                              ? new Date(model.lastRoutedAt).toLocaleString()
+                              : 'Never used'}"
+                          >
                             ${fmt.ago(model.lastRoutedAt)}
                           </td>
                         </tr>

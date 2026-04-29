@@ -1,257 +1,15 @@
 // chat.js - Chat completion endpoint handler
-import { request } from 'undici'
 import pino from 'pino'
-import { pipeline } from 'node:stream/promises'
 import {
   makeRequestId,
   handleSelectionError,
   selectCandidatesOrHandleError,
-  forwardRequest,
-  createAbortError,
+  handleStreamingRequest,
+  tryCandidatesWithRetry,
   isAbortError,
 } from './request-helpers.js'
-import { INFERENCE_TIMEOUT } from '../config.js'
 
 const logger = pino()
-
-async function handleStreamingChatRequest({
-  requestId,
-  reqBody,
-  candidate,
-  res,
-  discoveryManager,
-  loadManager,
-  requestHistoryManager,
-}) {
-  const { nodeHost, modelName } = candidate
-
-  try {
-    loadManager.incrementLoad(nodeHost)
-  } catch {
-    logger.warn({ requestId, nodeHost }, 'Node capacity exceeded')
-    requestHistoryManager.recordAttempt(requestId, {
-      nodeHost,
-      modelName,
-      status: 'capacity',
-    })
-    requestHistoryManager.finishRequest(requestId, {
-      status: 'failed',
-      responseStatus: 429,
-      error: 'Node at capacity',
-      nodeHost,
-      modelName,
-    })
-    res.status(429).json({ error: 'Node at capacity' })
-    return
-  }
-
-  const startTime = Date.now()
-  const abortController = new AbortController()
-  const onClientClose = () => abortController.abort()
-  res.once('close', onClientClose)
-  try {
-    requestHistoryManager.recordAttempt(requestId, {
-      nodeHost,
-      modelName,
-      status: 'waiting',
-    })
-    const resp = await request(`${nodeHost}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...reqBody, model: modelName }),
-      headersTimeout: INFERENCE_TIMEOUT,
-      bodyTimeout: INFERENCE_TIMEOUT,
-      signal: abortController.signal,
-    })
-
-    if (resp.statusCode === 503) throw new Error('Node busy')
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      let detail = ''
-      try { detail = await resp.body.text() } catch { /* ignore */ }
-      throw new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`)
-    }
-
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-    await pipeline(resp.body, res)
-
-    const latency = Date.now() - startTime
-    discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0)
-    requestHistoryManager.recordAttempt(requestId, {
-      nodeHost,
-      modelName,
-      status: 'success',
-      latency,
-    })
-    requestHistoryManager.finishRequest(requestId, {
-      status: 'success',
-      responseStatus: 200,
-      latency,
-      nodeHost,
-      modelName,
-    })
-    logger.info(
-      { requestId, nodeHost, modelName, latency },
-      'Streaming request successful',
-    )
-  } catch (err) {
-    const clientDisconnected =
-      err.name === 'AbortError' ||
-      err.code === 'ERR_STREAM_DESTROYED' ||
-      err.code === 'ECONNRESET' ||
-      err.code === 'ECONNABORTED' ||
-      res.destroyed
-    const latency = Date.now() - startTime
-
-    if (clientDisconnected) {
-      logger.info(
-        { requestId, nodeHost, modelName, latency },
-        'Client disconnected during streaming',
-      )
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'aborted',
-        latency,
-      })
-      requestHistoryManager.finishRequest(requestId, {
-        status: 'aborted',
-        responseStatus: 0,
-        latency,
-        nodeHost,
-        modelName,
-      })
-    } else {
-      const responseStatus = res.headersSent ? res.statusCode : 503
-      logger.error(
-        { requestId, nodeHost, modelName, error: err.message },
-        'Streaming request failed',
-      )
-      discoveryManager.recordModelFailure(nodeHost, modelName, err)
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'failed',
-        latency,
-        error: err.message,
-      })
-      requestHistoryManager.finishRequest(requestId, {
-        status: 'failed',
-        responseStatus,
-        latency,
-        nodeHost,
-        modelName,
-        error: err.message,
-      })
-      if (!res.headersSent) {
-        res.status(503).json({ error: err.message })
-      } else if (!res.writableEnded) {
-        res.write('data: [DONE]\n\n')
-        res.end()
-      }
-    }
-  } finally {
-    res.off('close', onClientClose)
-    loadManager.decrementLoad(nodeHost)
-  }
-}
-
-async function tryCandidatesWithRetry({
-  requestId,
-  candidates,
-  reqBody,
-  tokensFromResult,
-  successLog,
-  failureLog,
-  res,
-  discoveryManager,
-  loadManager,
-  requestHistoryManager,
-  signal,
-}) {
-  for (const candidate of candidates) {
-    if (signal?.aborted) throw createAbortError()
-    const { nodeHost, modelName } = candidate
-
-    try {
-      loadManager.incrementLoad(nodeHost)
-    } catch {
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'capacity',
-      })
-      logger.debug(
-        { requestId, nodeHost },
-        'Node capacity exceeded, trying next',
-      )
-      continue
-    }
-
-    const startTime = Date.now()
-
-    try {
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'waiting',
-      })
-      const result = await forwardRequest(
-        nodeHost,
-        modelName,
-        { ...reqBody, model: modelName },
-        '/v1/chat/completions',
-        { signal },
-      )
-      const latency = Date.now() - startTime
-      const responseContent = result?.choices?.[0]?.message?.content
-      requestHistoryManager.updateResponseContent(requestId, responseContent)
-      const tokensGenerated = tokensFromResult(result)
-      discoveryManager.updateModelMetrics(
-        nodeHost,
-        modelName,
-        latency,
-        tokensGenerated,
-      )
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'success',
-        latency,
-      })
-      requestHistoryManager.finishRequest(requestId, {
-        status: 'success',
-        responseStatus: 200,
-        latency,
-        nodeHost,
-        modelName,
-        tokensGenerated,
-      })
-      logger.info({ requestId, nodeHost, modelName, latency }, successLog)
-      res.json(result)
-      return true
-    } catch (err) {
-      logger.warn(
-        { requestId, nodeHost, modelName, error: err.message },
-        failureLog,
-      )
-      discoveryManager.recordModelFailure(nodeHost, modelName, err)
-      requestHistoryManager.recordAttempt(requestId, {
-        nodeHost,
-        modelName,
-        status: 'failed',
-        latency: Date.now() - startTime,
-        error: err.message,
-      })
-    } finally {
-      loadManager.decrementLoad(nodeHost)
-    }
-  }
-
-  return false
-}
 
 export function setupChatRoutes(
   app,
@@ -306,10 +64,12 @@ export function setupChatRoutes(
 
       // Streaming keeps a single upstream stream and cannot seamlessly fail over.
       if (isStreaming) {
-        await handleStreamingChatRequest({
+        await handleStreamingRequest({
           requestId,
           reqBody: req.body,
           candidate: candidates,
+          endpoint: '/v1/chat/completions',
+          sseTerminator: true,
           res,
           discoveryManager,
           loadManager,
@@ -322,7 +82,9 @@ export function setupChatRoutes(
         requestId,
         candidates,
         reqBody: req.body,
+        endpoint: '/v1/chat/completions',
         tokensFromResult: (result) => result.usage?.completion_tokens ?? 0,
+        responseContentFrom: (result) => result?.choices?.[0]?.message?.content,
         successLog: 'Chat request successful',
         failureLog: 'Chat model failed, trying next',
         res,
