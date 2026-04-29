@@ -20,6 +20,8 @@ export class DiscoveryManager {
     this.networkScanHandle = null
     this.metricsFlushHandle = null
     this.networkScanner = new NetworkScanner()
+    this._scanInProgress = false
+    this._lastScanMs = 0
     this._persistedMetrics = this.metricsFile
       ? loadMetrics(this.metricsFile)
       : new Map()
@@ -219,9 +221,15 @@ export class DiscoveryManager {
    * Run a network scan and merge any newly found nodes, then probe them.
    */
   async discoverNetworkNodes() {
-    const discovered = await this.networkScanner.scanLocalNetwork()
-    if (discovered.length > 0) {
-      this.mergeDiscoveredNodes(discovered)
+    this._scanInProgress = true
+    try {
+      const discovered = await this.networkScanner.scanLocalNetwork()
+      if (discovered.length > 0) {
+        this.mergeDiscoveredNodes(discovered)
+      }
+    } finally {
+      this._scanInProgress = false
+      this._lastScanMs = Date.now()
     }
   }
 
@@ -511,5 +519,13 @@ export class DiscoveryManager {
       'UND_ERR_BODY_TIMEOUT',
     ])
     return connectionCodes.has(err?.code)
+  }
+
+  getScanStatus() {
+    return {
+      inProgress: this._scanInProgress,
+      lastScanMs: this._lastScanMs,
+      lastScanAgo: this._lastScanMs > 0 ? Date.now() - this._lastScanMs : -1,
+    }
   }
 }
