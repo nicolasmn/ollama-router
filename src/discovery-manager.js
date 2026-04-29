@@ -13,6 +13,7 @@ export class DiscoveryManager {
     this.DISCOVERY_INTERVAL = config.discoveryInterval || 15000
     this.autoDiscover = config.autoDiscover ?? false
     this.NETWORK_SCAN_INTERVAL = config.networkScanInterval || 60000
+    this.NETWORK_SCAN_INTERVAL_ACTIVE = config.networkScanIntervalActive || 1800000
     this.onInventoryUpdated = config.onInventoryUpdated || null
     this.metricsFile = config.metricsFile || null
     this.inventory = new Map() // Maps nodeHost -> NodeInfo
@@ -527,5 +528,27 @@ export class DiscoveryManager {
       lastScanMs: this._lastScanMs,
       lastScanAgo: this._lastScanMs > 0 ? Date.now() - this._lastScanMs : -1,
     }
+  }
+
+  _isLocalhost(url) {
+    try {
+      const { hostname } = new URL(url)
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]'
+    } catch {
+      return false
+    }
+  }
+
+  isConnectedToNetworkNodes() {
+    for (const host of this.inventory.keys()) {
+      if (!this._isLocalhost(host)) return true
+    }
+    return false
+  }
+
+  _determineNextScanInterval() {
+    return this.isConnectedToNetworkNodes()
+      ? this.NETWORK_SCAN_INTERVAL_ACTIVE
+      : this.NETWORK_SCAN_INTERVAL
   }
 }
