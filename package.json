@@ -3,21 +3,31 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "tsx index.ts",
+    "dev": "tsx watch index.ts",
+    "typecheck": "tsc --noEmit",
     "service": "node scripts/service.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
-    "lint": "eslint src/ index.js",
-    "lint:fix": "eslint src/ index.js --fix",
-    "format": "prettier --write src/ index.js *.md",
-    "format:check": "prettier --check src/ index.js *.md"
+    "lint": "eslint src/ index.ts",
+    "lint:fix": "eslint src/ index.ts --fix",
+    "format": "prettier --write src/ index.ts *.md",
+    "format:check": "prettier --check src/ index.ts *.md"
   },
   "jest": {
     "testEnvironment": "node",
-    "transform": {},
+    "extensionsToTreatAsEsm": [".ts"],
     "testMatch": [
-      "**/tests/**/*.test.js"
-    ]
+      "**/tests/**/*.test.[jt]s"
+    ],
+    "transform": {
+      "^.+\\.ts$": ["ts-jest", {
+        "useESM": true,
+        "diagnostics": { "ignoreCodes": ["TS151002"] }
+      }]
+    },
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    }
   },
   "nodemonConfig": {
     "ignore": [
@@ -41,11 +51,18 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@jest/globals": "^30.3.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.5.14",
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
     "jest": "^30.3.0",
     "nodemon": "^3.1.14",
     "pino-pretty": "^13.0.0",
-    "prettier": "^3.8.3"
+    "prettier": "^3.8.3",
+    "ts-jest": "^29.4.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.0.0"
   }
 }
