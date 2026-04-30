@@ -4,19 +4,13 @@ import pino from 'pino'
 const logger = pino()
 
 export class LoadManager {
-  /**
-   * @param {Object} config
-   * @param {number} [config.maxConcurrentPerNode=3]
-   * @param {(nodeHost: string, currentLoad: number) => void} [config.onNodeLoadChange]
-   *   Optional callback invoked after every increment/decrement so external
-   *   consumers (e.g. DiscoveryManager NodeInfo) can stay in sync.
-   */
   constructor(config = {}) {
     this.MAX_CONCURRENT_PER_NODE = config.maxConcurrentPerNode || 3
     this.nodeLoad = new Map() // Maps nodeHost -> number of concurrent requests
-    this._onNodeLoadChange = typeof config.onNodeLoadChange === 'function'
-      ? config.onNodeLoadChange
-      : null
+    this._onNodeLoadChange =
+      typeof config.onNodeLoadChange === 'function'
+        ? config.onNodeLoadChange
+        : null
   }
 
   /**
@@ -33,7 +27,7 @@ export class LoadManager {
     }
     const newLoad = currentLoad + 1
     this.nodeLoad.set(nodeHost, newLoad)
-    this._onNodeLoadChange?.(nodeHost, newLoad)
+    if (this._onNodeLoadChange) this._onNodeLoadChange(nodeHost, newLoad)
     logger.debug({ nodeHost, load: newLoad }, 'Load incremented')
   }
 
@@ -45,7 +39,7 @@ export class LoadManager {
     const currentLoad = this.nodeLoad.get(nodeHost) || 0
     const newLoad = Math.max(0, currentLoad - 1)
     this.nodeLoad.set(nodeHost, newLoad)
-    this._onNodeLoadChange?.(nodeHost, newLoad)
+    if (this._onNodeLoadChange) this._onNodeLoadChange(nodeHost, newLoad)
     logger.debug({ nodeHost, load: newLoad }, 'Load decremented')
   }
 
