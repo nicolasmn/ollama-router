@@ -36,9 +36,9 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 
 ## Phase 3 — Managers
 
-- [ ] **Commit 3.1** — `src/load-manager.ts` — `LoadManagerConfig`, typed `loads: Map<string, number>`
-- [ ] **Commit 3.2** — `src/request-history.ts` — `RequestEntry`, `SelectionRecord`, `AttemptRecord`, `FinishRecord`
-- [ ] **Commit 3.3** — `src/request-analyzer.ts` — `AnalysisResult` interface (consumed by router + routes)
+- [x] **Commit 3.1** — `src/load-manager.ts` — `LoadManagerConfig`, typed `loads: Map<string, number>`
+- [x] **Commit 3.2** — `src/request-history.ts` — `RequestEntry`, `AttemptRecord`, `CandidateSummary`, `StartRequestOptions`, `FinishRequestOptions`
+- [x] **Commit 3.3** — `src/request-analyzer.ts` — `AnalysisResult`, `EndpointType` exported
 
 ---
 
@@ -52,7 +52,7 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 
 ## Phase 5 — Routes
 
-- [ ] **Commit 5.1** — `src/routes/request-helpers.ts` — `CandidateSelectionOptions`, `StreamingRequestOptions`, `RetryOptions`
+- [ ] **Commit 5.1** — `src/routes/request-helpers.ts`
 - [ ] **Commit 5.2** — `src/routes/models.ts`
 - [ ] **Commit 5.3** — `src/routes/admin.ts`
 - [ ] **Commit 5.4** — `src/routes/embeddings.ts`
@@ -67,8 +67,8 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 
 ## Phase 6 — Entry point
 
-- [ ] **Commit 6.1** — `src/app.ts` — `AppConfig` interface, typed Express factory
-- [ ] **Commit 6.2** — `index.ts` — rename `index.js`, wire typed config
+- [ ] **Commit 6.1** — `src/app.ts`
+- [ ] **Commit 6.2** — `index.ts`
 - [ ] **Commit 6.3** — delete all `.js` source files, remove `allowJs: true`
 
 ---
@@ -106,7 +106,7 @@ With `moduleResolution: NodeNext`, write import paths with `.js` extension even 
 import { ModelInfo } from './models.js'  // TS resolves to models.ts, emits .js
 ```
 
-## Key types exported early (Phases 1–3)
+## Key types (Phases 1–3, all done)
 
 | Type | Exported from |
 |---|---|
@@ -115,6 +115,8 @@ import { ModelInfo } from './models.js'  // TS resolves to models.ts, emits .js
 | `Logger`, `LogContext` | `src/logger.ts` |
 | `PersistedModelMetrics` | `src/metrics-store.ts` |
 | `ScanResult` | `src/network-scanner.ts` |
-| `AnalysisResult` | `src/request-analyzer.ts` |
-| `RoutingCandidate` | `src/request-router.ts` |
-| `RequestEntry` | `src/request-history.ts` |
+| `LoadManagerConfig` | `src/load-manager.ts` |
+| `RequestEntry`, `AttemptRecord`, `FinishRequestOptions` | `src/request-history.ts` |
+| `AnalysisResult`, `EndpointType` | `src/request-analyzer.ts` |
+| `RoutingCandidate` _(Phase 4.2)_ | `src/request-router.ts` |
+| `DiscoveryConfig` _(Phase 4.1)_ | `src/discovery-manager.ts` |
