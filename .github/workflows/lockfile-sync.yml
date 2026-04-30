@@ -1,0 +1,40 @@
+name: Sync lockfile
+
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'package.json'
+
+jobs:
+  sync-lockfile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Commit updated lockfile
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if git diff --cached --quiet; then
+            echo "package-lock.json unchanged, nothing to commit"
+          else
+            git commit -m "chore: update package-lock.json [skip ci]"
+            git push
+          fi
