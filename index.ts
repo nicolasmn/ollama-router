@@ -37,6 +37,7 @@ try {
     shuttingDown = true
     logger.info(`${signal} received, shutting down gracefully`)
     managers.discovery.stopPeriodicProbe()
+    managers.discovery.persistMetrics()
     managers.ws.stop()
     server.close(() => process.exit(0))
     setTimeout(() => process.exit(0), 3000).unref()
