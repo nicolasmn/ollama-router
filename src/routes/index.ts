@@ -28,6 +28,13 @@ export function createRoutes(
   requestRouter: RequestRouter,
   requestHistoryManager: RequestHistoryManager,
 ): void {
+  // Health at root level — used by load balancers and orchestrators
+  app.get('/health', (_req, res) => {
+    const reachableNodes = discoveryManager.getReachableNodeCount()
+    const status = reachableNodes > 0 ? 'ok' : 'degraded'
+    res.status(reachableNodes > 0 ? 200 : 503).json({ status, reachableNodes })
+  })
+
   app.use('/v1/models', createModelsRouter(requestRouter))
   setupChatRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupEmbeddingsRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)

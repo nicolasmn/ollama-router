@@ -21,6 +21,13 @@ export function createAdminRouter({
 }: AdminRouterDeps): Router {
   const r = express.Router()
 
+  r.get('/health', (_req, res) => {
+    const reachableNodes = discoveryManager.getReachableNodeCount()
+    const status = reachableNodes > 0 ? 'ok' : 'degraded'
+    const httpStatus = reachableNodes > 0 ? 200 : 503
+    res.status(httpStatus).json({ status, reachableNodes })
+  })
+
   r.get('/inventory', (_req, res) => {
     const nodes = discoveryManager.getNodes()
     const scanStatus = discoveryManager.getScanStatus()
