@@ -18,7 +18,7 @@ try {
     ollamaNodes: OLLAMA_NODES,
     discoveryInterval: DISCOVERY_INTERVAL,
     maxConcurrentPerNode: MAX_CONCURRENT_PER_NODE,
-    port: PORT,
+    port: Number(PORT),
     autoDiscover: AUTO_DISCOVER,
     networkScanInterval: NETWORK_SCAN_INTERVAL,
     metricsFile: METRICS_FILE,
