@@ -39,10 +39,11 @@ describe('DiscoveryManager – markNodeUnreachable', () => {
 describe('DiscoveryManager – updateModelMetrics', () => {
   it('records first latency and tps verbatim', () => {
     const dm = makePopulatedDm('gemma4:e4b')
+    // latency=800ms, tokens=12 → tps = 12 / 0.8 = 15
     dm.updateModelMetrics('http://node-a:11434', 'gemma4:e4b', 800, 12)
     const m = dm.inventory.get('http://node-a:11434').models.get('gemma4:e4b')
     expect(m.recentLatency).toBe(800)
-    expect(m.recentTps).toBe(12)
+    expect(m.recentTps).toBe(15)
     expect(m.totalRequests).toBe(1)
   })
 
@@ -128,8 +129,6 @@ describe('DiscoveryManager – mergeInventory', () => {
   })
 
   it('drops nodes absent from the fresh scan (not included = not probed)', () => {
-    // mergeInventory only contains what performProbe returned.
-    // A node absent from newInventory was simply not in OLLAMA_NODES this cycle.
     const dm = makePopulatedDm('gemma4:e4b')
     dm.mergeInventory(new Map())
     expect(dm.inventory.has('http://node-a:11434')).toBe(false)
@@ -145,7 +144,6 @@ describe('DiscoveryManager – scan concurrency guard', () => {
   it('discoverNetworkNodes returns immediately when _scanInProgress is true', async () => {
     const dm = new DiscoveryManager({ ollamaNodes: [] })
     dm._scanInProgress = true
-    // If the guard is in place, the call resolves without changing _lastScanMs
     const before = dm._lastScanMs
     await dm.discoverNetworkNodes()
     expect(dm._lastScanMs).toBe(before)
