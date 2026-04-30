@@ -7,17 +7,14 @@ import { createLogger } from '../logger.js'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestHistoryManager } from '../request-history.js'
-import type { RoutingCandidate } from '../request-router.js'
+import type { RoutingCandidate, RouterError } from '../request-router.js'
+
+export type { RouterError } from '../request-router.js'
 
 const logger = createLogger('request')
 
 export function makeRequestId(): string {
   return Math.random().toString(36).slice(2, 11)
-}
-
-export interface RouterError extends Error {
-  statusCode?: number
-  code?: string
 }
 
 export function handleSelectionError(
