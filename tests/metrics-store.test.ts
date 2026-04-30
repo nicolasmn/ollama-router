@@ -31,28 +31,29 @@ afterEach(() => {
 
 describe('metrics-store', () => {
   describe('loadMetrics', () => {
-    it('returns empty Map when file does not exist', () => {
+    it('returns empty metrics Map when file does not exist', () => {
       const result = loadMetrics(makeTmpPath('nonexistent.json'))
-      expect(result).toBeInstanceOf(Map)
-      expect(result.size).toBe(0)
+      expect(result.metrics).toBeInstanceOf(Map)
+      expect(result.metrics.size).toBe(0)
+      expect(result.knownNodes).toEqual([])
     })
 
-    it('returns empty Map for corrupt JSON', () => {
+    it('returns empty metrics Map for corrupt JSON', () => {
       mkdirSync(TMP, { recursive: true })
       const path = makeTmpPath('corrupt.json')
       writeFileSync(path, '{not valid json}', 'utf8')
       const result = loadMetrics(path)
-      expect(result).toBeInstanceOf(Map)
-      expect(result.size).toBe(0)
+      expect(result.metrics).toBeInstanceOf(Map)
+      expect(result.metrics.size).toBe(0)
     })
 
-    it('returns empty Map for valid JSON with wrong shape', () => {
+    it('returns empty metrics Map for valid JSON with wrong shape', () => {
       mkdirSync(TMP, { recursive: true })
       const path = makeTmpPath('wrong.json')
       writeFileSync(path, JSON.stringify([1, 2, 3]), 'utf8')
       const result = loadMetrics(path)
-      expect(result).toBeInstanceOf(Map)
-      expect(result.size).toBe(0)
+      expect(result.metrics).toBeInstanceOf(Map)
+      expect(result.metrics.size).toBe(0)
     })
   })
 
@@ -70,10 +71,10 @@ describe('metrics-store', () => {
       })
 
       saveMetrics(path, nodes as any)
-      const loaded = loadMetrics(path)
+      const { metrics, knownNodes } = loadMetrics(path)
 
-      expect(loaded.size).toBe(2)
-      const nodeA = loaded.get('http://node-a:11434')!
+      expect(metrics.size).toBe(2)
+      const nodeA = metrics.get('http://node-a:11434')!
       expect(nodeA).toBeInstanceOf(Map)
       expect(nodeA.get('gemma4:e4b')).toEqual({
         recentLatency: 250,
@@ -84,6 +85,8 @@ describe('metrics-store', () => {
         lastRoutingEndpoint: null,
       })
       expect(nodeA.get('gemma4:26b')).toMatchObject({ recentLatency: 800, failures: 1 })
+      expect(knownNodes).toContain('http://node-a:11434')
+      expect(knownNodes).toContain('http://node-b:11434')
     })
 
     it('skips models with all-zero metrics', () => {
@@ -95,8 +98,8 @@ describe('metrics-store', () => {
         },
       })
       saveMetrics(path, nodes as any)
-      const loaded = loadMetrics(path)
-      const nodeA = loaded.get('http://node-a:11434')!
+      const { metrics } = loadMetrics(path)
+      const nodeA = metrics.get('http://node-a:11434')!
       expect(nodeA.has('cold-model')).toBe(false)
       expect(nodeA.has('warm-model')).toBe(true)
     })
@@ -109,8 +112,8 @@ describe('metrics-store', () => {
         },
       })
       saveMetrics(path, nodes as any)
-      const loaded = loadMetrics(path)
-      expect(loaded.size).toBe(0)
+      const { metrics } = loadMetrics(path)
+      expect(metrics.size).toBe(0)
     })
 
     it('creates directory if it does not exist', () => {
@@ -121,8 +124,8 @@ describe('metrics-store', () => {
         },
       })
       expect(() => saveMetrics(path, nodes as any)).not.toThrow()
-      const loaded = loadMetrics(path)
-      expect(loaded.size).toBe(1)
+      const { metrics } = loadMetrics(path)
+      expect(metrics.size).toBe(1)
     })
 
     it('overwrites existing file correctly', () => {
@@ -141,9 +144,25 @@ describe('metrics-store', () => {
       })
       saveMetrics(path, nodes2 as any)
 
-      const loaded = loadMetrics(path)
-      expect(loaded.has('http://node-a:11434')).toBe(false)
-      expect(loaded.has('http://node-b:11434')).toBe(true)
+      const { metrics } = loadMetrics(path)
+      expect(metrics.has('http://node-a:11434')).toBe(false)
+      expect(metrics.has('http://node-b:11434')).toBe(true)
+    })
+
+    it('persists knownNodes including zero-metric hosts', () => {
+      const path = makeTmpPath()
+      const nodes = makeNodes({
+        'http://node-a:11434': {
+          'gemma4:e4b': { recentLatency: 100, recentTps: 5, failures: 0 },
+        },
+        'http://node-cold:11434': {
+          'cold-model': { recentLatency: 0, recentTps: 0, failures: 0 },
+        },
+      })
+      saveMetrics(path, nodes as any)
+      const { knownNodes } = loadMetrics(path)
+      expect(knownNodes).toContain('http://node-a:11434')
+      expect(knownNodes).toContain('http://node-cold:11434')
     })
   })
 })
