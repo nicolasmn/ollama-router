@@ -7,6 +7,10 @@ export class LoadManager {
   constructor(config = {}) {
     this.MAX_CONCURRENT_PER_NODE = config.maxConcurrentPerNode || 3
     this.nodeLoad = new Map() // Maps nodeHost -> number of concurrent requests
+    this._onNodeLoadChange =
+      typeof config.onNodeLoadChange === 'function'
+        ? config.onNodeLoadChange
+        : null
   }
 
   /**
@@ -21,8 +25,10 @@ export class LoadManager {
         `Node ${nodeHost} at capacity (${currentLoad}/${this.MAX_CONCURRENT_PER_NODE})`,
       )
     }
-    this.nodeLoad.set(nodeHost, currentLoad + 1)
-    logger.debug({ nodeHost, load: currentLoad + 1 }, 'Load incremented')
+    const newLoad = currentLoad + 1
+    this.nodeLoad.set(nodeHost, newLoad)
+    if (this._onNodeLoadChange) this._onNodeLoadChange(nodeHost, newLoad)
+    logger.debug({ nodeHost, load: newLoad }, 'Load incremented')
   }
 
   /**
@@ -33,6 +39,7 @@ export class LoadManager {
     const currentLoad = this.nodeLoad.get(nodeHost) || 0
     const newLoad = Math.max(0, currentLoad - 1)
     this.nodeLoad.set(nodeHost, newLoad)
+    if (this._onNodeLoadChange) this._onNodeLoadChange(nodeHost, newLoad)
     logger.debug({ nodeHost, load: newLoad }, 'Load decremented')
   }
 

@@ -40,8 +40,15 @@ export async function createApp(config) {
     metricsFile: config.metricsFile || null,
   })
 
+  // Bug 4: wire LoadManager -> DiscoveryManager so NodeInfo.activeRequests stays accurate.
+  // The callback fires on every increment/decrement keeping the inventory in sync
+  // without requiring route handlers to know about DiscoveryManager internals.
   const loadManager = new LoadManager({
     maxConcurrentPerNode: config.maxConcurrentPerNode,
+    onNodeLoadChange: (nodeHost, currentLoad) => {
+      const node = discoveryManager.getNodes().get(nodeHost)
+      if (node) node.activeRequests = currentLoad
+    },
   })
 
   discoveryManager.setInventoryUpdateHandler((inventory) => {
