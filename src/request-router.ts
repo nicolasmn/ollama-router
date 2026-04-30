@@ -26,9 +26,10 @@ export interface ModelCatalogEntry {
   owned_by: string
 }
 
+/** Error shape used at both throw and catch sites. Fields optional for safe narrowing. */
 export interface RouterError extends Error {
-  statusCode: number
-  code: string
+  statusCode?: number
+  code?: string
 }
 
 export class RequestRouter {
