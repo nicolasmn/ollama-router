@@ -40,7 +40,7 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body,
         taskType: 'generate',
         res,
-        selectFn: (reqBody) => requestRouter.selectForOllama(reqBody, 'generate'),
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
         selectionErrorMessage: '/api/generate model selection failed',
         logger,
       })
@@ -141,7 +141,7 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body,
         taskType: 'chat',
         res,
-        selectFn: (reqBody) => requestRouter.selectForOllama(reqBody, 'chat'),
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
         selectionErrorMessage: '/api/chat model selection failed',
         logger,
       })
