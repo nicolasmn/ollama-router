@@ -1,10 +1,19 @@
 // admin.ts - Internal admin + inventory routes
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import express from 'express'
 import type { Router } from 'express'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestHistoryManager } from '../request-history.js'
 import { createLogger } from '../logger.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DASHBOARD_HTML = readFileSync(
+  join(__dirname, '..', 'dashboard', 'index.html'),
+  'utf8',
+)
 
 const logger = createLogger('admin')
 
@@ -114,6 +123,12 @@ export function createAdminRouter({
   r.get('/requests', (_req, res) => {
     res.json(requestHistoryManager.getRecentRequests())
   })
+
+  r.get('/dashboard', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html')
+    res.send(DASHBOARD_HTML)
+  })
+
 
   return r
 }
