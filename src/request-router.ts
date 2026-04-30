@@ -8,8 +8,9 @@ import type { ModelInfo } from './models.js'
 
 const logger = createLogger('router')
 
-const VIRTUAL_MODELS = ['auto', 'auto-fast', 'auto-think'] as const
-type VirtualAlias = (typeof VIRTUAL_MODELS)[number]
+/** Virtual model aliases exposed in catalog and used by ollama.ts */
+export const VIRTUAL_MODELS = new Set<string>(['auto', 'auto-fast', 'auto-think'])
+
 const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
 
 export interface RoutingCandidate {
@@ -111,14 +112,14 @@ export class RequestRouter {
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
   ): RoutingCandidate | RoutingCandidate[] | null {
-    const isVirtual = (VIRTUAL_MODELS as readonly string[]).includes(model)
+    const isVirtual = VIRTUAL_MODELS.has(model)
     const isStreaming = Boolean(reqBody?.stream)
-    if (isVirtual) return this._selectVirtual(model as VirtualAlias, analysis, isStreaming)
+    if (isVirtual) return this._selectVirtual(model, analysis, isStreaming)
     return this._selectConcrete(model, isStreaming)
   }
 
   private _selectVirtual(
-    alias: VirtualAlias | string,
+    alias: string,
     analysis: AnalysisResult,
     isStreaming: boolean,
   ): RoutingCandidate | RoutingCandidate[] | null {
@@ -183,9 +184,10 @@ export class RequestRouter {
         if (node.models.has(model)) { modelExists = true; break }
       }
       if (!modelExists) {
-        const err = new Error(`Model not found: ${model}`) as RouterError
-        err.statusCode = 404
-        err.code = 'MODEL_NOT_FOUND'
+        const err = Object.assign(new Error(`Model not found: ${model}`), {
+          statusCode: 404,
+          code: 'MODEL_NOT_FOUND',
+        }) as RouterError
         throw err
       }
       return null
@@ -198,7 +200,7 @@ export class RequestRouter {
   private _scoreModel(
     modelInfo: ModelInfo,
     requirements: AnalysisResult,
-    alias: VirtualAlias | string,
+    alias: string,
   ): number {
     const { profile } = modelInfo
     const params = profile.parameters || 0
