@@ -149,6 +149,16 @@ Development mode:
 npm run dev
 ```
 
+## TypeScript
+
+The codebase is fully TypeScript. Runtime uses `tsx` (no compile step — types stripped at runtime). Type-checking is a separate step:
+
+```bash
+npm run typecheck
+```
+
+Shared API types live in `src/types/`: `OpenAIApiTypes.ts`, `OllamaApiTypes.ts`, `AnthropicApiTypes.ts`. Internal types (routing, config, models) are re-exported from `src/types/index.ts`.
+
 ## Raspberry Pi Service
 
 `scripts/service.js` is a Linux-only systemd CLI for service registration and lifecycle management. Prerequisites: Linux with systemd, Node.js 18+, npm.
@@ -233,6 +243,7 @@ curl http://localhost:8000/v1/chat/completions \
 ## Development Commands
 
 ```bash
+npm run typecheck   # tsc --noEmit, no emit — CI type gate
 npm run lint
 npm run lint:fix
 npm run format
