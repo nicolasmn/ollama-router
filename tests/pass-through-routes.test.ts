@@ -6,12 +6,15 @@ import { setupChatRoutes } from '../src/routes/chat.js'
 import { setupResponsesRoutes } from '../src/routes/responses.js'
 import { setupMessagesRoutes } from '../src/routes/messages.js'
 import { setupOllamaInferenceRoutes } from '../src/routes/ollama-inference.js'
+import type { DiscoveryManager } from '../src/discovery-manager.js'
+import type { LoadManager } from '../src/load-manager.js'
+import type { RequestHistoryManager } from '../src/request-history.js'
 
 function createLoadManager() {
   return {
     incrementLoad: jest.fn(),
     decrementLoad: jest.fn(),
-  }
+  } as unknown as LoadManager
 }
 
 function createDiscoveryManager(nodeHost: string, modelName: string) {
@@ -26,7 +29,7 @@ function createDiscoveryManager(nodeHost: string, modelName: string) {
     ]),
     updateModelMetrics: jest.fn(),
     recordModelFailure: jest.fn(),
-  }
+  } as unknown as DiscoveryManager
 }
 
 function createRequestHistoryManager() {
@@ -36,7 +39,7 @@ function createRequestHistoryManager() {
     recordAttempt: jest.fn(),
     finishRequest: jest.fn(),
     updateResponseContent: jest.fn(),
-  }
+  } as unknown as RequestHistoryManager
 }
 
 async function startServer(server: http.Server): Promise<string> {
@@ -83,7 +86,7 @@ describe('native pass-through routes', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
       selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
-    }
+    } as any
     setupChatRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
 
     routerServer = http.createServer(app)
@@ -126,7 +129,7 @@ describe('native pass-through routes', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'responses' })),
       selectForResponses: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
-    }
+    } as any
     setupResponsesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
 
     routerServer = http.createServer(app)
@@ -156,7 +159,7 @@ describe('native pass-through routes', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'responses' })),
       selectForResponses: jest.fn(() => [{ nodeHost: upstreamBase, modelName: 'qwen3:8b' }]),
-    }
+    } as any
     setupResponsesRoutes(app, createDiscoveryManager(upstreamBase, 'qwen3:8b'), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
@@ -209,7 +212,7 @@ describe('/v1/messages route', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
       selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
-    }
+    } as any
     setupMessagesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
@@ -242,7 +245,7 @@ describe('/v1/messages route', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({})),
       selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
-    }
+    } as any
     setupMessagesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
@@ -276,7 +279,7 @@ describe('/v1/messages route', () => {
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
       selectForChat: jest.fn(() => ({ nodeHost: upstreamBase, modelName: routedModel })),
-    }
+    } as any
     setupMessagesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
@@ -306,7 +309,7 @@ describe('/api/generate and /api/chat routes', () => {
     return {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
       selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
-    }
+    } as any
   }
 
   it('passes generate body through to upstream /api/generate (only model is rewritten)', async () => {
