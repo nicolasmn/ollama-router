@@ -32,9 +32,9 @@ export interface RouterError extends Error {
 }
 
 export class RequestRouter {
-  discovery: DiscoveryManager
-  load: LoadManager
-  private analyzer: RequestAnalyzer
+  readonly discovery: DiscoveryManager
+  readonly load: LoadManager
+  private readonly analyzer: RequestAnalyzer
 
   constructor(discoveryManager: DiscoveryManager, loadManager: LoadManager) {
     this.discovery = discoveryManager
@@ -64,7 +64,7 @@ export class RequestRouter {
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     const model = (reqBody.model as string) || 'auto'
-    const analysis = { needsEmbedding: true } as unknown as AnalysisResult
+    const analysis = this.analyzer.analyze(reqBody, 'embeddings')
     return this._selectCandidates(model, analysis, reqBody)
   }
 
@@ -132,7 +132,7 @@ export class RequestRouter {
 
       for (const [modelName, modelInfo] of node.models) {
         const { profile } = modelInfo
-        if ((analysis as unknown as Record<string, unknown>).needsEmbedding) {
+        if (analysis.needsEmbeddings) {
           if (!profile.isEmbedding) continue
         } else {
           if (profile.isEmbedding) continue
