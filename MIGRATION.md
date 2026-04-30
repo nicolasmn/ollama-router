@@ -23,31 +23,24 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 - [x] 2.2 `src/network-scanner.ts`
 
 ## Phase 3 — Managers ✅
-- [x] 3.1 `src/load-manager.ts`
+- [x] 3.1 `src/load-manager.ts` — `LoadManagerConfig` with `onNodeLoadChange`, `cleanupOrphanedNodes`
 - [x] 3.2 `src/request-history.ts`
 - [x] 3.3 `src/request-analyzer.ts`
 
 ## Phase 4 — Core routing ✅
-- [x] 4.1 `src/discovery-manager.ts` — `DiscoveryConfig`, `ScanStatus`
-- [x] 4.2 `src/request-router.ts` — `RoutingCandidate`, `ModelCatalogEntry`, `RouterError`
+- [x] 4.1 `src/discovery-manager.ts` — `DiscoveryConfig`, `ScanStatus`, `setInventoryUpdateHandler`
+- [x] 4.2 `src/request-router.ts` — `RoutingCandidate`, `ModelCatalogEntry`, `VIRTUAL_MODELS` (Set)
 - [x] 4.3 `src/ws-manager.ts` — `WsManagerConfig`
 
 ## Phase 5 — Routes ✅
-- [x] 5.1 `src/routes/request-helpers.ts` — `StreamingRequestOptions`, `TryCandidatesOptions`, `SelectCandidatesOptions`
-- [x] 5.2 `src/routes/models.ts`
-- [x] 5.3 `src/routes/admin.ts` — `AdminRouterDeps`
-- [x] 5.4 `src/routes/embeddings.ts` — `EmbeddingsRouterDeps`
-- [x] 5.5 `src/routes/chat.ts` — `ChatRouterDeps`
-- [x] 5.6 `src/routes/responses.ts` — `ResponsesRouterDeps`
-- [x] 5.7 `src/routes/messages.ts` — `MessagesRouterDeps`
-- [x] 5.8 `src/routes/ollama-inference.ts` — `OllamaInferenceRouterDeps`
-- [x] 5.9 `src/routes/ollama.ts` — `OllamaRouterDeps`
-- [x] 5.10 `src/routes/index.ts` — `RouteDeps`
+- [x] 5.1 `src/routes/request-helpers.ts`
+- [x] 5.2–10 all route files
 
-## Phase 6 — Entry point
-- [ ] 6.1 `src/app.ts`
-- [ ] 6.2 `index.ts`
-- [ ] 6.3 delete all `.js` source files, remove `allowJs: true`
+## Phase 6 — Entry point ✅
+- [x] 6.1 `src/app.ts` — `AppConfig`, `AppManagers`, `AppResult`
+- [x] 6.2 `index.ts`
+- [x] 6.3 `src/routes/index.ts` — added `createRoutes` flat-param adapter matching JS signature
+- [ ] 6.4 delete all `.js` source files, remove `allowJs: true` (after Phase 7 tests pass)
 
 ## Phase 7 — Tests
 - [ ] 7.1 rename `tests/*.test.js` → `tests/*.test.ts`
@@ -86,7 +79,8 @@ import { ModelInfo } from './models.js'  // .js extension — NodeNext resolves 
 | `RequestEntry`, `AttemptRecord` | `request-history.ts` |
 | `AnalysisResult`, `EndpointType` | `request-analyzer.ts` |
 | `DiscoveryConfig`, `ScanStatus` | `discovery-manager.ts` |
-| `RoutingCandidate`, `RouterError` | `request-router.ts` |
+| `RoutingCandidate`, `RouterError`, `VIRTUAL_MODELS` | `request-router.ts` |
 | `WsManagerConfig` | `ws-manager.ts` |
 | `StreamingRequestOptions`, `TryCandidatesOptions` | `routes/request-helpers.ts` |
-| `RouteDeps` | `routes/index.ts` |
+| `RouteDeps`, `createRoutes` | `routes/index.ts` |
+| `AppConfig`, `AppResult` | `app.ts` |

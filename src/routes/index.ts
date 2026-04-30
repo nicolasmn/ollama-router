@@ -22,7 +22,7 @@ export interface RouteDeps {
   requestHistoryManager: RequestHistoryManager
 }
 
-/** Mount all OpenAI-compatible routes on a Router (for express.use mounting). */
+/** OpenAI-compatible routes as a mountable Router. */
 export function createOpenAIRouter(deps: RouteDeps): Router {
   const r = express.Router()
   r.use('/v1/models', createModelsRouter(deps.requestRouter))
@@ -34,15 +34,27 @@ export function createOpenAIRouter(deps: RouteDeps): Router {
   return r
 }
 
-/** Register all routes on the Express app (including Ollama-native routes). */
-export function setupAllRoutes(app: Application, deps: RouteDeps): void {
+/** Register all routes directly on the Express app (matches JS createRoutes signature). */
+export function createRoutes(
+  app: Application,
+  discoveryManager: DiscoveryManager,
+  loadManager: LoadManager,
+  requestRouter: RequestRouter,
+  requestHistoryManager: RequestHistoryManager,
+): void {
+  const deps: RouteDeps = {
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
+  }
   app.use(createOpenAIRouter(deps))
   setupOllamaInferenceRoutes(
     app,
-    deps.discoveryManager,
-    deps.loadManager,
-    deps.requestRouter,
-    deps.requestHistoryManager,
+    discoveryManager,
+    loadManager,
+    requestRouter,
+    requestHistoryManager,
   )
-  setupOllamaRoutes(app, deps.discoveryManager)
+  setupOllamaRoutes(app, discoveryManager)
 }

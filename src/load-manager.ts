@@ -1,19 +1,25 @@
-// load-manager.ts - Tracks concurrent in-flight requests per node
+// load-manager.ts - Per-node concurrent request tracking
 import { createLogger } from './logger.js'
 
 const logger = createLogger('load')
 
 export interface LoadManagerConfig {
   maxConcurrentPerNode?: number
+  onNodeLoadChange?: (nodeHost: string, currentLoad: number) => void
 }
 
-export class LoadManager {
-  private loads: Map<string, number>
-  private maxConcurrent: number
+const DEFAULT_MAX_CONCURRENT = 3
 
-  constructor({ maxConcurrentPerNode = 3 }: LoadManagerConfig = {}) {
+export class LoadManager {
+  private maxConcurrentPerNode: number
+  private loads: Map<string, number>
+  private onNodeLoadChange?: (nodeHost: string, currentLoad: number) => void
+
+  constructor(config: LoadManagerConfig = {}) {
+    this.maxConcurrentPerNode =
+      config.maxConcurrentPerNode ?? DEFAULT_MAX_CONCURRENT
     this.loads = new Map()
-    this.maxConcurrent = maxConcurrentPerNode
+    this.onNodeLoadChange = config.onNodeLoadChange
   }
 
   getCurrentLoad(nodeHost: string): number {
@@ -21,31 +27,42 @@ export class LoadManager {
   }
 
   canAcceptRequest(nodeHost: string): boolean {
-    return this.getCurrentLoad(nodeHost) < this.maxConcurrent
+    return this.getCurrentLoad(nodeHost) < this.maxConcurrentPerNode
   }
 
   incrementLoad(nodeHost: string): void {
-    this.loads.set(nodeHost, this.getCurrentLoad(nodeHost) + 1)
+    const current = this.getCurrentLoad(nodeHost)
+    if (current >= this.maxConcurrentPerNode) {
+      throw new Error(`Node ${nodeHost} at capacity (${current}/${this.maxConcurrentPerNode})`)
+    }
+    const next = current + 1
+    this.loads.set(nodeHost, next)
+    this.onNodeLoadChange?.(nodeHost, next)
+    logger.debug({ nodeHost, load: next }, 'Load incremented')
   }
 
   decrementLoad(nodeHost: string): void {
     const current = this.getCurrentLoad(nodeHost)
-    if (current > 0) {
-      this.loads.set(nodeHost, current - 1)
+    const next = Math.max(0, current - 1)
+    if (next === 0) {
+      this.loads.delete(nodeHost)
+    } else {
+      this.loads.set(nodeHost, next)
     }
+    this.onNodeLoadChange?.(nodeHost, next)
+    logger.debug({ nodeHost, load: next }, 'Load decremented')
   }
 
-  /** Remove load entries for hosts no longer present in inventory. */
-  cleanupOrphanedNodes(activeHosts: Set<string>): void {
-    for (const host of this.loads.keys()) {
-      if (!activeHosts.has(host)) {
-        this.loads.delete(host)
-        logger.debug({ nodeHost: host }, 'Cleaned up orphaned load entry')
+  cleanupOrphanedNodes(activeNodeHosts: Set<string>): void {
+    for (const nodeHost of this.loads.keys()) {
+      if (!activeNodeHosts.has(nodeHost)) {
+        this.loads.delete(nodeHost)
+        logger.debug({ nodeHost }, 'Removed orphaned node from load map')
       }
     }
   }
 
-  getAllLoads(): Map<string, number> {
-    return new Map(this.loads)
+  getSnapshot(): Record<string, number> {
+    return Object.fromEntries(this.loads)
   }
 }
