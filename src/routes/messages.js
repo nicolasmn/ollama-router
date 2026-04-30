@@ -25,6 +25,19 @@ export function setupMessagesRoutes(
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
 
+    // Validate required Anthropic Messages fields
+    if (!req.body?.max_tokens) {
+      res.off('close', onClientClose)
+      return res.status(400).json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          param: 'max_tokens',
+          message: 'max_tokens is required',
+        },
+      })
+    }
+
     const isStreaming = Boolean(req.body?.stream)
     const analysis = requestRouter.analyzeRequest(req.body, 'messages')
     requestHistoryManager.startRequest({
@@ -40,7 +53,7 @@ export function setupMessagesRoutes(
         reqBody: req.body,
         taskType: 'messages',
         res,
-        selectFn: (reqBody) => requestRouter.selectForMessages(reqBody),
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
         selectionErrorMessage: '/v1/messages model selection failed',
         logger,
       })

@@ -43,6 +43,18 @@ export class LoadManager {
     return this.getCurrentLoad(nodeHost) >= this.maxConcurrentPerNode
   }
 
+  /**
+   * Remove load tracking entries for nodes no longer in the active inventory.
+   * @param {Set<string>} activeHostSet - set of currently known node host URLs
+   */
+  cleanupOrphanedNodes(activeHostSet) {
+    for (const host of this.loads.keys()) {
+      if (!activeHostSet.has(host)) {
+        this.loads.delete(host)
+      }
+    }
+  }
+
   getLoadSummary() {
     const summary = {}
     for (const [host, load] of this.loads) {

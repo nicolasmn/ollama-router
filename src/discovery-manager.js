@@ -45,10 +45,44 @@ export class DiscoveryManager {
 
   /**
    * Returns current scan state for routing decisions.
-   * @returns {{ inProgress: boolean, lastScanMs: number }}
+   * @returns {{ inProgress: boolean, lastScanMs: number, lastScanAgo: number }}
    */
   getScanStatus() {
-    return { inProgress: this._scanInProgress, lastScanMs: this._lastScanMs }
+    const lastScanAgo = this._lastScanMs > 0 ? Date.now() - this._lastScanMs : -1
+    return { inProgress: this._scanInProgress, lastScanMs: this._lastScanMs, lastScanAgo }
+  }
+
+  /**
+   * Returns true when at least one non-localhost node is reachable.
+   */
+  isConnectedToNetworkNodes() {
+    for (const [host] of this.inventory) {
+      if (!this._isLocalhost(host)) return true
+    }
+    return false
+  }
+
+  /**
+   * Returns true if the given URL resolves to a loopback address.
+   * @param {string} url
+   */
+  _isLocalhost(url) {
+    try {
+      const { hostname } = new URL(url)
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Returns the appropriate next scan interval based on whether network
+   * nodes are present in the inventory.
+   */
+  _determineNextScanInterval() {
+    return this.isConnectedToNetworkNodes()
+      ? this.NETWORK_SCAN_INTERVAL_ACTIVE
+      : this.NETWORK_SCAN_INTERVAL
   }
 
   /**
