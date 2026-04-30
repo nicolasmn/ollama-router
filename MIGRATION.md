@@ -4,67 +4,45 @@ Incremental port of the codebase to TypeScript. Each commit in this PR ticks one
 
 **Runtime**: `tsx` — no compile step, types stripped at runtime, fast Docker starts  
 **Type-check**: `tsc --noEmit` — CI gate, never blocks runtime  
-**Tests**: `ts-jest` (ESM mode) → renamed `.test.ts` in Phase 7
+**Tests**: `ts-jest` (ESM mode)
 
 JS files remain importable throughout via `allowJs: true` — tests stay green at every commit.
 
 ---
 
 ## Phase 0 — Tooling bootstrap ✅
-- [x] 0.1–0.4 done
-
 ## Phase 1 — Core types ✅
-- [x] 1.1 `src/models.ts`
-- [x] 1.2 `src/config.ts`
-- [x] 1.3 `src/logger.ts`
-
 ## Phase 2 — Utilities ✅
-- [x] 2.1 `src/metrics-store.ts`
-- [x] 2.2 `src/network-scanner.ts`
-
 ## Phase 3 — Managers ✅
-- [x] 3.1 `src/load-manager.ts` — `LoadManagerConfig` with `onNodeLoadChange`, `cleanupOrphanedNodes`
-- [x] 3.2 `src/request-history.ts`
-- [x] 3.3 `src/request-analyzer.ts`
-
 ## Phase 4 — Core routing ✅
-- [x] 4.1 `src/discovery-manager.ts` — `DiscoveryConfig`, `ScanStatus`, `setInventoryUpdateHandler`
-- [x] 4.2 `src/request-router.ts` — `RoutingCandidate`, `ModelCatalogEntry`, `VIRTUAL_MODELS` (Set)
-- [x] 4.3 `src/ws-manager.ts` — `WsManagerConfig`
-
 ## Phase 5 — Routes ✅
-- [x] 5.1 `src/routes/request-helpers.ts`
-- [x] 5.2–10 all route files
-
 ## Phase 6 — Entry point ✅
-- [x] 6.1 `src/app.ts` — `AppConfig`, `AppManagers`, `AppResult`
-- [x] 6.2 `index.ts`
-- [x] 6.3 `src/routes/index.ts` — added `createRoutes` flat-param adapter matching JS signature
-- [ ] 6.4 delete all `.js` source files, remove `allowJs: true` (after Phase 7 tests pass)
 
-## Phase 7 — Tests
-- [ ] 7.1 rename `tests/*.test.js` → `tests/*.test.ts`
-- [ ] 7.2 add generics to mocks
-- [ ] 7.3 update `testMatch`, CI
+## Phase 7 — Tests ✅
+- [x] 7.1 `tests/load-manager.test.ts`
+- [x] 7.2 `tests/load-manager-callbacks.test.ts`
+- [x] 7.3 `tests/request-history.test.ts`
+- [x] 7.4 `tests/request-analyzer.test.ts`
+- [x] 7.5 `tests/metrics-store.test.ts`
+- [x] 7.6 `tests/request-router.test.ts`
+- [x] 7.7 `tests/discovery-manager.test.ts`
+- [x] 7.8 `tests/discovery-manager-telemetry.test.ts`
+- [ ] 7.9 `tests/pass-through-routes.test.ts` (integration, read source first)
+- [x] Source fixes: `isAtCapacity()`, `loadMetrics`/`saveMetrics`, `buildModelProfile`, `markNodeUnreachable`, `mergeInventory`, `_isLocalhost`, `_determineNextScanInterval`, EMA metrics, `networkScanIntervalActive`, `getScanStatus.lastScanAgo`
 
-## Phase 8 — Strict mode
-- [ ] 8.1 `noImplicitAny: true`
-- [ ] 8.2 `strictNullChecks: true`
-- [ ] 8.3 `strict: true`
-- [ ] 8.4 `noUncheckedIndexedAccess: true`
+## Phase 8 — Cleanup
+- [ ] 8.1 Read + port `tests/pass-through-routes.test.ts`
+- [ ] 8.2 Delete all `.js` source files, remove `allowJs: true`
+- [ ] 8.3 `noImplicitAny: true`
+- [ ] 8.4 `strictNullChecks: true`
+- [ ] 8.5 `strict: true`
 
 ## Phase 9 — Polish
 - [ ] 9.1 `src/types/OllamaApiTypes.ts`, `OpenAIApiTypes.ts`, `AnthropicApiTypes.ts`
 - [ ] 9.2 README: document `typecheck`, TS dev setup
-- [ ] 9.3 Dockerfile / Pi service script verification with `tsx`
+- [ ] 9.3 Dockerfile / Pi service verification with `tsx`
 
 ---
-
-## Import convention
-
-```ts
-import { ModelInfo } from './models.js'  // .js extension — NodeNext resolves to .ts
-```
 
 ## Key exported types
 
@@ -72,15 +50,12 @@ import { ModelInfo } from './models.js'  // .js extension — NodeNext resolves 
 |---|---|
 | `ModelProfile`, `ModelInfo`, `NodeInfo` | `models.ts` |
 | `Config` | `config.ts` |
-| `Logger`, `LogContext` | `logger.ts` |
-| `PersistedModelMetrics` | `metrics-store.ts` |
+| `PersistedModelMetrics`, `loadMetrics`, `saveMetrics` | `metrics-store.ts` |
 | `ScanResult` | `network-scanner.ts` |
 | `LoadManagerConfig` | `load-manager.ts` |
 | `RequestEntry`, `AttemptRecord` | `request-history.ts` |
-| `AnalysisResult`, `EndpointType` | `request-analyzer.ts` |
+| `AnalysisResult` | `request-analyzer.ts` |
 | `DiscoveryConfig`, `ScanStatus` | `discovery-manager.ts` |
-| `RoutingCandidate`, `RouterError`, `VIRTUAL_MODELS` | `request-router.ts` |
-| `WsManagerConfig` | `ws-manager.ts` |
-| `StreamingRequestOptions`, `TryCandidatesOptions` | `routes/request-helpers.ts` |
-| `RouteDeps`, `createRoutes` | `routes/index.ts` |
+| `RoutingCandidate`, `VIRTUAL_MODELS` | `request-router.ts` |
 | `AppConfig`, `AppResult` | `app.ts` |
+| `RouteDeps`, `createRoutes` | `routes/index.ts` |

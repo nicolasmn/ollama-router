@@ -16,8 +16,7 @@ export class LoadManager {
   private onNodeLoadChange?: (nodeHost: string, currentLoad: number) => void
 
   constructor(config: LoadManagerConfig = {}) {
-    this.maxConcurrentPerNode =
-      config.maxConcurrentPerNode ?? DEFAULT_MAX_CONCURRENT
+    this.maxConcurrentPerNode = config.maxConcurrentPerNode ?? DEFAULT_MAX_CONCURRENT
     this.loads = new Map()
     this.onNodeLoadChange = config.onNodeLoadChange
   }
@@ -26,8 +25,14 @@ export class LoadManager {
     return this.loads.get(nodeHost) ?? 0
   }
 
+  /** Returns true when node is AT or OVER capacity (no more requests accepted). */
+  isAtCapacity(nodeHost: string): boolean {
+    return this.getCurrentLoad(nodeHost) >= this.maxConcurrentPerNode
+  }
+
+  /** Alias used internally by router. */
   canAcceptRequest(nodeHost: string): boolean {
-    return this.getCurrentLoad(nodeHost) < this.maxConcurrentPerNode
+    return !this.isAtCapacity(nodeHost)
   }
 
   incrementLoad(nodeHost: string): void {

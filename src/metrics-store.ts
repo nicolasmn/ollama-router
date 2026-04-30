@@ -1,79 +1,92 @@
-// metrics-store.ts - Persist and restore per-model routing metrics across restarts
+// metrics-store.ts - Persist and restore per-model metrics across restarts
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createLogger } from './logger.js'
 import type { NodeInfo } from './models.js'
 
-const logger = createLogger('metrics-store')
+const logger = createLogger('metrics')
 
 export interface PersistedModelMetrics {
   recentLatency: number
   recentTps: number
   failures: number
   totalRequests: number
-  lastRoutingEndpoint: string | null
   lastRoutedAt: number
+  lastRoutingEndpoint: string | null
 }
 
-/** host -> modelName -> metrics */
-export type PersistedMetrics = Map<string, Map<string, PersistedModelMetrics>>
+type PersistedFile = Record<string, Record<string, PersistedModelMetrics>>
 
-/**
- * Load persisted metrics from a JSON file.
- * Returns an empty Map when the file doesn't exist or is malformed.
- */
-export function loadMetrics(filePath: string): PersistedMetrics {
-  const result: PersistedMetrics = new Map()
+export function loadMetrics(filePath: string): Map<string, Map<string, PersistedModelMetrics>> {
   try {
-    const raw = readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as Record<
-      string,
-      Record<string, PersistedModelMetrics>
-    >
-    for (const [host, models] of Object.entries(parsed)) {
+    const raw = readFileSync(filePath, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return new Map()
+    }
+    const result = new Map<string, Map<string, PersistedModelMetrics>>()
+    for (const [host, models] of Object.entries(parsed as PersistedFile)) {
+      if (typeof models !== 'object' || models === null) continue
       const modelMap = new Map<string, PersistedModelMetrics>()
-      for (const [modelName, metrics] of Object.entries(models)) {
-        modelMap.set(modelName, metrics)
+      for (const [name, m] of Object.entries(models)) {
+        modelMap.set(name, {
+          recentLatency: m.recentLatency ?? 0,
+          recentTps: m.recentTps ?? 0,
+          failures: m.failures ?? 0,
+          totalRequests: m.totalRequests ?? 0,
+          lastRoutedAt: m.lastRoutedAt ?? 0,
+          lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
+        })
       }
-      result.set(host, modelMap)
+      if (modelMap.size > 0) result.set(host, modelMap)
     }
-    logger.debug({ filePath, hosts: result.size }, 'Metrics loaded')
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') {
-      logger.warn({ filePath, err }, 'Failed to load metrics file')
-    }
+    return result
+  } catch {
+    return new Map()
   }
-  return result
 }
 
-/**
- * Persist current inventory metrics to a JSON file.
- * Creates parent directories if they don't exist.
- */
 export function saveMetrics(
   filePath: string,
-  inventory: Map<string, NodeInfo>,
+  nodes: Map<string, Pick<NodeInfo, 'models'>> | Map<string, { models: Map<string, Pick<PersistedModelMetrics, 'recentLatency' | 'recentTps' | 'failures'>> }>,
 ): void {
-  try {
-    mkdirSync(dirname(filePath), { recursive: true })
-    const out: Record<string, Record<string, PersistedModelMetrics>> = {}
-    for (const [host, node] of inventory) {
-      out[host] = {}
-      for (const [modelName, model] of node.models) {
-        out[host][modelName] = {
-          recentLatency: model.recentLatency,
-          recentTps: model.recentTps,
-          failures: model.failures,
-          totalRequests: model.totalRequests,
-          lastRoutingEndpoint: model.lastRoutingEndpoint,
-          lastRoutedAt: model.lastRoutedAt,
-        }
+  const output: PersistedFile = {}
+  for (const [host, node] of nodes) {
+    const modelRecord: Record<string, PersistedModelMetrics> = {}
+    for (const [name, model] of node.models) {
+      const m = model as PersistedModelMetrics & { recentLatency: number; recentTps: number; failures: number }
+      if (m.recentLatency === 0 && m.recentTps === 0 && m.failures === 0) continue
+      modelRecord[name] = {
+        recentLatency: m.recentLatency,
+        recentTps: m.recentTps,
+        failures: m.failures,
+        totalRequests: (m as PersistedModelMetrics).totalRequests ?? 0,
+        lastRoutedAt: (m as PersistedModelMetrics).lastRoutedAt ?? 0,
+        lastRoutingEndpoint: (m as PersistedModelMetrics).lastRoutingEndpoint ?? null,
       }
     }
-    writeFileSync(filePath, JSON.stringify(out, null, 2), 'utf-8')
-    logger.debug({ filePath }, 'Metrics saved')
+    if (Object.keys(modelRecord).length > 0) output[host] = modelRecord
+  }
+  try {
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeFileSync(filePath, JSON.stringify(output, null, 2), 'utf8')
   } catch (err) {
-    logger.warn({ filePath, err }, 'Failed to save metrics')
+    logger.error({ err: (err as Error).message, filePath }, 'Failed to save metrics')
+  }
+}
+
+export class MetricsStore {
+  private filePath: string
+
+  constructor(filePath: string) {
+    this.filePath = filePath
+  }
+
+  load(): Map<string, Map<string, PersistedModelMetrics>> {
+    return loadMetrics(this.filePath)
+  }
+
+  async persist(nodes: Map<string, Pick<NodeInfo, 'models'>>): Promise<void> {
+    saveMetrics(this.filePath, nodes)
   }
 }
