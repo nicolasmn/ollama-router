@@ -1,6 +1,5 @@
 // config.ts
 import 'dotenv/config'
-import type { Logger } from 'pino'
 
 export interface Config {
   OLLAMA_NODES: string[]
@@ -10,7 +9,7 @@ export interface Config {
   AUTO_DISCOVER: boolean
   NETWORK_SCAN_INTERVAL: number
   METRICS_FILE: string
-  /** Inference timeout in ms. 0 = no timeout (recommended for large models). */
+  /** Inference timeout in ms. Default 120 000 ms. Set to 0 to disable (not recommended on Pi). */
   INFERENCE_TIMEOUT: number
 }
 
@@ -35,8 +34,12 @@ export const NETWORK_SCAN_INTERVAL: number = Number.parseInt(
 export const METRICS_FILE: string =
   process.env.METRICS_FILE || './data/model-metrics.json'
 
-/** Timeout in ms for inference requests. 0 = no timeout. */
+/**
+ * Timeout in ms for inference requests.
+ * Default: 120 000 ms (2 min). Set 0 to disable — not recommended on Pi
+ * where hung connections will not self-recover.
+ */
 export const INFERENCE_TIMEOUT: number = Number.parseInt(
-  process.env.INFERENCE_TIMEOUT || '0',
+  process.env.INFERENCE_TIMEOUT || '120000',
   10,
 )

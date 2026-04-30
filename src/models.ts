@@ -49,7 +49,6 @@ export interface ModelInfoJSON {
   failures: number
   totalRequests: number
   status: string
-  activeRequests: number
   lastSeen?: number
   lastRoutingEndpoint?: string | null
   lastRoutedAt?: number
@@ -65,7 +64,6 @@ export class ModelInfo {
   failures: number
   totalRequests: number
   status: string
-  activeRequests: number
   lastSeen: number
   lastRoutingEndpoint: string | null
   lastRoutedAt: number
@@ -80,7 +78,6 @@ export class ModelInfo {
     this.failures = 0
     this.totalRequests = 0
     this.status = 'idle'
-    this.activeRequests = 0
     this.lastSeen = 0
     this.lastRoutingEndpoint = null
     this.lastRoutedAt = 0

@@ -28,6 +28,11 @@ export function createRoutes(
   requestRouter: RequestRouter,
   requestHistoryManager: RequestHistoryManager,
 ): void {
+  const adminRouter = createAdminRouter({ discoveryManager, loadManager, requestHistoryManager })
+
+  // Health at root level — used by load balancers and orchestrators
+  app.get('/health', (req, res) => adminRouter.handle(req, res, () => {}))
+
   app.use('/v1/models', createModelsRouter(requestRouter))
   setupChatRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupEmbeddingsRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
@@ -35,7 +40,7 @@ export function createRoutes(
   setupMessagesRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaInferenceRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaRoutes(app, discoveryManager)
-  app.use('/admin', createAdminRouter({ discoveryManager, loadManager, requestHistoryManager }))
+  app.use('/admin', adminRouter)
 }
 
 /** @deprecated use createRoutes */
