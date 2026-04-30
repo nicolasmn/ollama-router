@@ -15,20 +15,42 @@ export interface PersistedModelMetrics {
   lastRoutingEndpoint: string | null
 }
 
-type PersistedFile = Record<string, Record<string, PersistedModelMetrics>>
+interface PersistedFile {
+  knownNodes: string[]
+  metrics: Record<string, Record<string, PersistedModelMetrics>>
+}
 
-export function loadMetrics(filePath: string): Map<string, Map<string, PersistedModelMetrics>> {
+export interface LoadedData {
+  knownNodes: string[]
+  metrics: Map<string, Map<string, PersistedModelMetrics>>
+}
+
+export function loadMetrics(filePath: string): LoadedData {
   try {
     const raw = readFileSync(filePath, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return new Map()
+      return { knownNodes: [], metrics: new Map() }
     }
-    const result = new Map<string, Map<string, PersistedModelMetrics>>()
-    for (const [host, models] of Object.entries(parsed as PersistedFile)) {
+    const p = parsed as Record<string, unknown>
+
+    // knownNodes — new format only
+    const knownNodes: string[] = Array.isArray(p['knownNodes'])
+      ? (p['knownNodes'] as string[]).filter((v) => typeof v === 'string')
+      : []
+
+    // metrics block — new format; fall back to legacy (top-level host keys)
+    const metricsSource: Record<string, unknown> =
+      typeof p['metrics'] === 'object' && p['metrics'] !== null && !Array.isArray(p['metrics'])
+        ? (p['metrics'] as Record<string, unknown>)
+        : p
+
+    const metrics = new Map<string, Map<string, PersistedModelMetrics>>()
+    for (const [host, models] of Object.entries(metricsSource)) {
+      if (host === 'knownNodes' || host === 'metrics') continue
       if (typeof models !== 'object' || models === null) continue
       const modelMap = new Map<string, PersistedModelMetrics>()
-      for (const [name, m] of Object.entries(models)) {
+      for (const [name, m] of Object.entries(models as Record<string, PersistedModelMetrics>)) {
         modelMap.set(name, {
           recentLatency: m.recentLatency ?? 0,
           recentTps: m.recentTps ?? 0,
@@ -38,35 +60,41 @@ export function loadMetrics(filePath: string): Map<string, Map<string, Persisted
           lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
         })
       }
-      if (modelMap.size > 0) result.set(host, modelMap)
+      if (modelMap.size > 0) metrics.set(host, modelMap)
     }
-    return result
+    return { knownNodes, metrics }
   } catch {
-    return new Map()
+    return { knownNodes: [], metrics: new Map() }
   }
 }
 
 export function saveMetrics(
   filePath: string,
-  nodes: Map<string, Pick<NodeInfo, 'models'>> | Map<string, { models: Map<string, Pick<PersistedModelMetrics, 'recentLatency' | 'recentTps' | 'failures'>> }>,
+  nodes: Map<string, Pick<NodeInfo, 'models'>>,
 ): void {
-  const output: PersistedFile = {}
+  const metricsOutput: Record<string, Record<string, PersistedModelMetrics>> = {}
   for (const [host, node] of nodes) {
     const modelRecord: Record<string, PersistedModelMetrics> = {}
     for (const [name, model] of node.models) {
-      const m = model as PersistedModelMetrics & { recentLatency: number; recentTps: number; failures: number }
+      const m = model as unknown as PersistedModelMetrics
       if (m.recentLatency === 0 && m.recentTps === 0 && m.failures === 0) continue
       modelRecord[name] = {
         recentLatency: m.recentLatency,
         recentTps: m.recentTps,
         failures: m.failures,
-        totalRequests: (m as PersistedModelMetrics).totalRequests ?? 0,
-        lastRoutedAt: (m as PersistedModelMetrics).lastRoutedAt ?? 0,
-        lastRoutingEndpoint: (m as PersistedModelMetrics).lastRoutingEndpoint ?? null,
+        totalRequests: m.totalRequests ?? 0,
+        lastRoutedAt: m.lastRoutedAt ?? 0,
+        lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
       }
     }
-    if (Object.keys(modelRecord).length > 0) output[host] = modelRecord
+    if (Object.keys(modelRecord).length > 0) metricsOutput[host] = modelRecord
   }
+
+  const output: PersistedFile = {
+    knownNodes: Array.from(nodes.keys()),
+    metrics: metricsOutput,
+  }
+
   try {
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, JSON.stringify(output, null, 2), 'utf8')
@@ -82,11 +110,11 @@ export class MetricsStore {
     this.filePath = filePath
   }
 
-  load(): Map<string, Map<string, PersistedModelMetrics>> {
+  load(): LoadedData {
     return loadMetrics(this.filePath)
   }
 
-  async persist(nodes: Map<string, Pick<NodeInfo, 'models'>>): Promise<void> {
+  persist(nodes: Map<string, Pick<NodeInfo, 'models'>>): void {
     saveMetrics(this.filePath, nodes)
   }
 }
