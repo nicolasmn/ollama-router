@@ -3,6 +3,7 @@ import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
 import type { ModelProfileData } from './models.js'
 import { createLogger } from './logger.js'
 import { MetricsStore } from './metrics-store.js'
+import type { PersistedModelMetrics } from './metrics-store.js'
 import { NetworkScanner } from './network-scanner.js'
 
 const logger = createLogger('discovery')
@@ -42,6 +43,7 @@ export class DiscoveryManager {
   networkScanInterval: number
   networkScanIntervalActive: number
   private inventoryUpdateHandler: ((inventory: Map<string, NodeInfo>) => void) | null
+  private _pendingMetrics: Map<string, Map<string, PersistedModelMetrics>> | null
 
   autoDiscover: boolean
 
@@ -59,6 +61,7 @@ export class DiscoveryManager {
     this.inventoryUpdateHandler = null
     this.metricsStore = config.metricsFile ? new MetricsStore(config.metricsFile) : null
     this.scanner = new NetworkScanner()
+    this._pendingMetrics = null
 
     const seeds = config.ollamaNodes ?? []
     for (const host of seeds) {
@@ -165,9 +168,67 @@ export class DiscoveryManager {
 
   async initialize(): Promise<number> {
     logger.info('Initializing DiscoveryManager')
+
+    if (this.metricsStore) {
+      const { knownNodes, metrics } = this.metricsStore.load()
+      // Restore previously discovered nodes not present in seed config
+      for (const host of knownNodes) {
+        if (!this.inventory.has(host)) {
+          logger.info({ host }, 'Restoring known node from persistence')
+          this.inventory.set(host, new NodeInfo(host))
+        }
+      }
+      // Hold metrics to apply after probe populates node.models
+      this._pendingMetrics = metrics.size > 0 ? metrics : null
+    }
+
     if (this.autoDiscover) await this.discoverNetworkNodes()
     await this.performProbe()
+
+    // Apply persisted metrics to freshly probed models
+    if (this._pendingMetrics) {
+      this._applyLoadedMetrics(this._pendingMetrics)
+      this._pendingMetrics = null
+    }
+
     return this.getReachableNodeCount()
+  }
+
+  private _applyLoadedMetrics(
+    metrics: Map<string, Map<string, PersistedModelMetrics>>,
+  ): void {
+    for (const [host, modelMetrics] of metrics) {
+      const node = this.inventory.get(host)
+      if (!node) continue
+      for (const [name, m] of modelMetrics) {
+        const model = node.models.get(name)
+        if (!model) continue
+        model.recentLatency = m.recentLatency
+        model.recentTps = m.recentTps
+        model.failures = m.failures
+        model.totalRequests = m.totalRequests
+        model.lastRoutedAt = m.lastRoutedAt
+        model.lastRoutingEndpoint = m.lastRoutingEndpoint
+        logger.debug({ host, name }, 'Restored persisted metrics for model')
+      }
+    }
+  }
+
+  /** Flush current inventory metrics to disk. Call on graceful shutdown. */
+  persistMetrics(): void {
+    this.metricsStore?.persist(this.inventory)
+  }
+
+  /**
+   * Remove a node from the inventory and immediately persist.
+   * Returns false if the host was not found.
+   */
+  removeNode(host: string): boolean {
+    if (!this.inventory.has(host)) return false
+    this.inventory.delete(host)
+    logger.info({ host }, 'Node manually removed from inventory')
+    this.metricsStore?.persist(this.inventory)
+    return true
   }
 
   startPeriodicProbe(): void {
@@ -225,7 +286,7 @@ export class DiscoveryManager {
     )
     await Promise.allSettled(probes)
     this.inventoryUpdateHandler?.(this.inventory)
-    await this.metricsStore?.persist(this.inventory)
+    this.metricsStore?.persist(this.inventory)
   }
 
   private async _probeNode(host: string): Promise<void> {

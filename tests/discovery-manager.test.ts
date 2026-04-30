@@ -1,4 +1,4 @@
-import { describe, it, expect } from '@jest/globals'
+import { describe, it, expect, jest } from '@jest/globals'
 import { DiscoveryManager } from '../src/discovery-manager.js'
 import { NodeInfo } from '../src/models.js'
 
@@ -107,5 +107,65 @@ describe('DiscoveryManager - Network Connectivity', () => {
     expect(dm._isLocalhost('http://[::1]:11434')).toBe(true)
     expect(dm._isLocalhost('http://192.168.1.1:11434')).toBe(false)
     expect(dm._isLocalhost('http://example.com:11434')).toBe(false)
+  })
+})
+
+describe('DiscoveryManager.removeNode', () => {
+  function makeManager(...hosts: string[]) {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    for (const host of hosts) dm.inventory.set(host, new NodeInfo(host))
+    return dm
+  }
+
+  it('returns false for unknown host', () => {
+    const dm = makeManager('http://node-a:11434')
+    expect(dm.removeNode('http://unknown:11434')).toBe(false)
+    expect(dm.inventory.size).toBe(1)
+  })
+
+  it('removes the node and returns true', () => {
+    const dm = makeManager('http://node-a:11434', 'http://node-b:11434')
+    expect(dm.removeNode('http://node-a:11434')).toBe(true)
+    expect(dm.inventory.has('http://node-a:11434')).toBe(false)
+    expect(dm.inventory.size).toBe(1)
+  })
+
+  it('leaves other nodes intact', () => {
+    const dm = makeManager('http://node-a:11434', 'http://node-b:11434')
+    dm.removeNode('http://node-a:11434')
+    expect(dm.inventory.has('http://node-b:11434')).toBe(true)
+  })
+
+  it('is idempotent — second call returns false', () => {
+    const dm = makeManager('http://node-a:11434')
+    expect(dm.removeNode('http://node-a:11434')).toBe(true)
+    expect(dm.removeNode('http://node-a:11434')).toBe(false)
+  })
+})
+
+describe('DiscoveryManager.persistMetrics', () => {
+  it('is a no-op when no metricsFile is configured', () => {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    expect(() => dm.persistMetrics()).not.toThrow()
+  })
+
+  it('calls MetricsStore.persist with current inventory', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const tmp = mkdtempSync(join(tmpdir(), 'dm-persist-test-'))
+    const metricsFile = join(tmp, 'metrics.json')
+    try {
+      const dm = new DiscoveryManager({
+        ollamaNodes: ['http://node-a:11434'],
+        metricsFile,
+      })
+      expect(() => dm.persistMetrics()).not.toThrow()
+      const { readFileSync } = await import('node:fs')
+      const saved = JSON.parse(readFileSync(metricsFile, 'utf8'))
+      expect(saved.knownNodes).toContain('http://node-a:11434')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })

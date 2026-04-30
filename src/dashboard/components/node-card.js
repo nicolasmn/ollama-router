@@ -5,15 +5,48 @@ import { fmt, latCls, renderCaps } from './dashboard-utils.js'
 export class NodeCard extends LitElement {
   static properties = {
     node: { attribute: false },
+    _removing: { state: true },
+    _removeError: { state: true },
   }
 
   constructor() {
     super()
     this.node = null
+    this._removing = false
+    this._removeError = ''
   }
 
   createRenderRoot() {
     return this
+  }
+
+  async _onRemove() {
+    if (this._removing || !this.node) return
+    this._removing = true
+    this._removeError = ''
+    try {
+      const res = await fetch(
+        `/admin/inventory/nodes/${encodeURIComponent(this.node.host)}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error ?? res.statusText)
+      }
+      // Optimistically dispatch so parent can react if needed
+      this.dispatchEvent(
+        new CustomEvent('node-removed', {
+          bubbles: true,
+          composed: true,
+          detail: { host: this.node.host },
+        }),
+      )
+    } catch (err) {
+      this._removeError = err.message
+      setTimeout(() => { this._removeError = '' }, 4000)
+    } finally {
+      this._removing = false
+    }
   }
 
   render() {
@@ -43,6 +76,21 @@ export class NodeCard extends LitElement {
             <span class="badge">
               ${models.length} model${models.length === 1 ? '' : 's'}
             </span>
+            ${!this.node.reachable
+              ? html`
+                  <button
+                    class="btn-remove ${this._removing ? 'removing' : ''}"
+                    title="Remove stale node from inventory"
+                    ?disabled=${this._removing}
+                    @click=${this._onRemove}
+                  >
+                    ${this._removing ? 'Removing…' : '✕ Remove'}
+                  </button>
+                  ${this._removeError
+                    ? html`<span class="remove-error">${this._removeError}</span>`
+                    : ''}
+                `
+              : ''}
           </div>
         </div>
 
@@ -93,7 +141,7 @@ export class NodeCard extends LitElement {
                                 : ''}
                               ${model.name}
                             </div>
-                            <div class="model-fam">${model.family || '—'}</div>
+                            <div class="model-fam">${model.family || '\u2014'}</div>
                             <div class="model-caps">
                               ${renderCaps(model.profile)}
                             </div>
