@@ -160,7 +160,7 @@ export class DiscoveryManager {
     node.reachable = false
     node.failures++
     node.lastFailure = Date.now()
-    logger.warn({ nodeHost }, 'Node marked unreachable')
+    logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
   }
 
   async initialize(): Promise<number> {
@@ -199,7 +199,7 @@ export class DiscoveryManager {
     this._lastScanError = null
     logger.info('Starting network scan')
     try {
-      const found = await this.scanner.scan()
+      const found = await this.scanner.scanLocalNetwork()
       for (const host of found) {
         if (!this.inventory.has(host)) {
           logger.info({ host }, 'Discovered new node')
@@ -233,7 +233,6 @@ export class DiscoveryManager {
     if (!node) return
     try {
       const { request } = await import('undici')
-      // Fetch /api/tags to get model list
       const tagsResp = await request(`${host}/api/tags`, { headersTimeout: 5000, bodyTimeout: 5000 })
       if (tagsResp.statusCode !== 200) {
         this.markNodeUnreachable(host)
@@ -251,7 +250,6 @@ export class DiscoveryManager {
         const name = raw.name as string
         seenNames.add(name)
 
-        // Probe /api/show for capabilities if model is new
         if (!node.models.has(name)) {
           let profile = new ModelProfile()
           try {
@@ -287,20 +285,16 @@ export class DiscoveryManager {
   }
 
   mergeInventory(freshNodes: Map<string, NodeInfo>): void {
-    // Remove nodes not in fresh scan
     for (const host of this.inventory.keys()) {
       if (!freshNodes.has(host)) this.inventory.delete(host)
     }
-    // Merge/add fresh nodes preserving telemetry
     for (const [host, freshNode] of freshNodes) {
       const existing = this.inventory.get(host)
       if (!existing) {
         this.inventory.set(host, freshNode)
         continue
       }
-      // Preserve activeRequests
       freshNode.activeRequests = existing.activeRequests
-      // Preserve model telemetry
       for (const [name, freshModel] of freshNode.models) {
         const existingModel = existing.models.get(name)
         if (existingModel) {
@@ -350,7 +344,6 @@ export class DiscoveryManager {
     const node = this.inventory.get(nodeHost)
     const model = node?.models.get(modelName)
     if (model) model.failures++
-    // Network-level errors mean the node is down
     const isNetworkError = err?.code === 'ECONNREFUSED' || err?.code === 'ECONNRESET'
     if (isNetworkError) this.markNodeUnreachable(nodeHost)
   }

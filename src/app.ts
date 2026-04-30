@@ -38,12 +38,15 @@ export interface AppResult {
 }
 
 export async function createApp(config: AppConfig): Promise<AppResult> {
-  logger.info('Creating application with config:', {
-    nodeCount: config.ollamaNodes?.length,
-    discoveryInterval: config.discoveryInterval,
-    maxConcurrentPerNode: config.maxConcurrentPerNode,
-    autoDiscover: config.autoDiscover,
-  })
+  logger.info(
+    {
+      nodeCount: config.ollamaNodes?.length,
+      discoveryInterval: config.discoveryInterval,
+      maxConcurrentPerNode: config.maxConcurrentPerNode,
+      autoDiscover: config.autoDiscover,
+    },
+    'Creating application with config',
+  )
 
   const discoveryManager = new DiscoveryManager({
     ollamaNodes: config.ollamaNodes,
