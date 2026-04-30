@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "tsx index.js",
-    "dev": "tsx watch index.js",
+    "start": "tsx index.ts",
+    "dev": "tsx watch index.ts",
     "typecheck": "tsc --noEmit",
     "service": "node scripts/service.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
-    "lint": "eslint src/ index.js",
-    "lint:fix": "eslint src/ index.js --fix",
-    "format": "prettier --write src/ index.js *.md",
-    "format:check": "prettier --check src/ index.js *.md"
+    "lint": "eslint src/ index.ts",
+    "lint:fix": "eslint src/ index.ts --fix",
+    "format": "prettier --write src/ index.ts *.md",
+    "format:check": "prettier --check src/ index.ts *.md"
   },
   "jest": {
     "testEnvironment": "node",
