@@ -4,7 +4,7 @@ Incremental port of the codebase to TypeScript. Each commit in this PR ticks one
 
 **Runtime**: `tsx` — no compile step, types stripped at runtime, fast Docker starts  
 **Type-check**: `tsc --noEmit` — CI gate, never blocks runtime  
-**Tests**: `ts-jest` (ESM mode) — `.test.js` renamed to `.test.ts` in Phase 7
+**Tests**: `ts-jest` (ESM mode) → renamed `.test.ts` in Phase 7
 
 JS files remain importable throughout via `allowJs: true` — tests stay green at every commit.
 
@@ -12,8 +12,8 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 
 ## Phase 0 — Tooling bootstrap
 
-- [ ] **Commit 0.1** — add dev deps: `typescript`, `tsx`, `ts-jest`, `@types/node`, `@types/express`, `@types/ws`, `@types/pino`
-- [ ] **Commit 0.2** — add `tsconfig.json`
+- [x] **Commit 0.1** — add dev deps: `typescript`, `tsx`, `ts-jest`, `@types/node`, `@types/express`, `@types/ws`
+- [x] **Commit 0.2** — add `tsconfig.json`
 
   ```json
   {
@@ -29,23 +29,22 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
       "noImplicitAny": false,
       "skipLibCheck": true,
       "esModuleInterop": true,
-      "declaration": true,
-      "declarationMap": true,
-      "sourceMap": true
+      "declaration": false,
+      "sourceMap": false
     },
-    "include": ["src/**/*", "index.ts", "tests/**/*"],
+    "include": ["src/**/*", "index.js", "tests/**/*"],
     "exclude": ["node_modules", "dist"]
   }
   ```
 
-- [ ] **Commit 0.3** — update `package.json` scripts
-  - `start`: `tsx index.ts`
-  - `dev`: `tsx watch index.ts`
+- [x] **Commit 0.3** — update `package.json` scripts
+  - `start`: `tsx index.js` (updated to `tsx index.ts` in Phase 6)
+  - `dev`: `tsx watch index.js`
   - `typecheck`: `tsc --noEmit`
   - `test`: unchanged (Jest still targets `*.test.js` until Phase 7)
   - jest config: add `ts-jest` ESM transform, keep `testMatch: ["**/tests/**/*.test.js"]`
 
-- [ ] **Commit 0.4** — update CI: add `npm run typecheck` step after install
+- [x] **Commit 0.4** — update CI: add `npm run typecheck` step after install
 
 ---
 
@@ -53,7 +52,7 @@ JS files remain importable throughout via `allowJs: true` — tests stay green a
 
 > Leaf modules with no internal dependencies. Convert first so downstream files get real types immediately.
 
-- [ ] **Commit 1.1** — `src/models.ts`
+- [x] **Commit 1.1** — `src/models.ts`
   - Convert `ModelProfile`, `ModelInfo`, `NodeInfo` classes
   - Export interfaces: `ModelProfileData`, `ModelInfoJSON`, `NodeInfoJSON`
   - All existing JS importers continue to work via `allowJs`
