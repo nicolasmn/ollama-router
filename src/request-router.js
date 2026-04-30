@@ -18,7 +18,7 @@ export class RequestRouter {
   /**
    * Analyze a request body without performing routing.
    * @param {Object} reqBody
-   * @param {string} endpointType - 'chat'|'completions'|'embeddings'|'responses'
+   * @param {string} endpointType - 'chat'|'completions'|'embeddings'|'responses'|'messages'
    * @returns {Object} analysis result
    */
   analyzeRequest(reqBody, endpointType) {
@@ -60,33 +60,6 @@ export class RequestRouter {
     const analysis = this.analyzer.analyze(reqBody, 'responses')
     const model = reqBody.model || 'auto'
     logger.debug({ model, ...analysis }, 'Responses routing analysis')
-    return this._selectCandidates(model, analysis, reqBody)
-  }
-
-  /**
-   * Select candidates for a /v1/messages request.
-   * @param {Object} reqBody
-   * @returns {Promise<Array|Object|null>}
-   */
-  async selectForMessages(reqBody) {
-    await this._performOnRequestScan()
-    const analysis = this.analyzer.analyze(reqBody, 'messages')
-    const model = reqBody.model || 'auto'
-    logger.debug({ model, ...analysis }, 'Messages routing analysis')
-    return this._selectCandidates(model, analysis, reqBody)
-  }
-
-  /**
-   * Select candidates for an Ollama-native /api/generate or /api/chat request.
-   * @param {Object} reqBody
-   * @param {'generate'|'chat'} ollamaEndpoint
-   * @returns {Promise<Array|Object|null>}
-   */
-  async selectForOllama(reqBody, ollamaEndpoint) {
-    await this._performOnRequestScan()
-    const analysis = this.analyzer.analyze(reqBody, 'chat')
-    const model = reqBody.model || 'auto'
-    logger.debug({ model, ollamaEndpoint, ...analysis }, 'Ollama routing analysis')
     return this._selectCandidates(model, analysis, reqBody)
   }
 
@@ -166,7 +139,13 @@ export class RequestRouter {
 
       for (const [modelName, modelInfo] of node.models) {
         const { profile } = modelInfo
-        if (profile.isEmbedding) continue
+
+        // For embedding requests only include embedding models; otherwise skip them
+        if (analysis.needsEmbedding) {
+          if (!profile.isEmbedding) continue
+        } else {
+          if (profile.isEmbedding) continue
+        }
 
         if (analysis.needsTools && !profile.supportsTools) continue
         if (analysis.needsVision && !profile.supportsVision) continue
@@ -179,10 +158,7 @@ export class RequestRouter {
       }
     }
 
-    if (candidates.length === 0) {
-      if (analysis.needsTools || analysis.needsVision) return null
-      return null
-    }
+    if (candidates.length === 0) return null
 
     candidates.sort((a, b) => b.score - a.score)
 
@@ -275,8 +251,10 @@ export class RequestRouter {
     // Size-fit heuristic driven by task requirements
     let sizeFit = 0
     if (alias === 'auto-fast' || requirements.preferFast) {
-      if (params <= 4) sizeFit += 14
-      else if (params <= 9) sizeFit += 8
+      // 3–9 B is the sweet spot for fast capable inference;
+      // sub-3 B models are smaller but often lack capability for real tasks
+      if (params >= 3 && params <= 9) sizeFit += 14
+      else if (params > 0 && params < 3) sizeFit += 12
       else sizeFit += 1
     } else if (requirements.preferReasoning) {
       if (params >= 20) sizeFit += 14
@@ -287,18 +265,21 @@ export class RequestRouter {
       else if (params >= 10) sizeFit += 6
       else sizeFit += 1
     } else {
-      // Default: small capable models for everyday use
-      if (params > 0 && params <= 8) sizeFit += 10
+      // Default: 3–8 B capable models win over tiny sub-3 B models
+      if (params >= 3 && params <= 8) sizeFit += 12
+      else if (params > 0 && params < 3) sizeFit += 7
       else if (params <= 15) sizeFit += 6
       else sizeFit += 2
     }
 
-    // Thinking bonus: extra weight for models that support structured reasoning
+    // Thinking bonus: extra weight for models with structured reasoning support.
+    // Applied even for auto-fast since thinking-capable models deliver better
+    // quality per token at the 3–9 B size range.
     const thinkingBonus = profile.supportsThinking
       ? requirements.preferReasoning
         ? 8
-        : requirements.preferFast
-          ? 4
+        : (requirements.preferFast || alias === 'auto-fast')
+          ? 6
           : 0
       : 0
 

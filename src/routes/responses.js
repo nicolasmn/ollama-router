@@ -25,6 +25,15 @@ export function setupResponsesRoutes(
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
 
+    // Stateful multi-turn responses are not supported: each request must be self-contained.
+    if (req.body?.previous_response_id != null) {
+      res.off('close', onClientClose)
+      return res.status(400).json({
+        param: 'previous_response_id',
+        message: 'Stateful responses (previous_response_id) are not supported by this router',
+      })
+    }
+
     const isStreaming = Boolean(req.body?.stream)
     const analysis = requestRouter.analyzeRequest(req.body, 'responses')
     requestHistoryManager.startRequest({
