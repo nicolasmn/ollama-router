@@ -9,7 +9,7 @@ export interface Config {
   AUTO_DISCOVER: boolean
   NETWORK_SCAN_INTERVAL: number
   METRICS_FILE: string
-  /** Inference timeout in ms. Default 120 000 ms. Set to 0 to disable (not recommended on Pi). */
+  /** Inference timeout in ms. Default 600 000 ms (10 min). Set to 0 to disable. */
   INFERENCE_TIMEOUT: number
 }
 
@@ -36,10 +36,10 @@ export const METRICS_FILE: string =
 
 /**
  * Timeout in ms for inference requests.
- * Default: 120 000 ms (2 min). Set 0 to disable — not recommended on Pi
- * where hung connections will not self-recover.
+ * Default: 600 000 ms (10 min) — large models on Pi can be slow.
+ * Set INFERENCE_TIMEOUT=0 to disable entirely.
  */
 export const INFERENCE_TIMEOUT: number = Number.parseInt(
-  process.env.INFERENCE_TIMEOUT || '120000',
+  process.env.INFERENCE_TIMEOUT || '600000',
   10,
 )
