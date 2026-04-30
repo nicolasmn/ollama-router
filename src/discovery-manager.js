@@ -201,32 +201,52 @@ export class DiscoveryManager {
 
   /**
    * Merge auto-discovered node URLs into OLLAMA_NODES, skipping duplicates.
+   * Returns the list of newly added normalized URLs so callers can probe them.
    * @param {string[]} discoveredUrls
+   * @returns {string[]} newly added normalized host URLs
    * @private
    */
   mergeDiscoveredNodes(discoveredUrls) {
     const existingNormalized = new Set(
       this.OLLAMA_NODES.map((n) => this.normalizeBaseUrl(n)),
     )
+    const newHosts = []
     for (const url of discoveredUrls) {
       const normalized = this.normalizeBaseUrl(url)
       if (!existingNormalized.has(normalized)) {
         this.OLLAMA_NODES.push(url)
         existingNormalized.add(normalized)
+        newHosts.push(normalized)
         logger.info({ url }, 'Auto-discovered Ollama node added')
       }
     }
+    return newHosts
   }
 
   /**
-   * Run a network scan and merge any newly found nodes, then probe them.
+   * Run a network scan, merge newly found nodes, and immediately probe them.
+   * Guards against concurrent execution — returns early if a scan is already
+   * in progress.
    */
   async discoverNetworkNodes() {
+    if (this._scanInProgress) return
     this._scanInProgress = true
     try {
       const discovered = await this.networkScanner.scanLocalNetwork()
       if (discovered.length > 0) {
-        this.mergeDiscoveredNodes(discovered)
+        const newHosts = this.mergeDiscoveredNodes(discovered)
+        if (newHosts.length > 0) {
+          const tasks = newHosts.map((host) => this.probeNode(host))
+          const results = await Promise.allSettled(tasks)
+          let updated = false
+          for (const res of results) {
+            if (res.status === 'fulfilled') {
+              this.inventory.set(res.value.host, res.value)
+              if (res.value.reachable) updated = true
+            }
+          }
+          if (updated) this.notifyInventoryUpdated()
+        }
       }
     } finally {
       this._scanInProgress = false
@@ -334,6 +354,7 @@ export class DiscoveryManager {
         // telemetry so routing scores remain stable across probe cycles.
         freshNode.failures = 0
         freshNode.lastFailure = previousNode.lastFailure ?? 0
+        freshNode.activeRequests = previousNode.activeRequests ?? 0
 
         for (const [modelName, freshModel] of freshNode.models) {
           const previousModel = previousNode.models.get(modelName)
@@ -463,10 +484,13 @@ export class DiscoveryManager {
   /**
    * Update model performance metrics after a successful request.
    * Uses exponential moving average to smooth latency and throughput.
+   * Seeds verbatim on the first sample (when still 0) to avoid diluting
+   * the initial value to 10% of actual.
    * @param {string} nodeHost
    * @param {string} modelName
    * @param {number} latency - milliseconds
    * @param {number} tokensGenerated
+   * @param {string|null} endpoint
    */
   updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0, endpoint = null) {
     const node = this.inventory.get(nodeHost)
@@ -474,9 +498,18 @@ export class DiscoveryManager {
     const modelInfo = node.models.get(modelName)
     if (!modelInfo) return
 
-    modelInfo.recentLatency = 0.9 * modelInfo.recentLatency + 0.1 * latency
     const tps = latency > 0 ? tokensGenerated / (latency / 1000) : 0
-    modelInfo.recentTps = 0.9 * modelInfo.recentTps + 0.1 * tps
+
+    // Seed verbatim on first sample; apply EMA on subsequent samples
+    modelInfo.recentLatency =
+      modelInfo.recentLatency === 0
+        ? latency
+        : 0.9 * modelInfo.recentLatency + 0.1 * latency
+    modelInfo.recentTps =
+      modelInfo.recentTps === 0
+        ? tps
+        : 0.9 * modelInfo.recentTps + 0.1 * tps
+
     modelInfo.totalRequests = (modelInfo.totalRequests || 0) + 1
     modelInfo.lastSeen = Date.now()
     modelInfo.lastRoutedAt = Date.now()

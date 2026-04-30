@@ -249,8 +249,7 @@ export class RequestRouter {
 
     // Trigger on-request scan for virtual models
     if (VIRTUAL_MODELS.has(requestedModel)) {
-      const { shouldBlock, timeoutMs } =
-        this._shouldScanForRequest(requestedModel)
+      const { shouldBlock, timeoutMs } = this._shouldScanForRequest()
       await this._performOnRequestScan(shouldBlock, timeoutMs)
     }
 

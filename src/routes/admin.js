@@ -56,7 +56,7 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
     const activeRequests = loadManager.getTotalActiveRequests()
 
     res.json({
-      status: 'healthy',
+      status: reachableCount > 0 ? 'healthy' : 'degraded',
       nodes_reachable: reachableCount,
       total_nodes: totalNodes,
       active_requests: activeRequests,
@@ -78,7 +78,8 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
             host: node.host,
             reachable: node.reachable,
             lastSeen: node.lastSeen,
-            activeRequests: loadManager.getCurrentLoad(nodeHost),
+            // Bug 4: activeRequests now kept in sync via LoadManager callback (app.js)
+            activeRequests: node.activeRequests,
             models: Object.fromEntries(
               Array.from(node.models.entries()).map(
                 ([modelName, modelInfo]) => [
@@ -88,10 +89,12 @@ export function setupAdminRoutes(app, discoveryManager, loadManager) {
                     family: modelInfo.family,
                     size: modelInfo.size,
                     profile: modelInfo.profile,
-                    status: modelInfo.status,
+                    // Bug 4: status and per-model activeRequests are load-tracked at
+                    // node level (not per-model). Removed to avoid misleading zeros.
                     recentLatency: modelInfo.recentLatency,
                     recentTps: modelInfo.recentTps,
                     failures: modelInfo.failures,
+                    totalRequests: modelInfo.totalRequests,
                     lastSeen: modelInfo.lastSeen,
                     lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
                     lastRoutedAt: modelInfo.lastRoutedAt,
