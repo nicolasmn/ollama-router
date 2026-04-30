@@ -1,125 +1,74 @@
-// admin.js - Admin and status endpoints (health, inventory, dashboard)
-import { readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+// admin.js - Admin and diagnostic routes
+import { createLogger } from '../logger.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const DASHBOARD_HTML = readFileSync(
-  join(__dirname, '..', 'dashboard', 'index.html'),
-  'utf8',
-)
+const logger = createLogger('admin')
 
-export function setupAdminRoutes(app, discoveryManager, loadManager) {
-  const handleScanNow = async (req, res) => {
-    try {
-      const scanStatus = discoveryManager.getScanStatus()
-      if (scanStatus.inProgress) {
-        return res.status(409).json({
-          error: 'Scan already in progress',
-          status: scanStatus,
-        })
-      }
-
-      // Trigger scan and wait for completion with timeout
-      const scanPromise = discoveryManager.discoverNetworkNodes()
-      await Promise.race([
-        scanPromise,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Scan timeout')), 30000),
-        ),
-      ])
-
-      const finalStatus = discoveryManager.getScanStatus()
-      const inventory = discoveryManager.getNodes()
-
-      res.json({
-        success: true,
-        message: 'Network scan completed',
-        status: finalStatus,
-        nodeCount: inventory.size,
-        nodes: Array.from(inventory.keys()),
-      })
-    } catch (err) {
-      res.status(500).json({
-        error: 'Scan failed',
-        message: err.message,
-      })
-    }
-  }
-
-  /**
-   * GET /health - Health check endpoint
-   */
+export function setupAdminRoutes(app, discoveryManager, loadManager, requestHistoryManager) {
   app.get('/health', (req, res) => {
     const reachableCount = discoveryManager.getReachableNodeCount()
-    const totalNodes = discoveryManager.getNodes().size
-    const activeRequests = loadManager.getTotalActiveRequests()
-
+    const status = reachableCount > 0 ? 'healthy' : 'degraded'
     res.json({
-      status: reachableCount > 0 ? 'healthy' : 'degraded',
-      nodes_reachable: reachableCount,
-      total_nodes: totalNodes,
-      active_requests: activeRequests,
+      status,
+      reachableNodes: reachableCount,
+      timestamp: new Date().toISOString(),
     })
   })
 
-  /**
-   * GET /inventory - Detailed inventory of nodes and models
-   */
   app.get('/inventory', (req, res) => {
-    const inventory = discoveryManager.getNodes()
-
-    res.json({
-      timestamp: Date.now(),
-      nodes: Object.fromEntries(
-        Array.from(inventory.entries()).map(([nodeHost, node]) => [
-          nodeHost,
-          {
-            host: node.host,
-            reachable: node.reachable,
-            lastSeen: node.lastSeen,
-            // Bug 4: activeRequests now kept in sync via LoadManager callback (app.js)
-            activeRequests: node.activeRequests,
-            models: Object.fromEntries(
-              Array.from(node.models.entries()).map(
-                ([modelName, modelInfo]) => [
-                  modelName,
-                  {
-                    name: modelInfo.name,
-                    family: modelInfo.family,
-                    size: modelInfo.size,
-                    profile: modelInfo.profile,
-                    // Bug 4: status and per-model activeRequests are load-tracked at
-                    // node level (not per-model). Removed to avoid misleading zeros.
-                    recentLatency: modelInfo.recentLatency,
-                    recentTps: modelInfo.recentTps,
-                    failures: modelInfo.failures,
-                    totalRequests: modelInfo.totalRequests,
-                    lastSeen: modelInfo.lastSeen,
-                    lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
-                    lastRoutedAt: modelInfo.lastRoutedAt,
-                  },
-                ],
-              ),
-            ),
-          },
-        ]),
-      ),
-    })
+    const nodes = []
+    for (const [host, node] of discoveryManager.getNodes()) {
+      const models = []
+      for (const [name, modelInfo] of node.models) {
+        models.push({
+          name,
+          family: modelInfo.family,
+          size: modelInfo.size,
+          recentLatency: modelInfo.recentLatency,
+          recentTps: modelInfo.recentTps,
+          failures: modelInfo.failures,
+          totalRequests: modelInfo.totalRequests,
+          activeRequests: loadManager.getCurrentLoad(host),
+          lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
+          profile: modelInfo.profile?.toJSON?.() ?? null,
+        })
+      }
+      nodes.push({
+        host,
+        reachable: node.reachable,
+        failures: node.failures,
+        lastSeen: node.lastSeen,
+        activeRequests: loadManager.getCurrentLoad(host),
+        models,
+      })
+    }
+    res.json({ nodes })
   })
 
-  /**
-   * POST /discovery/scan-now - Trigger immediate network scan
-   */
-  app.post('/discovery/scan-now', handleScanNow)
-
-  app.get('/dashboard', (req, res) => {
-    res.setHeader('Content-Type', 'text/html')
-    res.send(DASHBOARD_HTML)
+  app.post('/discovery/scan-now', async (req, res) => {
+    try {
+      logger.info('Manual network scan triggered')
+      await discoveryManager.discoverNetworkNodes()
+      const nodes = [...discoveryManager.getNodes().entries()].map(([host, node]) => ({
+        host,
+        reachable: node.reachable,
+        modelCount: node.models.size,
+      }))
+      res.json({ status: 'ok', nodeCount: nodes.length, nodes })
+    } catch (err) {
+      logger.error({ err: err.message }, 'Manual scan failed')
+      res.status(500).json({ error: err.message })
+    }
   })
 
-  app.get('/dashboard/requests', (req, res) => {
-    res.setHeader('Content-Type', 'text/html')
-    res.send(DASHBOARD_HTML)
+  app.get('/requests', (req, res) => {
+    const limit = parseInt(req.query.limit) || 50
+    const history = requestHistoryManager.getRequests(limit)
+    res.json({ requests: history })
+  })
+
+  app.get('/requests/:id', (req, res) => {
+    const entry = requestHistoryManager.getRequest(req.params.id)
+    if (!entry) return res.status(404).json({ error: 'Request not found' })
+    res.json(entry)
   })
 }

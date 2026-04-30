@@ -1,5 +1,4 @@
 // chat.js - Chat completion endpoint handler
-import pino from 'pino'
 import {
   makeRequestId,
   handleSelectionError,
@@ -8,8 +7,9 @@ import {
   tryCandidatesWithRetry,
   isAbortError,
 } from './request-helpers.js'
+import { createLogger } from '../logger.js'
 
-const logger = pino()
+const logger = createLogger('chat')
 
 export function setupChatRoutes(
   app,
@@ -18,9 +18,6 @@ export function setupChatRoutes(
   requestRouter,
   requestHistoryManager,
 ) {
-  /**
-   * POST /v1/chat/completions - Chat completion endpoint
-   */
   app.post('/v1/chat/completions', async (req, res) => {
     const requestId = makeRequestId()
     logger.info({ requestId }, 'Incoming chat completion request')
@@ -38,11 +35,10 @@ export function setupChatRoutes(
     })
 
     try {
-      const taskType = 'chat'
       const candidates = await selectCandidatesOrHandleError({
         requestId,
         reqBody: req.body,
-        taskType,
+        taskType: 'chat',
         res,
         selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
         selectionErrorMessage: 'Chat request model selection failed',
@@ -52,17 +48,13 @@ export function setupChatRoutes(
         requestHistoryManager.finishRequest(requestId, {
           status: res.statusCode === 404 ? 'rejected' : 'failed',
           responseStatus: res.statusCode || 503,
-          error:
-            res.statusCode === 404
-              ? 'Requested model not found'
-              : 'No suitable models available',
+          error: res.statusCode === 404 ? 'Requested model not found' : 'No suitable models available',
         })
         return
       }
 
       requestHistoryManager.recordSelection(requestId, candidates)
 
-      // Streaming keeps a single upstream stream and cannot seamlessly fail over.
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
@@ -96,39 +88,19 @@ export function setupChatRoutes(
 
       if (!success) {
         if (abortController.signal.aborted) {
-          requestHistoryManager.finishRequest(requestId, {
-            status: 'aborted',
-            responseStatus: 0,
-            error: 'Request aborted',
-          })
+          requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, error: 'Request aborted' })
           return
         }
-        requestHistoryManager.finishRequest(requestId, {
-          status: 'failed',
-          responseStatus: 503,
-          error: 'All models failed',
-        })
+        requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 503, error: 'All models failed' })
         logger.error({ requestId }, 'All chat models failed')
         res.status(503).json({ error: 'All models failed' })
       }
     } catch (err) {
       if (isAbortError(err) || abortController.signal.aborted) {
-        requestHistoryManager.finishRequest(requestId, {
-          status: 'aborted',
-          responseStatus: 0,
-          error: 'Request aborted',
-        })
+        requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, error: 'Request aborted' })
         return
       }
-      if (
-        handleSelectionError(
-          err,
-          res,
-          requestId,
-          'Chat request model selection failed',
-          logger,
-        )
-      ) {
+      if (handleSelectionError(err, res, requestId, 'Chat request model selection failed', logger)) {
         requestHistoryManager.finishRequest(requestId, {
           status: 'rejected',
           responseStatus: res.statusCode || 404,
@@ -136,16 +108,13 @@ export function setupChatRoutes(
         })
         return
       }
-
       requestHistoryManager.finishRequest(requestId, {
         status: 'failed',
         responseStatus: res.headersSent ? res.statusCode : 500,
         error: err.message,
       })
-      logger.error({ requestId, error: err.message }, 'Chat request error')
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Internal server error' })
-      }
+      logger.error({ requestId, err: err.message }, 'Chat request error')
+      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
     } finally {
       res.off('close', onClientClose)
     }
