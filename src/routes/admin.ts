@@ -74,6 +74,22 @@ export function createAdminRouter({
     res.json(result)
   })
 
+  r.delete('/inventory/nodes/:host', (req, res) => {
+    const host = decodeURIComponent(req.params.host)
+    const node = discoveryManager.getNodes().get(host)
+    if (!node) {
+      res.status(404).json({ error: 'Node not found' })
+      return
+    }
+    if (node.reachable) {
+      res.status(409).json({ error: 'Cannot remove a reachable node' })
+      return
+    }
+    discoveryManager.removeNode(host)
+    logger.info({ host }, 'Node removed via admin API')
+    res.json({ ok: true, host })
+  })
+
   r.post('/discovery/scan-now', async (_req, res) => {
     const scanStatus = discoveryManager.getScanStatus()
     if (scanStatus.inProgress) {
