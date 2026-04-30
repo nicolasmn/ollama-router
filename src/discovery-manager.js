@@ -201,32 +201,68 @@ export class DiscoveryManager {
 
   /**
    * Merge auto-discovered node URLs into OLLAMA_NODES, skipping duplicates.
+   * Returns the list of newly added normalized base URLs so callers can probe them.
    * @param {string[]} discoveredUrls
+   * @returns {string[]} newly added normalized URLs
    * @private
    */
   mergeDiscoveredNodes(discoveredUrls) {
     const existingNormalized = new Set(
       this.OLLAMA_NODES.map((n) => this.normalizeBaseUrl(n)),
     )
+    const newHosts = []
     for (const url of discoveredUrls) {
       const normalized = this.normalizeBaseUrl(url)
       if (!existingNormalized.has(normalized)) {
         this.OLLAMA_NODES.push(url)
         existingNormalized.add(normalized)
+        newHosts.push(normalized)
         logger.info({ url }, 'Auto-discovered Ollama node added')
       }
     }
+    return newHosts
   }
 
   /**
-   * Run a network scan and merge any newly found nodes, then probe them.
+   * Run a network scan and merge any newly found nodes, then probe and inventory them.
+   * Guards against concurrent invocations — a second call while a scan is already
+   * running returns immediately without starting another scan.
    */
   async discoverNetworkNodes() {
+    // Bug 5: prevent concurrent scans (periodic + on-request overlap)
+    if (this._scanInProgress) {
+      logger.debug('Scan already in progress, skipping')
+      return
+    }
+
     this._scanInProgress = true
     try {
       const discovered = await this.networkScanner.scanLocalNetwork()
-      if (discovered.length > 0) {
-        this.mergeDiscoveredNodes(discovered)
+      if (discovered.length === 0) return
+
+      // Bug 2: mergeDiscoveredNodes now returns new hosts so we can probe them
+      const newHosts = this.mergeDiscoveredNodes(discovered)
+      if (newHosts.length === 0) return
+
+      logger.info({ newHosts }, 'Probing newly discovered nodes')
+      const tasks = newHosts.map((host) => this.probeNode(host))
+      const results = await Promise.allSettled(tasks)
+
+      let added = 0
+      for (const res of results) {
+        if (res.status !== 'fulfilled') continue
+        const node = res.value
+        // Seed fresh nodes from persisted metrics before adding to inventory
+        for (const [modelName, freshModel] of node.models) {
+          this._applyPersistedMetrics(node.host, modelName, freshModel)
+        }
+        this.inventory.set(node.host, node)
+        if (node.reachable) added++
+      }
+
+      if (added > 0) {
+        logger.info({ added }, 'New reachable nodes added to inventory')
+        this.notifyInventoryUpdated()
       }
     } finally {
       this._scanInProgress = false
@@ -334,6 +370,8 @@ export class DiscoveryManager {
         // telemetry so routing scores remain stable across probe cycles.
         freshNode.failures = 0
         freshNode.lastFailure = previousNode.lastFailure ?? 0
+        // Preserve live activeRequests count from previous node
+        freshNode.activeRequests = previousNode.activeRequests
 
         for (const [modelName, freshModel] of freshNode.models) {
           const previousModel = previousNode.models.get(modelName)
@@ -363,6 +401,7 @@ export class DiscoveryManager {
         freshNode.lastFailure = Date.now()
         freshNode.lastSeen = previousNode.lastSeen
         freshNode.models = previousNode.models
+        freshNode.activeRequests = previousNode.activeRequests
       }
 
       merged.set(host, freshNode)
@@ -467,6 +506,7 @@ export class DiscoveryManager {
    * @param {string} modelName
    * @param {number} latency - milliseconds
    * @param {number} tokensGenerated
+   * @param {string|null} [endpoint]
    */
   updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0, endpoint = null) {
     const node = this.inventory.get(nodeHost)

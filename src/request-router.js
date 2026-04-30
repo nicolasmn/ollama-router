@@ -198,8 +198,8 @@ export class RequestRouter {
   async _performOnRequestScan(shouldBlock, timeoutMs) {
     if (!shouldBlock) {
       // Fire-and-forget: scan in background
+      // discoverNetworkNodes guards against concurrent scans internally
       this.discovery.discoverNetworkNodes().catch((err) => {
-        // Log but don't throw - background scan failure shouldn't break request
         console.debug('Background on-request scan failed:', err.message)
       })
       return
@@ -218,8 +218,7 @@ export class RequestRouter {
         ),
       ])
     } catch (err) {
-      // Timeout or scan error - log and continue
-      // Request will proceed with current nodes
+      // Timeout or scan error — proceed with current inventory
       console.debug('On-request scan failed or timed out:', err.message)
     }
   }
@@ -247,10 +246,11 @@ export class RequestRouter {
     const requirements = this.requestAnalyzer.analyze(reqBody, endpointType)
     const requestedModel = reqBody?.model
 
-    // Trigger on-request scan for virtual models
+    // Trigger on-request scan for virtual models.
+    // Bug 5: _shouldScanForRequest takes no args (requestedModel was previously
+    // passed but ignored); concurrent scans are now guarded inside discoverNetworkNodes.
     if (VIRTUAL_MODELS.has(requestedModel)) {
-      const { shouldBlock, timeoutMs } =
-        this._shouldScanForRequest(requestedModel)
+      const { shouldBlock, timeoutMs } = this._shouldScanForRequest()
       await this._performOnRequestScan(shouldBlock, timeoutMs)
     }
 
@@ -341,7 +341,6 @@ export class RequestRouter {
 
   getModelById(modelId) {
     if (VIRTUAL_MODELS.has(modelId)) {
-      // Virtual models span multiple real models — no single context length applies
       return this._toOpenAiModelObject(modelId, Math.floor(Date.now() / 1000))
     }
 
@@ -378,28 +377,23 @@ export class RequestRouter {
 
     if (params > 0) {
       if (requirements.preferFast) {
-        // Subagent-like or explicitly fast: prefer small models
         if (params <= 4) sizeFit += 14
         else if (params <= 8) sizeFit += 10
         else if (params <= 12) sizeFit += 2
       } else if (requirements.hasCodeSignals || messageCount > 10) {
-        // Code tasks or long conversations: prefer large models
         if (params >= 20 && params <= 35) sizeFit += 14
         else if (params >= 10) sizeFit += 6
         else sizeFit += 1
       } else if (requirements.preferReasoning && messageCount <= 10) {
-        // Reasoning without code in short conversations: small thinking models excel
         if (params >= 2 && params <= 8) sizeFit += 14
         else if (params > 8 && params <= 20) sizeFit += 6
         else if (params > 20) sizeFit += 2
       } else {
-        // Default: prefer 26B class for general chat
         if (params >= 20 && params <= 35) sizeFit += 10
         else if (params >= 10) sizeFit += 4
       }
     }
 
-    // Thinking-capable models get a bonus for complex requests
     const thinkingBonus = profile.supportsThinking
       ? requirements.preferReasoning
         ? 8
@@ -408,12 +402,10 @@ export class RequestRouter {
           : 0
       : 0
 
-    // Exact multimodal match bonuses
     const visionBonus =
       requirements.needsVision && profile.supportsVision ? 10 : 0
     const audioBonus = requirements.needsAudio && profile.supportsAudio ? 10 : 0
 
-    // Context margin: prefer models with more headroom
     const contextMargin =
       profile.contextLength > 0
         ? Math.min(
