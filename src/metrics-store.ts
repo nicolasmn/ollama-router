@@ -28,40 +28,34 @@ export interface LoadedData {
 export function loadMetrics(filePath: string): LoadedData {
   try {
     const raw = readFileSync(filePath, 'utf8')
-    const parsed: unknown = JSON.parse(raw)
+    const parsed = JSON.parse(raw) as PersistedFile
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return { knownNodes: [], metrics: new Map() }
     }
-    const p = parsed as Record<string, unknown>
 
-    // knownNodes — new format only
-    const knownNodes: string[] = Array.isArray(p['knownNodes'])
-      ? (p['knownNodes'] as string[]).filter((v) => typeof v === 'string')
+    const knownNodes: string[] = Array.isArray(parsed.knownNodes)
+      ? parsed.knownNodes.filter((v) => typeof v === 'string')
       : []
 
-    // metrics block — new format; fall back to legacy (top-level host keys)
-    const metricsSource: Record<string, unknown> =
-      typeof p['metrics'] === 'object' && p['metrics'] !== null && !Array.isArray(p['metrics'])
-        ? (p['metrics'] as Record<string, unknown>)
-        : p
-
     const metrics = new Map<string, Map<string, PersistedModelMetrics>>()
-    for (const [host, models] of Object.entries(metricsSource)) {
-      if (host === 'knownNodes' || host === 'metrics') continue
-      if (typeof models !== 'object' || models === null) continue
-      const modelMap = new Map<string, PersistedModelMetrics>()
-      for (const [name, m] of Object.entries(models as Record<string, PersistedModelMetrics>)) {
-        modelMap.set(name, {
-          recentLatency: m.recentLatency ?? 0,
-          recentTps: m.recentTps ?? 0,
-          failures: m.failures ?? 0,
-          totalRequests: m.totalRequests ?? 0,
-          lastRoutedAt: m.lastRoutedAt ?? 0,
-          lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
-        })
+    if (typeof parsed.metrics === 'object' && parsed.metrics !== null) {
+      for (const [host, models] of Object.entries(parsed.metrics)) {
+        if (typeof models !== 'object' || models === null) continue
+        const modelMap = new Map<string, PersistedModelMetrics>()
+        for (const [name, m] of Object.entries(models)) {
+          modelMap.set(name, {
+            recentLatency: m.recentLatency ?? 0,
+            recentTps: m.recentTps ?? 0,
+            failures: m.failures ?? 0,
+            totalRequests: m.totalRequests ?? 0,
+            lastRoutedAt: m.lastRoutedAt ?? 0,
+            lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
+          })
+        }
+        if (modelMap.size > 0) metrics.set(host, modelMap)
       }
-      if (modelMap.size > 0) metrics.set(host, modelMap)
     }
+
     return { knownNodes, metrics }
   } catch {
     return { knownNodes: [], metrics: new Map() }
