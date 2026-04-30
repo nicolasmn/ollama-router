@@ -64,12 +64,18 @@ export class DiscoveryManager {
 
   /**
    * Returns true if the given URL resolves to a loopback address.
+   * Note: URL.hostname returns '[::1]' with brackets for IPv6 literals.
    * @param {string} url
    */
   _isLocalhost(url) {
     try {
       const { hostname } = new URL(url)
-      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+      return (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '::1' ||
+        hostname === '[::1]'
+      )
     } catch {
       return false
     }
