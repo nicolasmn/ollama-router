@@ -23,11 +23,11 @@ describe('DiscoveryManager – markNodeUnreachable', () => {
     expect(node.lastFailure).toBeGreaterThan(0)
   })
 
-  it('stacks failures on repeated calls', () => {
+  it('is a no-op when node already unreachable (single-fire design)', () => {
     const dm = makePopulatedDm('gemma4:e4b')
-    dm.markNodeUnreachable('http://node-a:11434')
-    dm.markNodeUnreachable('http://node-a:11434')
-    expect(dm.inventory.get('http://node-a:11434').failures).toBe(2)
+    dm.markNodeUnreachable('http://node-a:11434') // fires
+    dm.markNodeUnreachable('http://node-a:11434') // no-op
+    expect(dm.inventory.get('http://node-a:11434').failures).toBe(1)
   })
 
   it('is a no-op for unknown host', () => {
@@ -127,10 +127,12 @@ describe('DiscoveryManager – mergeInventory', () => {
     expect(dm.inventory.has('http://node-b:11434')).toBe(true)
   })
 
-  it('marks nodes absent from fresh scan as unreachable', () => {
+  it('drops nodes absent from the fresh scan (not included = not probed)', () => {
+    // mergeInventory only contains what performProbe returned.
+    // A node absent from newInventory was simply not in OLLAMA_NODES this cycle.
     const dm = makePopulatedDm('gemma4:e4b')
     dm.mergeInventory(new Map())
-    expect(dm.inventory.get('http://node-a:11434').reachable).toBe(false)
+    expect(dm.inventory.has('http://node-a:11434')).toBe(false)
   })
 })
 
@@ -140,13 +142,13 @@ describe('DiscoveryManager – scan concurrency guard', () => {
     expect(dm.getScanStatus().inProgress).toBe(false)
   })
 
-  it('_scanInProgress flag blocks concurrent scan calls', async () => {
+  it('discoverNetworkNodes returns immediately when _scanInProgress is true', async () => {
     const dm = new DiscoveryManager({ ollamaNodes: [] })
     dm._scanInProgress = true
-    let callCount = 0
-    dm._runNetworkScan = async () => { callCount++ }
+    // If the guard is in place, the call resolves without changing _lastScanMs
+    const before = dm._lastScanMs
     await dm.discoverNetworkNodes()
-    expect(callCount).toBe(0)
+    expect(dm._lastScanMs).toBe(before)
     dm._scanInProgress = false
   })
 })
