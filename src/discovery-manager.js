@@ -1,11 +1,11 @@
 // discovery-manager.js - Manages discovery of Ollama nodes and their models
 import { request } from 'undici'
-import pino from 'pino'
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
 import { NetworkScanner } from './network-scanner.js'
 import { loadMetrics, saveMetrics } from './metrics-store.js'
+import { createLogger } from './logger.js'
 
-const logger = pino()
+const logger = createLogger('discovery')
 
 export class DiscoveryManager {
   constructor(config = {}) {
@@ -41,6 +41,14 @@ export class DiscoveryManager {
   normalizeBaseUrl(host) {
     if (host.startsWith('http')) return host
     return `http://${host}`
+  }
+
+  /**
+   * Returns current scan state for routing decisions.
+   * @returns {{ inProgress: boolean, lastScanMs: number }}
+   */
+  getScanStatus() {
+    return { inProgress: this._scanInProgress, lastScanMs: this._lastScanMs }
   }
 
   /**
@@ -83,13 +91,11 @@ export class DiscoveryManager {
     if (showData?.model_info && typeof showData.model_info === 'object') {
       const info = showData.model_info
 
-      // Extract total parameter count (in billions)
       const rawParams = info['general.parameter_count']
       if (typeof rawParams === 'number' && rawParams > 0) {
         parameters = rawParams / 1e9
       }
 
-      // Find context length: different model families use different key names
       const contextKey = Object.keys(info).find((k) =>
         k.endsWith('.context_length'),
       )
@@ -148,25 +154,22 @@ export class DiscoveryManager {
 
   /**
    * Probe a single node for availability and models
-   * @param {string} host - hostname or IP (e.g., 'localhost:11434' or 'http://localhost:11434')
+   * @param {string} host - hostname or IP
    * @returns {Promise<NodeInfo>}
    */
   async probeNode(host) {
     const base = this.normalizeBaseUrl(host)
     const node = new NodeInfo(base)
-    logger.debug(`Probing ${host}`)
+    logger.debug({ nodeHost: base }, 'Probing node')
 
     try {
-      // Version check
       const versionResp = await request(`${base}/api/version`, {
         timeout: 5000,
       })
       if (versionResp.statusCode !== 200) {
         throw new Error(`Version ${versionResp.statusCode}`)
       }
-      logger.debug(`${host} version OK`)
 
-      // Get model list
       const tagsResp = await request(`${base}/api/tags`, {
         timeout: 10000,
       })
@@ -176,11 +179,10 @@ export class DiscoveryManager {
 
       const tagsData = await tagsResp.body.json()
       logger.debug(
-        { host, models: tagsData.models?.length || 0 },
+        { nodeHost: base, modelCount: tagsData.models?.length || 0 },
         'Models fetched',
       )
 
-      // Enrich models with /api/show details in parallel
       const enrichedModels = await this.populateNodeModelsEnriched(
         base,
         tagsData.models || [],
@@ -191,8 +193,9 @@ export class DiscoveryManager {
 
       node.reachable = true
       node.lastSeen = Date.now()
+      logger.info({ nodeHost: base, modelCount: node.models.size }, 'Node ready')
     } catch (err) {
-      logger.warn(`${host} failed:`, err.message)
+      logger.warn({ nodeHost: base, err: err.message }, 'Node probe failed')
       node.reachable = false
     }
 
@@ -201,7 +204,6 @@ export class DiscoveryManager {
 
   /**
    * Merge auto-discovered node URLs into OLLAMA_NODES, skipping duplicates.
-   * Returns the list of newly added normalized URLs so callers can probe them.
    * @param {string[]} discoveredUrls
    * @returns {string[]} newly added normalized host URLs
    * @private
@@ -217,7 +219,7 @@ export class DiscoveryManager {
         this.OLLAMA_NODES.push(url)
         existingNormalized.add(normalized)
         newHosts.push(normalized)
-        logger.info({ url }, 'Auto-discovered Ollama node added')
+        logger.info({ nodeHost: url }, 'Auto-discovered node added')
       }
     }
     return newHosts
@@ -225,8 +227,7 @@ export class DiscoveryManager {
 
   /**
    * Run a network scan, merge newly found nodes, and immediately probe them.
-   * Guards against concurrent execution — returns early if a scan is already
-   * in progress.
+   * Guards against concurrent execution.
    */
   async discoverNetworkNodes() {
     if (this._scanInProgress) return
@@ -248,6 +249,10 @@ export class DiscoveryManager {
           if (updated) this.notifyInventoryUpdated()
         }
       }
+      logger.debug(
+        { discovered: discovered.length },
+        'Network scan complete',
+      )
     } finally {
       this._scanInProgress = false
       this._lastScanMs = Date.now()
@@ -263,7 +268,7 @@ export class DiscoveryManager {
       await this.discoverNetworkNodes()
     }
 
-    logger.debug('Initializing discovery with nodes:', this.OLLAMA_NODES)
+    logger.debug({ nodes: this.OLLAMA_NODES }, 'Initializing discovery')
     const initialTasks = this.OLLAMA_NODES.map((host) => this.probeNode(host))
     const initialResults = await Promise.allSettled(initialTasks)
 
@@ -278,7 +283,8 @@ export class DiscoveryManager {
     }
 
     logger.info(
-      `Discovery initialized: ${reachableCount}/${this.inventory.size} nodes reachable`,
+      { reachable: reachableCount, total: this.inventory.size },
+      'Discovery initialized',
     )
     this.notifyInventoryUpdated()
     return reachableCount
@@ -293,7 +299,7 @@ export class DiscoveryManager {
       return
     }
 
-    logger.info(`Starting periodic probe every ${this.DISCOVERY_INTERVAL}ms`)
+    logger.info({ intervalMs: this.DISCOVERY_INTERVAL }, 'Starting periodic probe')
 
     this.periodicProbeHandle = setInterval(async () => {
       await this.performProbe()
@@ -308,7 +314,8 @@ export class DiscoveryManager {
 
     if (this.autoDiscover) {
       logger.info(
-        `Starting periodic network scan every ${this.NETWORK_SCAN_INTERVAL}ms`,
+        { intervalMs: this.NETWORK_SCAN_INTERVAL },
+        'Starting periodic network scan',
       )
       this.networkScanHandle = setInterval(async () => {
         await this.discoverNetworkNodes()
@@ -332,10 +339,8 @@ export class DiscoveryManager {
     }
 
     this.mergeInventory(newInventory)
-
     this.notifyInventoryUpdated()
-
-    logger.debug(`Probe cycle complete: ${newInventory.size} nodes`)
+    logger.debug({ nodeCount: newInventory.size }, 'Probe cycle complete')
   }
 
   /**
@@ -350,8 +355,6 @@ export class DiscoveryManager {
       const previousNode = this.inventory.get(host)
 
       if (previousNode && freshNode.reachable) {
-        // Node is reachable — reset failure counters and carry over runtime
-        // telemetry so routing scores remain stable across probe cycles.
         freshNode.failures = 0
         freshNode.lastFailure = previousNode.lastFailure ?? 0
         freshNode.activeRequests = previousNode.activeRequests ?? 0
@@ -372,14 +375,10 @@ export class DiscoveryManager {
           }
         }
       } else if (!previousNode && freshNode.reachable) {
-        // Newly discovered node — seed from persisted metrics
         for (const [modelName, freshModel] of freshNode.models) {
           this._applyPersistedMetrics(host, modelName, freshModel)
         }
       } else if (previousNode) {
-        // Node is unreachable — update failure tracking and preserve the last
-        // known model list so telemetry survives the outage and is available
-        // once the node recovers.
         freshNode.failures = (previousNode.failures ?? 0) + 1
         freshNode.lastFailure = Date.now()
         freshNode.lastSeen = previousNode.lastSeen
@@ -440,17 +439,12 @@ export class DiscoveryManager {
     }
   }
 
-  /**
-   * Get all discovered nodes
-   * @returns {Map<string, NodeInfo>}
-   */
   getNodes() {
     return this.inventory
   }
 
   /**
    * Immediately mark a node as unreachable without waiting for the next probe cycle.
-   * The next successful probe will restore reachable=true.
    * @param {string} nodeHost - normalized host URL
    */
   markNodeUnreachable(nodeHost) {
@@ -460,23 +454,14 @@ export class DiscoveryManager {
     node.reachable = false
     node.failures = (node.failures || 0) + 1
     node.lastFailure = Date.now()
-    logger.warn(
-      { nodeHost },
-      'Node marked unreachable due to connection failure',
-    )
+    logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
     this.notifyInventoryUpdated()
   }
 
-  /**
-   * Get count of reachable nodes
-   * @returns {number}
-   */
   getReachableNodeCount() {
     let count = 0
     for (const node of this.inventory.values()) {
-      if (node.reachable) {
-        count++
-      }
+      if (node.reachable) count++
     }
     return count
   }
@@ -484,13 +469,6 @@ export class DiscoveryManager {
   /**
    * Update model performance metrics after a successful request.
    * Uses exponential moving average to smooth latency and throughput.
-   * Seeds verbatim on the first sample (when still 0) to avoid diluting
-   * the initial value to 10% of actual.
-   * @param {string} nodeHost
-   * @param {string} modelName
-   * @param {number} latency - milliseconds
-   * @param {number} tokensGenerated
-   * @param {string|null} endpoint
    */
   updateModelMetrics(nodeHost, modelName, latency, tokensGenerated = 0, endpoint = null) {
     const node = this.inventory.get(nodeHost)
@@ -500,7 +478,6 @@ export class DiscoveryManager {
 
     const tps = latency > 0 ? tokensGenerated / (latency / 1000) : 0
 
-    // Seed verbatim on first sample; apply EMA on subsequent samples
     modelInfo.recentLatency =
       modelInfo.recentLatency === 0
         ? latency
@@ -514,76 +491,38 @@ export class DiscoveryManager {
     modelInfo.lastSeen = Date.now()
     modelInfo.lastRoutedAt = Date.now()
     if (endpoint !== null) modelInfo.lastRoutingEndpoint = endpoint
+
+    logger.debug(
+      { nodeHost, modelName, latency, tps: Math.round(tps), endpoint },
+      'Metrics updated',
+    )
   }
 
   /**
    * Record a request failure for a model.
-   * If the error is a connection-level failure, the node is immediately marked
-   * unreachable without waiting for the next probe cycle.
-   * @param {string} nodeHost
-   * @param {string} modelName
-   * @param {Error} [err]
+   * Connection-level failures immediately mark the node unreachable.
    */
   recordModelFailure(nodeHost, modelName, err) {
     const node = this.inventory.get(nodeHost)
     if (!node) return
     const modelInfo = node.models.get(modelName)
-    if (!modelInfo) return
+    if (modelInfo) {
+      modelInfo.failures = (modelInfo.failures || 0) + 1
+    }
 
-    modelInfo.failures = (modelInfo.failures || 0) + 1
+    const isConnectionFailure =
+      err?.code === 'ECONNREFUSED' ||
+      err?.code === 'ECONNRESET' ||
+      err?.code === 'ETIMEDOUT' ||
+      err?.code === 'EHOSTUNREACH'
 
-    if (err && this._isConnectionFailure(err)) {
+    if (isConnectionFailure) {
       this.markNodeUnreachable(nodeHost)
+    } else {
+      logger.warn(
+        { nodeHost, modelName, err: err?.message, code: err?.code },
+        'Model request failed',
+      )
     }
-  }
-
-  /**
-   * Returns true when the error indicates the node itself is unreachable
-   * (connection refused, reset, DNS failure, timeout).
-   * @param {Error} err
-   * @returns {boolean}
-   */
-  _isConnectionFailure(err) {
-    const connectionCodes = new Set([
-      'ECONNREFUSED',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      'ENOTFOUND',
-      'ENETUNREACH',
-      'UND_ERR_CONNECT_TIMEOUT',
-      'UND_ERR_SOCKET',
-      'UND_ERR_BODY_TIMEOUT',
-    ])
-    return connectionCodes.has(err?.code)
-  }
-
-  getScanStatus() {
-    return {
-      inProgress: this._scanInProgress,
-      lastScanMs: this._lastScanMs,
-      lastScanAgo: this._lastScanMs > 0 ? Date.now() - this._lastScanMs : -1,
-    }
-  }
-
-  _isLocalhost(url) {
-    try {
-      const { hostname } = new URL(url)
-      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]'
-    } catch {
-      return false
-    }
-  }
-
-  isConnectedToNetworkNodes() {
-    for (const host of this.inventory.keys()) {
-      if (!this._isLocalhost(host)) return true
-    }
-    return false
-  }
-
-  _determineNextScanInterval() {
-    return this.isConnectedToNetworkNodes()
-      ? this.NETWORK_SCAN_INTERVAL_ACTIVE
-      : this.NETWORK_SCAN_INTERVAL
   }
 }
