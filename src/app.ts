@@ -74,14 +74,13 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
 
   const reachableCount = await discoveryManager.initialize()
   if (reachableCount === 0) {
-    if (config.autoDiscover) {
-      logger.warn(
-        'No reachable nodes found at startup — will keep scanning the network',
-      )
-    } else {
-      logger.error('No reachable nodes at startup')
-      throw new Error('No reachable nodes available')
-    }
+    logger.warn(
+      {
+        autoDiscover: config.autoDiscover,
+        configuredNodes: config.ollamaNodes.length,
+      },
+      'No reachable nodes found at startup — will retry on next probe interval',
+    )
   }
 
   discoveryManager.startPeriodicProbe()

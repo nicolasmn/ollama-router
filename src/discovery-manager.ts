@@ -307,35 +307,54 @@ export class DiscoveryManager {
       node.failures = 0
 
       const seenNames = new Set<string>()
+      const newModelNames: string[] = []
       for (const raw of apiModels) {
         const name = raw.name as string
         seenNames.add(name)
 
         if (!node.models.has(name)) {
-          let profile = new ModelProfile()
-          try {
-            const showResp = await request(`${host}/api/show`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name }),
-              headersTimeout: 5000,
-              bodyTimeout: 5000,
-            })
-            if (showResp.statusCode === 200) {
-              const showData = await showResp.body.json()
-              profile = this.buildModelProfile(showData)
-            }
-          } catch { /* use default profile */ }
           const details = (raw.details ?? {}) as Record<string, unknown>
-          const info = new ModelInfo(
+          node.models.set(
             name,
-            (details.family as string) ?? profile.architecture ?? '',
-            (raw.size as number) ?? 0,
-            profile,
+            new ModelInfo(
+              name,
+              (details.family as string) ?? '',
+              (raw.size as number) ?? 0,
+              new ModelProfile(),
+            ),
           )
-          node.models.set(name, info)
+          newModelNames.push(name)
         }
         node.models.get(name)!.lastSeen = Date.now()
+      }
+      if (newModelNames.length > 0) {
+        await Promise.allSettled(
+          newModelNames.map(async (name) => {
+            try {
+              const showResp = await request(`${host}/api/show`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+                headersTimeout: 5000,
+                bodyTimeout: 10000,
+              })
+              if (showResp.statusCode === 200) {
+                const showData = await showResp.body.json()
+                const profile = this.buildModelProfile(showData)
+                const model = node.models.get(name)
+                if (model) {
+                  model.profile = profile
+                  if (!model.family && profile.architecture)
+                    model.family = profile.architecture
+                }
+              } else {
+                await showResp.body.dump()
+              }
+            } catch {
+              /* keep default profile */
+            }
+          }),
+        )
       }
       for (const name of node.models.keys()) {
         if (!seenNames.has(name)) node.models.delete(name)
