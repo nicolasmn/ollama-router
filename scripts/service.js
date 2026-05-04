@@ -160,7 +160,7 @@ function deployFiles() {
   mkdirSync(`${INSTALL_DIR}/dist/src`, { recursive: true })
   mkdirSync(DATA_DIR, { recursive: true })
 
-  // 3. Sync compiled JS output (tsc writes to dist/)
+  // 3. Sync compiled JS output (tsc + esbuild write to dist/)
   run('rsync', [
     '-a',
     '--delete',
@@ -168,12 +168,13 @@ function deployFiles() {
     `${INSTALL_DIR}/dist/`,
   ])
 
-  // 4. Sync dashboard static assets (HTML/CSS/JS — not compiled by tsc).
-  //    At runtime, dist/src/app.js resolves __dirname to dist/src/, so the
-  //    dashboard must live at dist/src/dashboard/.
+  // 4. Sync dashboard static assets (HTML/CSS — not compiled by tsc/esbuild).
+  //    The JS bundle is already in dist/ from the build step above.
+  //    Only HTML, CSS, and non-JS assets need to be copied here.
   run('rsync', [
     '-a',
     '--delete',
+    '--exclude=*.js',
     `${SOURCE_DIR}/src/dashboard/`,
     `${INSTALL_DIR}/dist/src/dashboard/`,
   ])

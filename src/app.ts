@@ -1,6 +1,5 @@
 // app.ts - Application factory
 import http from 'node:http'
-import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -14,14 +13,6 @@ import { createRoutes } from './routes/index.js'
 
 const logger = pino()
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const require = createRequire(import.meta.url)
-
-// Resolve vendor package directories via Node module resolution so the correct
-// path is used both in dev (tsx, __dirname = src/) and in compiled installs
-// (tsc, __dirname = dist/src/) without hard-coding relative depth.
-function vendorDir(pkg: string): string {
-  return dirname(require.resolve(`${pkg}/package.json`))
-}
 
 export interface AppConfig {
   ollamaNodes: string[]
@@ -97,16 +88,6 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   const app = express()
   app.use(express.json({ limit: '10mb' }))
   app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))
-  app.use('/dashboard-vendor/lit', express.static(vendorDir('lit')))
-  app.use('/dashboard-vendor/lit-html', express.static(vendorDir('lit-html')))
-  app.use(
-    '/dashboard-vendor/lit-element',
-    express.static(vendorDir('lit-element')),
-  )
-  app.use(
-    '/dashboard-vendor/@lit/reactive-element',
-    express.static(vendorDir('@lit/reactive-element')),
-  )
 
   createRoutes(
     app,

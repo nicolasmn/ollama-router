@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && esbuild src/dashboard/dashboard-app.js --bundle --outfile=dist/src/dashboard/dashboard-bundle.js --format=esm --minify",
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
     "typecheck": "tsc --noEmit",
@@ -64,6 +64,7 @@
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.0",
     "@types/ws": "^8.5.14",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
     "jest": "^30.3.0",
