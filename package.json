@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "build": "tsc",
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
     "typecheck": "tsc --noEmit",
@@ -15,15 +16,24 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "extensionsToTreatAsEsm": [".ts"],
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
     "testMatch": [
       "**/tests/**/*.test.[jt]s"
     ],
     "transform": {
-      "^.+\\.ts$": ["ts-jest", {
-        "useESM": true,
-        "diagnostics": { "ignoreCodes": ["TS151002"] }
-      }]
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "diagnostics": {
+            "ignoreCodes": [
+              "TS151002"
+            ]
+          }
+        }
+      ]
     },
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"

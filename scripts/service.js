@@ -57,7 +57,7 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStart=/usr/bin/env node ${INSTALL_DIR}/index.js
+ExecStart=/usr/bin/env node ${INSTALL_DIR}/dist/index.js
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -122,7 +122,7 @@ function assertLinuxAndSystemd() {
 function assertSourceDir() {
   if (
     !existsSync(join(SOURCE_DIR, 'package.json')) ||
-    !existsSync(join(SOURCE_DIR, 'index.js'))
+    !existsSync(join(SOURCE_DIR, 'index.ts'))
   ) {
     console.error(
       `Could not find a valid ollama-router source directory: ${SOURCE_DIR}`,
@@ -149,35 +149,44 @@ function ensureUser() {
 // Deploy source files and install production dependencies
 function deployFiles() {
   assertCommandAvailable('rsync')
-  mkdirSync(INSTALL_DIR, { recursive: true })
+
+  // 1. Build in source dir — devDependencies (tsc) are required here
+  console.log('Installing dependencies...')
+  run('npm', ['install', '--prefix', SOURCE_DIR])
+  console.log('Building TypeScript...')
+  run('npm', ['run', 'build', '--prefix', SOURCE_DIR])
+
+  // 2. Prepare install directories
+  mkdirSync(`${INSTALL_DIR}/dist/src`, { recursive: true })
   mkdirSync(DATA_DIR, { recursive: true })
 
+  // 3. Sync compiled JS output (tsc writes to dist/)
   run('rsync', [
     '-a',
     '--delete',
-    '--exclude',
-    '.git',
-    '--exclude',
-    'node_modules',
-    '--exclude',
-    'coverage',
-    '--exclude',
-    '.nyc_output',
-    '--exclude',
-    '.DS_Store',
-    '--exclude',
-    'tests',
-    `${SOURCE_DIR}/`,
-    `${INSTALL_DIR}/`,
+    `${SOURCE_DIR}/dist/`,
+    `${INSTALL_DIR}/dist/`,
   ])
 
-  const lockFile = join(INSTALL_DIR, 'package-lock.json')
-  if (existsSync(lockFile)) {
-    run('npm', ['ci', '--omit=dev', '--prefix', INSTALL_DIR])
-  } else {
-    run('npm', ['install', '--omit=dev', '--prefix', INSTALL_DIR])
-  }
+  // 4. Sync dashboard static assets (HTML/CSS/JS — not compiled by tsc).
+  //    At runtime, dist/src/app.js resolves __dirname to dist/src/, so the
+  //    dashboard must live at dist/src/dashboard/.
+  run('rsync', [
+    '-a',
+    '--delete',
+    `${SOURCE_DIR}/src/dashboard/`,
+    `${INSTALL_DIR}/dist/src/dashboard/`,
+  ])
 
+  // 5. Install production-only dependencies
+  run('cp', [`${SOURCE_DIR}/package.json`, `${INSTALL_DIR}/package.json`])
+  run('cp', [
+    `${SOURCE_DIR}/package-lock.json`,
+    `${INSTALL_DIR}/package-lock.json`,
+  ])
+  run('npm', ['ci', '--omit=dev', '--prefix', INSTALL_DIR])
+
+  // 6. Fix ownership
   run('chown', ['-R', `${APP_USER}:${APP_USER}`, INSTALL_DIR, DATA_DIR])
 }
 
