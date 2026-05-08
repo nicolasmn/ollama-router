@@ -38,6 +38,29 @@ export const fmt = {
   },
 }
 
+export function formatAbortReason(reason) {
+  if (reason === 'client_disconnect') return 'Client disconnected'
+  if (reason === 'upstream_abort') return 'Upstream aborted'
+  return reason || 'Unknown'
+}
+
+export function formatFailureCategory(category) {
+  if (category === 'capacity') return 'Capacity'
+  if (category === 'network') return 'Network'
+  if (category === 'timeout') return 'Timeout'
+  if (category === 'upstream_error') return 'Upstream error'
+  if (category === 'client_abort') return 'Client abort'
+  return category || 'Unknown'
+}
+
+export function formatRetryHint(hint) {
+  if (hint === 'retry_now') return 'Retry now'
+  if (hint === 'retry_later') return 'Retry in a few seconds'
+  if (hint === 'switch_model') return 'Try another model'
+  if (hint === 'no_retry') return 'No retry needed'
+  return hint || 'No hint'
+}
+
 export function latCls(value) {
   if (!value || value <= 0) return 'muted'
   if (value < 500) return 'good'

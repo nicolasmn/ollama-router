@@ -23,6 +23,11 @@ export function setupChatRoutes(
   requestHistoryManager: RequestHistoryManager,
 ): void {
   app.post('/v1/chat/completions', async (req, res) => {
+    const abortController = new AbortController()
+    const onClientClose = () => abortController.abort()
+    res.once('close', onClientClose)
+
+    try {
     const requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
     const isStreaming = Boolean(reqBody?.stream)
@@ -43,6 +48,7 @@ export function setupChatRoutes(
       await handleStreamingRequest({
         requestId, reqBody, candidate: candidates, endpoint: '/v1/chat/completions',
         sseTerminator: true, res, discoveryManager, loadManager, requestHistoryManager,
+        signal: abortController.signal,
       })
     } else {
       const candidateList: RoutingCandidate[] = Array.isArray(candidates) ? candidates : [candidates]
@@ -52,11 +58,14 @@ export function setupChatRoutes(
         responseContentFrom: (r) => (r as Record<string, unknown[]>)?.choices?.[0],
         successLog: 'Chat completion successful', failureLog: 'Chat failed, trying next',
         res, discoveryManager, loadManager, requestHistoryManager,
+        signal: abortController.signal,
       })
       if (!succeeded) {
-        requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 503, error: 'All candidates failed' })
         if (!res.headersSent) res.status(503).json({ error: 'All upstream nodes failed' })
       }
+    }
+    } finally {
+      res.off('close', onClientClose)
     }
   })
 }

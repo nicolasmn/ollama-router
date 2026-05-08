@@ -22,6 +22,11 @@ export function setupEmbeddingsRoutes(
   requestHistoryManager: RequestHistoryManager,
 ): void {
   app.post('/v1/embeddings', async (req, res) => {
+    const abortController = new AbortController()
+    const onClientClose = () => abortController.abort()
+    res.once('close', onClientClose)
+
+    try {
     const requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
     const analysis = requestRouter.analyzeRequest(reqBody, 'embeddings')
@@ -43,11 +48,14 @@ export function setupEmbeddingsRoutes(
       tokensFromResult: (r) => ((r as Record<string, Record<string, number>>).usage?.prompt_tokens) ?? 0,
       successLog: 'Embeddings successful', failureLog: 'Embeddings failed, trying next',
       res, discoveryManager, loadManager, requestHistoryManager,
+      signal: abortController.signal,
     })
 
     if (!succeeded) {
-      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 503, error: 'All candidates failed' })
       if (!res.headersSent) res.status(503).json({ error: 'All upstream nodes failed' })
+    }
+    } finally {
+      res.off('close', onClientClose)
     }
   })
 }

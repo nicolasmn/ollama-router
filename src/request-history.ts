@@ -12,6 +12,7 @@ export interface AttemptRecord {
   latency: number
   error: string | null
   at: number
+  attemptReason: string | null
 }
 
 export interface CandidateSummary {
@@ -53,10 +54,16 @@ export interface RequestEntry {
   status: string
   stream: boolean
   createdAt: number
+  executionStartedAt: number
   finishedAt: number
   latency: number
+  queueWaitMs: number
+  executionTimeMs: number
   responseStatus: number
   error: string | null
+  abortReason: string | null
+  failureCategory: string | null
+  retryHint: string | null
   selectedModel: string | null
   selectedNode: string | null
   tokensGenerated: number
@@ -83,6 +90,7 @@ export interface RecordAttemptOptions {
   status: string
   latency?: number
   error?: string | null
+  attemptReason?: string | null
 }
 
 export interface FinishRequestOptions {
@@ -90,6 +98,9 @@ export interface FinishRequestOptions {
   latency?: number
   responseStatus?: number
   error?: string | null
+  abortReason?: string | null
+  failureCategory?: string | null
+  retryHint?: string | null
   tokensGenerated?: number
   modelName?: string | null
   nodeHost?: string | null
@@ -339,10 +350,16 @@ export class RequestHistoryManager {
       status: 'waiting',
       stream: Boolean(reqBody?.stream),
       createdAt: Date.now(),
+      executionStartedAt: 0,
       finishedAt: 0,
       latency: 0,
+      queueWaitMs: 0,
+      executionTimeMs: 0,
       responseStatus: 0,
       error: null,
+      abortReason: null,
+      failureCategory: null,
+      retryHint: null,
       selectedModel: null,
       selectedNode: null,
       tokensGenerated: 0,
@@ -379,6 +396,10 @@ export class RequestHistoryManager {
   recordAttempt(requestId: string, attempt: RecordAttemptOptions): void {
     const entry = this.#findRequest(requestId)
     if (!entry) return
+    if (entry.executionStartedAt === 0 && attempt.status === 'waiting') {
+      entry.executionStartedAt = Date.now()
+      entry.queueWaitMs = Math.max(0, entry.executionStartedAt - entry.createdAt)
+    }
     const last = entry.attempts[entry.attempts.length - 1]
     if (
       last &&
@@ -389,6 +410,7 @@ export class RequestHistoryManager {
       last.status = attempt.status
       last.latency = attempt.latency || last.latency
       last.error = attempt.error || null
+      last.attemptReason = attempt.attemptReason || last.attemptReason
       if (ACTIVE_ATTEMPT_STATUSES.has(attempt.status)) {
         entry.status = attempt.status
       }
@@ -402,6 +424,7 @@ export class RequestHistoryManager {
       latency: attempt.latency || 0,
       error: attempt.error || null,
       at: Date.now(),
+      attemptReason: attempt.attemptReason || null,
     })
     entry.attempts = entry.attempts.slice(-MAX_ATTEMPTS)
     entry.attemptCount = entry.attempts.length
@@ -413,11 +436,19 @@ export class RequestHistoryManager {
   finishRequest(requestId: string, result: FinishRequestOptions = {}): boolean {
     const entry = this.#findRequest(requestId)
     if (!entry) return false
+    if (entry.executionStartedAt === 0) {
+      entry.executionStartedAt = Date.now()
+    }
     entry.status = result.status || entry.status || 'success'
     entry.finishedAt = Date.now()
     entry.latency = result.latency || entry.latency || 0
+    entry.queueWaitMs = Math.max(0, entry.executionStartedAt - entry.createdAt)
+    entry.executionTimeMs = Math.max(0, entry.finishedAt - entry.executionStartedAt)
     entry.responseStatus = result.responseStatus || entry.responseStatus || 0
     entry.error = result.error || null
+    entry.abortReason = result.abortReason || null
+    entry.failureCategory = result.failureCategory || null
+    entry.retryHint = result.retryHint || null
     entry.tokensGenerated = result.tokensGenerated || entry.tokensGenerated || 0
     entry.selectedModel = result.modelName || entry.selectedModel || null
     entry.selectedNode = result.nodeHost || entry.selectedNode || null

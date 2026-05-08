@@ -25,6 +25,16 @@ export class LoadManager {
     return this.loads.get(nodeHost) ?? 0
   }
 
+  getMaxConcurrentPerNode(): number {
+    return this.maxConcurrentPerNode
+  }
+
+  getUtilization(nodeHost: string): number {
+    const max = this.maxConcurrentPerNode
+    if (max <= 0) return 0
+    return this.getCurrentLoad(nodeHost) / max
+  }
+
   /** Returns true when node is AT or OVER capacity (no more requests accepted). */
   isAtCapacity(nodeHost: string): boolean {
     return this.getCurrentLoad(nodeHost) >= this.maxConcurrentPerNode

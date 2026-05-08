@@ -1,6 +1,7 @@
 // network-scanner.ts - Scan local subnets for Ollama nodes
 import { request } from 'undici'
 import { networkInterfaces } from 'node:os'
+import { createConnection } from 'node:net'
 import { createLogger } from './logger.js'
 
 const logger = createLogger('scanner')
@@ -54,29 +55,56 @@ export class NetworkScanner {
 
   /** Probe a single host URL; returns the URL if Ollama responds, else null. */
   private async _probeHost(url: string): Promise<string | null> {
+    const host = new URL(url).hostname
+    const open = await this._tcpProbe(host)
+    if (!open) return null
+    // TCP port is open — verify it is actually Ollama
     try {
       const resp = await request(`${url}/api/version`, {
         method: 'GET',
-        headersTimeout: SCAN_TIMEOUT_MS,
-        bodyTimeout: SCAN_TIMEOUT_MS,
+        headersTimeout: 2000,
+        bodyTimeout: 2000,
+        signal: AbortSignal.timeout(2000),
       })
-      if (resp.statusCode === 200) {
-        await resp.body.dump()
-        return url
-      }
       await resp.body.dump()
+      return resp.statusCode === 200 ? url : null
     } catch {
-      // unreachable host — expected during scan
+      return null
     }
-    return null
   }
 
-  /** Enumerate /24 subnet prefixes from all non-loopback IPv4 interfaces. */
+  /** TCP-level port check. Returns true if the port accepts a connection. */
+  private _tcpProbe(host: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = createConnection({ host, port: OLLAMA_PORT })
+      const cleanup = (result: boolean) => {
+        socket.destroy()
+        resolve(result)
+      }
+      const timer = setTimeout(() => cleanup(false), SCAN_TIMEOUT_MS)
+      socket.once('connect', () => { clearTimeout(timer); cleanup(true) })
+      socket.once('error', () => { clearTimeout(timer); cleanup(false) })
+      socket.once('timeout', () => cleanup(false))
+      socket.setTimeout(SCAN_TIMEOUT_MS)
+    })
+  }
+
+  // Virtual/tunnel interface prefixes to skip (Docker, VPN, VMware, etc.)
+  private static readonly VIRTUAL_IFACE_PREFIXES = [
+    'utun', 'tun', 'tap', 'ppp',
+    'docker', 'veth', 'br-',
+    'vmnet', 'vmenet',
+    'bridge', 'awdl', 'llw',
+  ]
+
+  /** Enumerate /24 subnet prefixes from physical non-loopback IPv4 interfaces only. */
   _getLocalSubnets(): string[] {
     const subnets = new Set<string>()
     const ifaces = networkInterfaces()
-    for (const addrs of Object.values(ifaces)) {
+    for (const [name, addrs] of Object.entries(ifaces)) {
       if (!addrs) continue
+      const isVirtual = NetworkScanner.VIRTUAL_IFACE_PREFIXES.some((p) => name.startsWith(p))
+      if (isVirtual) continue
       for (const addr of addrs) {
         if (addr.family === 'IPv4' && !addr.internal) {
           const parts = addr.address.split('.')
@@ -94,4 +122,5 @@ export class NetworkScanner {
       (_, i) => `http://${subnetPrefix}.${i + 1}:${OLLAMA_PORT}`,
     )
   }
+
 }

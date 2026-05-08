@@ -87,7 +87,10 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
 
   const app = express()
   app.use(express.json({ limit: '10mb' }))
-  app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))
+  app.use(
+    '/dashboard-assets',
+    express.static(join(process.cwd(), 'dist', 'src', 'dashboard')),
+  )
 
   createRoutes(
     app,

@@ -1,9 +1,18 @@
 // routes/index.ts - Register all routes on the Express app
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Application } from 'express'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestRouter } from '../request-router.js'
 import type { RequestHistoryManager } from '../request-history.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DASHBOARD_HTML = readFileSync(
+  join(__dirname, '..', 'dashboard', 'index.html'),
+  'utf8',
+)
 
 import { createModelsRouter } from './models.js'
 import { createAdminRouter } from './admin.js'
@@ -28,6 +37,11 @@ export function createRoutes(
   requestRouter: RequestRouter,
   requestHistoryManager: RequestHistoryManager,
 ): void {
+  app.get('/', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html')
+    res.send(DASHBOARD_HTML)
+  })
+
   // Health at root level — used by load balancers and orchestrators
   app.get('/health', (_req, res) => {
     const reachableNodes = discoveryManager.getReachableNodeCount()

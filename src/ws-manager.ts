@@ -88,6 +88,9 @@ export class WsManager {
           reachable: node.reachable,
           lastSeen: node.lastSeen,
           activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
+          maxConcurrentRequests: this.#loadManager.getMaxConcurrentPerNode(),
+          atCapacity: this.#loadManager.isAtCapacity(nodeHost),
+          utilization: this.#loadManager.getUtilization(nodeHost),
           models: Object.fromEntries(
             Array.from(node.models.entries()).map(([modelName, modelInfo]) => [
               modelName,

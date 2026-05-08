@@ -3,6 +3,9 @@ import { LitElement, html } from 'lit'
 import {
   endpointLabel,
   fmt,
+  formatAbortReason,
+  formatFailureCategory,
+  formatRetryHint,
   renderFlagBadges,
   renderMessageThread,
   routeTarget,
@@ -170,6 +173,12 @@ export class UnifiedRequestDrawer extends LitElement {
             <div class="metadata-label">Latency</div>
             <div class="metadata-value">
               ${fmt.duration(this.request.latency)}
+              ${this.request.queueWaitMs > 0 || this.request.executionTimeMs > 0
+                ? html`<div class="muted" style="margin-top:0.3rem">
+                    Queue ${fmt.duration(this.request.queueWaitMs || 0)} · Exec
+                    ${fmt.duration(this.request.executionTimeMs || 0)}
+                  </div>`
+                : ''}
             </div>
           </div>
         </div>
@@ -188,6 +197,52 @@ export class UnifiedRequestDrawer extends LitElement {
               ${this.request.inputSummary || '—'}
             </div>
           </div>
+        </div>
+      </div>
+    `
+  }
+
+  renderActionableInsights() {
+    if (!this.request) return ''
+    const hasAbortReason = Boolean(this.request.abortReason)
+    const hasFailureCategory = Boolean(this.request.failureCategory)
+    const hasRetryHint = Boolean(this.request.retryHint)
+    if (!hasAbortReason && !hasFailureCategory && !hasRetryHint) return ''
+
+    return html`
+      <div class="detail-section">
+        <h3>Insights</h3>
+        <div class="detail-list">
+          ${hasAbortReason
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Abort reason</div>
+                  <div class="detail-row-sub">
+                    ${formatAbortReason(this.request.abortReason)}
+                  </div>
+                </div>
+              </div>`
+            : ''}
+          ${hasFailureCategory
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Failure category</div>
+                  <div class="detail-row-sub">
+                    ${formatFailureCategory(this.request.failureCategory)}
+                  </div>
+                </div>
+              </div>`
+            : ''}
+          ${hasRetryHint
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Recommended action</div>
+                  <div class="detail-row-sub">
+                    ${formatRetryHint(this.request.retryHint)}
+                  </div>
+                </div>
+              </div>`
+            : ''}
         </div>
       </div>
     `
@@ -273,6 +328,7 @@ export class UnifiedRequestDrawer extends LitElement {
 
     return html`
       ${this.renderRoutingSection()} ${this.renderCompactMetadata()}
+      ${this.renderActionableInsights()}
 
       <div class="detail-section">
         <h3>Conversation</h3>

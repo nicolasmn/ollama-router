@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals'
+import { describe, expect, it, jest } from '@jest/globals'
 import { RequestHistoryManager } from '../src/request-history.js'
 
 describe('RequestHistoryManager', () => {
@@ -145,5 +145,65 @@ describe('RequestHistoryManager', () => {
       role: 'assistant',
       content: 'Here is the concise summary.',
     })
+  })
+
+  it('tracks queue wait and execution duration separately', () => {
+    const history = new RequestHistoryManager()
+    let now = 1000
+    const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
+
+    try {
+      history.startRequest({
+        requestId: 'req-latency',
+        endpointType: 'chat',
+        reqBody: { messages: [{ role: 'user', content: 'hello' }] },
+        analysis: {},
+      })
+
+      now += 120
+      history.recordAttempt('req-latency', {
+        nodeHost: 'http://node-a:11434',
+        modelName: 'gemma4:e4b',
+        status: 'waiting',
+        attemptReason: 'first_try',
+      })
+
+      now += 30
+      history.finishRequest('req-latency', {
+        status: 'success',
+        responseStatus: 200,
+        latency: 30,
+      })
+    } finally {
+      dateNowSpy.mockRestore()
+    }
+
+    const [entry] = history.getRecentRequests()
+    expect(entry.queueWaitMs).toBe(120)
+    expect(entry.executionTimeMs).toBe(30)
+    expect(entry.attempts[0].attemptReason).toBe('first_try')
+  })
+
+  it('stores abort reason, failure category and retry hint', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-insights',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'hello' }] },
+      analysis: {},
+    })
+
+    history.finishRequest('req-insights', {
+      status: 'aborted',
+      abortReason: 'client_disconnect',
+      failureCategory: 'client_abort',
+      retryHint: 'no_retry',
+    })
+
+    const [entry] = history.getRecentRequests()
+    expect(entry.abortReason).toBe('client_disconnect')
+    expect(entry.failureCategory).toBe('client_abort')
+    expect(entry.retryHint).toBe('no_retry')
   })
 })

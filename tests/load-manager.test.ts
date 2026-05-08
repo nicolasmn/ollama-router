@@ -57,4 +57,15 @@ describe('LoadManager', () => {
     expect(lm.getCurrentLoad('node-a')).toBe(1)
     expect(lm.getCurrentLoad('node-b')).toBe(0)
   })
+
+  it('returns max concurrent per node', () => {
+    expect(lm.getMaxConcurrentPerNode()).toBe(3)
+  })
+
+  it('computes utilization per node', () => {
+    lm.incrementLoad('node-a')
+    expect(lm.getUtilization('node-a')).toBeCloseTo(1 / 3, 6)
+    lm.incrementLoad('node-a')
+    expect(lm.getUtilization('node-a')).toBeCloseTo(2 / 3, 6)
+  })
 })

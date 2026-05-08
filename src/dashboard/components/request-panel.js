@@ -88,6 +88,10 @@ export class RequestPanel extends LitElement {
             ? 'b-blue'
             : 'b-red'
     const metaItems = requestMetaItems(request)
+    const liveWaitMs =
+      request.status === 'waiting'
+        ? Math.max(0, Date.now() - (request.createdAt || Date.now()))
+        : 0
 
     const isActive =
       this.drawerOpen && this.selectedRequestId === request.requestId
@@ -129,6 +133,16 @@ export class RequestPanel extends LitElement {
               >
             </span>
             <span class="request-side-bottom">
+              ${liveWaitMs > 0
+                ? html`<span class="mono muted"
+                    >waiting ${fmt.duration(liveWaitMs)}</span
+                  >`
+                : ''}
+              ${request.queueWaitMs > 0 && request.status !== 'waiting'
+                ? html`<span class="mono muted"
+                    >queue ${fmt.duration(request.queueWaitMs)}</span
+                  >`
+                : ''}
               ${request.latency > 0
                 ? html`<span class="mono muted"
                     >took ${fmt.duration(request.latency)}</span

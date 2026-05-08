@@ -110,6 +110,53 @@ export function isAbortError(err: RouterError | null | undefined): boolean {
   )
 }
 
+function bindAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (!signal) return () => {}
+  if (signal.aborted) {
+    controller.abort()
+    return () => {}
+  }
+  const onAbort = () => controller.abort()
+  signal.addEventListener('abort', onAbort, { once: true })
+  return () => signal.removeEventListener('abort', onAbort)
+}
+
+function categorizeFailure(
+  err: RouterError,
+): { failureCategory: string; retryHint: string } {
+  const statusCode =
+    typeof err?.statusCode === 'number' ? Number(err.statusCode) : 0
+
+  if (isAbortError(err)) {
+    return { failureCategory: 'client_abort', retryHint: 'no_retry' }
+  }
+  if (statusCode === 429 || statusCode === 503 || err?.message === 'Node busy') {
+    return { failureCategory: 'capacity', retryHint: 'retry_later' }
+  }
+  if (
+    err?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    err?.code === 'UND_ERR_BODY_TIMEOUT' ||
+    err?.code === 'ETIMEDOUT'
+  ) {
+    return { failureCategory: 'timeout', retryHint: 'switch_model' }
+  }
+  if (
+    err?.code === 'ECONNREFUSED' ||
+    err?.code === 'EAI_AGAIN' ||
+    err?.code === 'ENOTFOUND' ||
+    err?.code === 'ECONNRESET'
+  ) {
+    return { failureCategory: 'network', retryHint: 'retry_later' }
+  }
+  if (statusCode >= 500) {
+    return { failureCategory: 'upstream_error', retryHint: 'switch_model' }
+  }
+  return { failureCategory: 'upstream_error', retryHint: 'retry_now' }
+}
+
 export async function forwardRequest(
   baseUrl: string,
   modelName: string,
@@ -149,6 +196,7 @@ export interface StreamingRequestOptions {
   discoveryManager: DiscoveryManager
   loadManager: LoadManager
   requestHistoryManager: RequestHistoryManager
+  signal?: AbortSignal
 }
 
 export async function handleStreamingRequest(
@@ -165,6 +213,7 @@ export async function handleStreamingRequest(
     discoveryManager,
     loadManager,
     requestHistoryManager,
+    signal,
   } = opts
 
   const resolvedCandidate = Array.isArray(candidate) ? candidate[0] : candidate
@@ -178,6 +227,19 @@ export async function handleStreamingRequest(
       error: 'No suitable models available',
     })
     res.status(503).json({ error: 'No suitable models available' })
+    return
+  }
+
+  if (signal?.aborted) {
+    requestHistoryManager.finishRequest(requestId, {
+      status: 'aborted',
+      responseStatus: 0,
+      abortReason: 'client_disconnect',
+      failureCategory: 'client_abort',
+      retryHint: 'no_retry',
+      nodeHost,
+      modelName,
+    })
     return
   }
 
@@ -200,6 +262,7 @@ export async function handleStreamingRequest(
   const startTime = Date.now()
   const abortController = new AbortController()
   const onClientClose = () => abortController.abort()
+  const removeExternalAbortListener = bindAbortSignal(signal, abortController)
   res.once('close', onClientClose)
 
   try {
@@ -207,6 +270,7 @@ export async function handleStreamingRequest(
       nodeHost,
       modelName,
       status: 'waiting',
+      attemptReason: 'first_try',
     })
 
     const resp = await request(`${nodeHost}${endpoint}`, {
@@ -267,6 +331,9 @@ export async function handleStreamingRequest(
     const latency = Date.now() - startTime
 
     if (clientDisconnected) {
+      const abortReason = signal?.aborted || res.destroyed
+        ? 'client_disconnect'
+        : 'upstream_abort'
       logger.info(
         { requestId, nodeHost, modelName, latency },
         'Client disconnected during streaming',
@@ -281,10 +348,14 @@ export async function handleStreamingRequest(
         status: 'aborted',
         responseStatus: 0,
         latency,
+        abortReason,
+        failureCategory: 'client_abort',
+        retryHint: 'no_retry',
         nodeHost,
         modelName,
       })
     } else {
+      const { failureCategory, retryHint } = categorizeFailure(typedErr)
       const responseStatus = res.headersSent ? res.statusCode : 503
       logger.error(
         { requestId, nodeHost, modelName, endpoint, err: typedErr.message },
@@ -302,6 +373,8 @@ export async function handleStreamingRequest(
         status: 'failed',
         responseStatus,
         latency,
+        failureCategory,
+        retryHint,
         nodeHost,
         modelName,
         error: typedErr.message,
@@ -314,6 +387,7 @@ export async function handleStreamingRequest(
       }
     }
   } finally {
+    removeExternalAbortListener()
     res.off('close', onClientClose)
     loadManager.decrementLoad(nodeHost)
   }
@@ -354,8 +428,38 @@ export async function tryCandidatesWithRetry(
     signal,
   } = opts
 
-  for (const candidate of candidates) {
-    if (signal?.aborted) throw createAbortError()
+  let lastFailure: {
+    responseStatus: number
+    error: string
+    failureCategory: string
+    retryHint: string
+    nodeHost: string
+    modelName: string
+  } | null = null
+
+  if (signal?.aborted) {
+    requestHistoryManager.finishRequest(requestId, {
+      status: 'aborted',
+      responseStatus: 0,
+      abortReason: 'client_disconnect',
+      failureCategory: 'client_abort',
+      retryHint: 'no_retry',
+    })
+    return true
+  }
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (signal?.aborted) {
+      requestHistoryManager.finishRequest(requestId, {
+        status: 'aborted',
+        responseStatus: 0,
+        abortReason: 'client_disconnect',
+        failureCategory: 'client_abort',
+        retryHint: 'no_retry',
+      })
+      return true
+    }
+    const candidate = candidates[index]
     const { nodeHost, modelName } = candidate
 
     try {
@@ -365,7 +469,16 @@ export async function tryCandidatesWithRetry(
         nodeHost,
         modelName,
         status: 'capacity',
+        attemptReason: index === 0 ? 'first_try' : 'fallback_capacity',
       })
+      lastFailure = {
+        responseStatus: 429,
+        error: 'Node at capacity',
+        failureCategory: 'capacity',
+        retryHint: 'retry_later',
+        nodeHost,
+        modelName,
+      }
       logger.debug({ requestId, nodeHost }, 'Node capacity exceeded, trying next')
       continue
     }
@@ -377,6 +490,7 @@ export async function tryCandidatesWithRetry(
         nodeHost,
         modelName,
         status: 'waiting',
+        attemptReason: index === 0 ? 'first_try' : 'fallback_error',
       })
       const result = await forwardRequest(
         nodeHost,
@@ -422,6 +536,31 @@ export async function tryCandidatesWithRetry(
       return true
     } catch (err) {
       const typedErr = err as RouterError
+      if (isAbortError(typedErr) || signal?.aborted) {
+        const latency = Date.now() - startTime
+        requestHistoryManager.recordAttempt(requestId, {
+          nodeHost,
+          modelName,
+          status: 'aborted',
+          latency,
+          attemptReason: index === 0 ? 'first_try' : 'fallback_error',
+        })
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'aborted',
+          responseStatus: 0,
+          latency,
+          abortReason: 'client_disconnect',
+          failureCategory: 'client_abort',
+          retryHint: 'no_retry',
+          nodeHost,
+          modelName,
+        })
+        return true
+      }
+      const { failureCategory, retryHint } = categorizeFailure(typedErr)
+      const responseStatus =
+        typeof typedErr?.statusCode === 'number' ? typedErr.statusCode : 503
+      const latency = Date.now() - startTime
       logger.warn(
         { requestId, nodeHost, modelName, err: typedErr.message },
         failureLog ?? `${endpoint} failed, trying next`,
@@ -431,12 +570,33 @@ export async function tryCandidatesWithRetry(
         nodeHost,
         modelName,
         status: 'failed',
-        latency: Date.now() - startTime,
+        latency,
         error: typedErr.message,
+        attemptReason: index === 0 ? 'first_try' : 'fallback_error',
       })
+      lastFailure = {
+        responseStatus,
+        error: typedErr.message,
+        failureCategory,
+        retryHint,
+        nodeHost,
+        modelName,
+      }
     } finally {
       loadManager.decrementLoad(nodeHost)
     }
+  }
+
+  if (lastFailure) {
+    requestHistoryManager.finishRequest(requestId, {
+      status: 'failed',
+      responseStatus: lastFailure.responseStatus,
+      error: lastFailure.error,
+      failureCategory: lastFailure.failureCategory,
+      retryHint: lastFailure.retryHint,
+      modelName: lastFailure.modelName,
+      nodeHost: lastFailure.nodeHost,
+    })
   }
   return false
 }

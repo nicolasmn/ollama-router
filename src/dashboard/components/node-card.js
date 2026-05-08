@@ -73,6 +73,12 @@ export class NodeCard extends LitElement {
                   >${this.node.activeRequests} active</span
                 >`
               : ''}
+            ${Number.isFinite(this.node.maxConcurrentRequests)
+              ? html`<span class="badge ${this.node.atCapacity ? 'b-red' : ''}">
+                  ${Math.round((this.node.utilization || 0) * 100)}%
+                  · ${this.node.activeRequests || 0}/${this.node.maxConcurrentRequests}
+                </span>`
+              : ''}
             <span class="badge">
               ${models.length} model${models.length === 1 ? '' : 's'}
             </span>
