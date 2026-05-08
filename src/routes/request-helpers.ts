@@ -157,6 +157,17 @@ function categorizeFailure(
   return { failureCategory: 'upstream_error', retryHint: 'retry_now' }
 }
 
+function sanitizeMessages(body: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(body.messages)) return body
+  const messages = body.messages.map((msg: unknown) => {
+    if (msg && typeof msg === 'object' && (msg as Record<string, unknown>).content === null) {
+      return { ...(msg as Record<string, unknown>), content: '' }
+    }
+    return msg
+  })
+  return { ...body, messages }
+}
+
 export async function forwardRequest(
   baseUrl: string,
   modelName: string,
@@ -167,7 +178,7 @@ export async function forwardRequest(
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reqBody),
+    body: JSON.stringify(sanitizeMessages(reqBody)),
     headersTimeout: INFERENCE_TIMEOUT,
     bodyTimeout: INFERENCE_TIMEOUT,
     signal: options.signal,
@@ -276,7 +287,7 @@ export async function handleStreamingRequest(
     const resp = await request(`${nodeHost}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...reqBody, model: modelName }),
+      body: JSON.stringify(sanitizeMessages({ ...reqBody, model: modelName })),
       headersTimeout: INFERENCE_TIMEOUT,
       bodyTimeout: INFERENCE_TIMEOUT,
       signal: abortController.signal,
