@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises'
 import pino from 'pino'
 import type { Application, Request, Response } from 'express'
 import { VIRTUAL_MODELS } from '../request-router.js'
+import { INFERENCE_TIMEOUT } from '../config.js'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { ModelInfo } from '../models.js'
 
@@ -399,8 +400,8 @@ async function proxyStreamingToNode(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body),
-      headersTimeout: 300_000,
-      bodyTimeout: 300_000,
+      headersTimeout: INFERENCE_TIMEOUT,
+      bodyTimeout: INFERENCE_TIMEOUT,
     })
     res.status(upstream.statusCode)
     if (upstream.headers['content-type']) {
