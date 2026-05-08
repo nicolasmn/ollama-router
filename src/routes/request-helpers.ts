@@ -1,6 +1,7 @@
 // request-helpers.ts - Shared request handling utilities
 import { request } from 'undici'
 import { pipeline } from 'node:stream/promises'
+import { Transform } from 'node:stream'
 import type { Response } from 'express'
 import { INFERENCE_TIMEOUT } from '../config.js'
 import { createLogger } from '../logger.js'
@@ -312,7 +313,52 @@ export async function handleStreamingRequest(
     }
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('X-Accel-Buffering', 'no')
-    await pipeline(resp.body, res)
+
+    // Parse SSE data lines while streaming so the dashboard updates immediately.
+    let sseBuffer = ''
+    const captureTransform = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        sseBuffer += chunk.toString('utf-8')
+        let newlineIndex = sseBuffer.indexOf('\n')
+        while (newlineIndex !== -1) {
+          const line = sseBuffer.slice(0, newlineIndex)
+          sseBuffer = sseBuffer.slice(newlineIndex + 1)
+          const normalizedLine = line.trimStart()
+          if (normalizedLine.startsWith('data:')) {
+            const data = normalizedLine.slice(5).trimStart()
+            if (data && data !== '[DONE]') {
+              try {
+                requestHistoryManager.applyStreamingEvent(
+                  requestId,
+                  JSON.parse(data) as Record<string, unknown>,
+                )
+              } catch {
+                // Ignore malformed partial or non-JSON data lines.
+              }
+            }
+          }
+          newlineIndex = sseBuffer.indexOf('\n')
+        }
+        callback(null, chunk)
+      },
+    })
+
+    await pipeline(resp.body, captureTransform, res)
+
+    const trailingLine = sseBuffer.trimStart()
+    if (trailingLine.startsWith('data:')) {
+      const data = trailingLine.slice(5).trimStart()
+      if (data && data !== '[DONE]') {
+        try {
+          requestHistoryManager.applyStreamingEvent(
+            requestId,
+            JSON.parse(data) as Record<string, unknown>,
+          )
+        } catch {
+          // Ignore malformed trailing SSE payload.
+        }
+      }
+    }
 
     const latency = Date.now() - startTime
     discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0, endpoint)
@@ -329,6 +375,9 @@ export async function handleStreamingRequest(
       nodeHost,
       modelName,
     })
+
+    requestHistoryManager.finalizeStreamingResponse(requestId)
+
     logger.info(
       { requestId, nodeHost, modelName, endpoint, latency },
       'Streaming request successful',

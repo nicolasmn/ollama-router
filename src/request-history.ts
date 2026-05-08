@@ -33,9 +33,24 @@ export interface AnalysisSummary {
   maxOutputTokens: number
 }
 
+export interface ToolCallFunction {
+  name: string
+  arguments: string
+}
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: ToolCallFunction
+}
+
 export interface MessageRecord {
   role: string
   content: string
+  thinking?: string
+  toolCalls?: ToolCall[]
+  toolCallId?: string
+  name?: string
 }
 
 export interface ConversationInfo {
@@ -146,6 +161,39 @@ function stringifyContent(content: unknown): string {
     .join(' ')
 }
 
+function stringifyFragment(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return stringifyContent(value)
+  if (!value || typeof value !== 'object') return ''
+  const record = value as Record<string, unknown>
+  if (typeof record.text === 'string') return record.text
+  return ''
+}
+
+function extractThinkingFromTaggedContent(
+  content: string,
+): { content: string; thinking: string } {
+  if (!content) {
+    return { content: '', thinking: '' }
+  }
+
+  const thinkingParts: string[] = []
+  const withoutThinkingTags = content.replace(
+    /<think>([\s\S]*?)<\/think>/giu,
+    (_, group: string) => {
+      if (group?.trim()) {
+        thinkingParts.push(group.trim())
+      }
+      return ' '
+    },
+  )
+
+  return {
+    content: withoutThinkingTags.replace(/\s+/gu, ' ').trim(),
+    thinking: thinkingParts.join('\n\n').trim(),
+  }
+}
+
 function stringifyEmbeddingInput(input: unknown): string {
   if (typeof input === 'string') return input
   if (!Array.isArray(input)) return ''
@@ -251,6 +299,24 @@ function buildConversationInfo(
   }
 }
 
+function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const calls: ToolCall[] = []
+  for (const item of raw as Array<Record<string, unknown>>) {
+    const fn = item?.function as Record<string, unknown> | undefined
+    if (!fn) continue
+    calls.push({
+      id: String(item?.id || ''),
+      type: 'function',
+      function: {
+        name: String(fn?.name || ''),
+        arguments: typeof fn?.arguments === 'string' ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+      },
+    })
+  }
+  return calls.length > 0 ? calls : undefined
+}
+
 function buildMessageList(
   reqBody: Record<string, unknown>,
   endpointType: string,
@@ -259,10 +325,17 @@ function buildMessageList(
   const messages = Array.isArray(reqBody?.messages)
     ? (reqBody.messages as Array<Record<string, unknown>>)
     : []
-  return messages.map((msg) => ({
-    role: String(msg?.role || 'unknown'),
-    content: stringifyContent(msg?.content),
-  }))
+  return messages.map((msg) => {
+    const record: MessageRecord = {
+      role: String(msg?.role || 'unknown'),
+      content: stringifyContent(msg?.content),
+    }
+    const toolCalls = normalizeToolCalls(msg?.tool_calls)
+    if (toolCalls) record.toolCalls = toolCalls
+    if (msg?.tool_call_id) record.toolCallId = String(msg.tool_call_id)
+    if (msg?.name) record.name = String(msg.name)
+    return record
+  })
 }
 
 function buildInputSummary(
@@ -304,7 +377,11 @@ function buildAnalysisSummary(analysis: Partial<AnalysisSummary>): AnalysisSumma
 
 function normalizeResponseContent(content: unknown): string {
   if (typeof content === 'string') return content.trim()
-  return stringifyContent(content).trim()
+  return stringifyFragment(content).trim()
+}
+
+function normalizeResponseFragment(content: unknown): string {
+  return stringifyFragment(content)
 }
 
 function summariseCandidate(candidate: {
@@ -461,10 +538,218 @@ export class RequestHistoryManager {
     if (!Array.isArray(entry.messageList)) {
       entry.messageList = []
     }
-    const normalizedContent = normalizeResponseContent(responseContent)
-    if (!normalizedContent) return false
-    entry.messageList.push({ role: 'assistant', content: normalizedContent })
+
+    // Support plain string (e.g. test helpers) or choices[0] object
+    let content: string
+    let thinking: string | undefined
+    let toolCalls: ToolCall[] | undefined
+
+    if (typeof responseContent === 'string') {
+      content = responseContent.trim()
+    } else {
+      // responseContent is choices[0] from OpenAI response — unwrap .message
+      const choice = responseContent as Record<string, unknown> | null | undefined
+      const message = (choice?.message ?? choice) as Record<string, unknown> | null | undefined
+
+      content = normalizeResponseContent(message?.content)
+      const thinkingFromFields = [
+        stringifyFragment(message?.thinking),
+        stringifyFragment(message?.reasoning_content),
+        stringifyFragment(message?.reasoning),
+      ]
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .trim()
+      thinking = thinkingFromFields || undefined
+      toolCalls = normalizeToolCalls(message?.tool_calls)
+    }
+
+    const extracted = extractThinkingFromTaggedContent(content)
+    content = extracted.content
+    if (extracted.thinking) {
+      thinking = thinking
+        ? `${thinking}\n\n${extracted.thinking}`
+        : extracted.thinking
+    }
+
+    if (!content && !thinking && !toolCalls) return false
+
+    const record: MessageRecord = { role: 'assistant', content }
+    if (thinking) record.thinking = thinking
+    if (toolCalls) record.toolCalls = toolCalls
+    entry.messageList.push(record)
     return true
+  }
+
+  updateResponseFromSSE(requestId: string, rawSSE: string): boolean {
+    const entry = this.#findRequest(requestId)
+    if (!entry) return false
+    if (!Array.isArray(entry.messageList)) {
+      entry.messageList = []
+    }
+
+    const assembled = this.#parseSSEChunks(rawSSE)
+    if (!assembled.content && !assembled.thinking && assembled.toolCalls.length === 0) return false
+
+    const record: MessageRecord = { role: 'assistant', content: assembled.content }
+    if (assembled.thinking) record.thinking = assembled.thinking
+    if (assembled.toolCalls.length > 0) record.toolCalls = assembled.toolCalls
+    entry.messageList.push(record)
+    return true
+  }
+
+  applyStreamingEvent(
+    requestId: string,
+    payload: Record<string, unknown>,
+  ): boolean {
+    const entry = this.#findRequest(requestId)
+    if (!entry) return false
+    if (!Array.isArray(entry.messageList)) {
+      entry.messageList = []
+    }
+
+    const delta = (
+      (payload?.choices as Array<Record<string, unknown>>)?.[0]?.delta
+    ) as Record<string, unknown> | undefined
+    if (!delta) return false
+
+    const contentPart = normalizeResponseFragment(delta.content)
+    const thinkingPart = [
+      normalizeResponseFragment(delta.thinking),
+      normalizeResponseFragment(delta.reasoning_content),
+      normalizeResponseFragment(delta.reasoning),
+    ]
+      .filter(Boolean)
+      .join('')
+
+    const toolCalls = Array.isArray(delta.tool_calls)
+      ? (delta.tool_calls as Array<Record<string, unknown>>)
+      : []
+
+    if (!contentPart && !thinkingPart && toolCalls.length === 0) {
+      return false
+    }
+
+    const message = this.#getOrCreateStreamingAssistantMessage(entry)
+    if (contentPart) {
+      message.content = `${message.content || ''}${contentPart}`
+    }
+    if (thinkingPart) {
+      message.thinking = `${message.thinking || ''}${thinkingPart}`
+    }
+
+    if (toolCalls.length > 0) {
+      const current = message.toolCalls ? [...message.toolCalls] : []
+      for (const rawCall of toolCalls) {
+        const idx =
+          typeof rawCall.index === 'number' && rawCall.index >= 0
+            ? rawCall.index
+            : current.length
+        while (current.length <= idx) {
+          current.push({
+            id: '',
+            type: 'function',
+            function: { name: '', arguments: '' },
+          })
+        }
+        const target = current[idx]
+        if (rawCall.id) {
+          target.id = String(rawCall.id)
+        }
+        const fn = rawCall.function as Record<string, unknown> | undefined
+        if (fn?.name) {
+          target.function.name = `${target.function.name}${String(fn.name)}`
+        }
+        if (fn?.arguments) {
+          target.function.arguments = `${target.function.arguments}${String(fn.arguments)}`
+        }
+      }
+      message.toolCalls = current
+    }
+
+    return true
+  }
+
+  finalizeStreamingResponse(requestId: string): boolean {
+    const entry = this.#findRequest(requestId)
+    if (!entry || !Array.isArray(entry.messageList) || entry.messageList.length === 0) {
+      return false
+    }
+
+    const last = entry.messageList[entry.messageList.length - 1]
+    if (!last || last.role !== 'assistant') {
+      return false
+    }
+
+    const extracted = extractThinkingFromTaggedContent(last.content || '')
+    last.content = extracted.content
+    if (extracted.thinking) {
+      last.thinking = last.thinking
+        ? `${last.thinking}\n\n${extracted.thinking}`.trim()
+        : extracted.thinking
+    } else if (last.thinking) {
+      last.thinking = last.thinking.trim()
+    }
+
+    return true
+  }
+
+  #parseSSEChunks(rawSSE: string): { content: string; thinking: string; toolCalls: ToolCall[] } {
+    let content = ''
+    let thinking = ''
+    // Sparse map of tool_call delta assembly by index
+    const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
+
+    for (const line of rawSSE.split('\n')) {
+      const normalizedLine = line.trimStart()
+      if (!normalizedLine.startsWith('data:')) continue
+      const data = normalizedLine.slice(5).trimStart()
+      if (data === '[DONE]') break
+      try {
+        const parsed = JSON.parse(data) as Record<string, unknown>
+        const delta = (
+          (parsed?.choices as Array<Record<string, unknown>>)?.[0]?.delta
+        ) as Record<string, unknown> | undefined
+        if (!delta) continue
+
+        content += stringifyFragment(delta.content)
+        thinking += stringifyFragment(delta.thinking)
+        thinking += stringifyFragment(delta.reasoning_content)
+        thinking += stringifyFragment(delta.reasoning)
+
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls as Array<Record<string, unknown>>) {
+            const idx = typeof tc.index === 'number' ? tc.index : 0
+            if (!toolCallMap.has(idx)) {
+              toolCallMap.set(idx, { id: String(tc.id || ''), name: '', arguments: '' })
+            }
+            const entry = toolCallMap.get(idx)!
+            if (tc.id) entry.id = String(tc.id)
+            const fn = tc.function as Record<string, unknown> | undefined
+            if (fn?.name) entry.name += String(fn.name)
+            if (fn?.arguments) entry.arguments += String(fn.arguments)
+          }
+        }
+      } catch {
+        // skip malformed SSE lines
+      }
+    }
+
+    const extracted = extractThinkingFromTaggedContent(content)
+    content = extracted.content
+    if (extracted.thinking) {
+      thinking = thinking
+        ? `${thinking}\n\n${extracted.thinking}`
+        : extracted.thinking
+    }
+
+    const toolCalls: ToolCall[] = []
+    for (const [, tc] of [...toolCallMap.entries()].sort((a, b) => a[0] - b[0])) {
+      toolCalls.push({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.arguments } })
+    }
+
+    return { content: content.trim(), thinking: thinking.trim(), toolCalls }
   }
 
   getRecentRequests(): RequestEntry[] {
@@ -478,5 +763,15 @@ export class RequestHistoryManager {
 
   #findRequest(requestId: string): RequestEntry | null {
     return this.requests.find((r) => r.requestId === requestId) || null
+  }
+
+  #getOrCreateStreamingAssistantMessage(entry: RequestEntry): MessageRecord {
+    const last = entry.messageList[entry.messageList.length - 1]
+    if (last && last.role === 'assistant') {
+      return last
+    }
+    const created: MessageRecord = { role: 'assistant', content: '' }
+    entry.messageList.push(created)
+    return created
   }
 }

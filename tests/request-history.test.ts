@@ -206,4 +206,92 @@ describe('RequestHistoryManager', () => {
     expect(entry.failureCategory).toBe('client_abort')
     expect(entry.retryHint).toBe('no_retry')
   })
+
+  it('extracts thinking from streamed reasoning chunks', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-stream-thinking',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'plan this' }] },
+      analysis: {},
+    })
+
+    const updated = history.updateResponseFromSSE(
+      'req-stream-thinking',
+      [
+        'data: {"choices":[{"delta":{"reasoning_content":"Step 1"}}]}',
+        'data:{"choices":[{"delta":{"content":" Final answer"}}]}',
+        'data: [DONE]',
+      ].join('\n'),
+    )
+
+    expect(updated).toBe(true)
+    const [entry] = history.getRecentRequests()
+    const assistantMessage = entry.messageList.at(-1)
+    expect(assistantMessage).toEqual({
+      role: 'assistant',
+      content: 'Final answer',
+      thinking: 'Step 1',
+    })
+  })
+
+  it('extracts <think> blocks from assistant content', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-think-tags',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'solve this' }] },
+      analysis: {},
+    })
+
+    const updated = history.updateResponseContent('req-think-tags', {
+      message: {
+        role: 'assistant',
+        content: '<think>internal analysis</think>Final answer',
+      },
+    })
+
+    expect(updated).toBe(true)
+    const [entry] = history.getRecentRequests()
+    const assistantMessage = entry.messageList.at(-1)
+    expect(assistantMessage).toEqual({
+      role: 'assistant',
+      content: 'Final answer',
+      thinking: 'internal analysis',
+    })
+  })
+
+  it('applies streaming delta events incrementally', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-live-stream',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'hello' }] },
+      analysis: {},
+    })
+
+    const first = history.applyStreamingEvent('req-live-stream', {
+      choices: [{ delta: { role: 'assistant', content: 'Hel' } }],
+    })
+    expect(first).toBe(true)
+
+    let [entry] = history.getRecentRequests()
+    expect(entry.messageList.at(-1)).toEqual({ role: 'assistant', content: 'Hel' })
+
+    const second = history.applyStreamingEvent('req-live-stream', {
+      choices: [{ delta: { content: 'lo', reasoning_content: 'thinking...' } }],
+    })
+    expect(second).toBe(true)
+
+    history.finalizeStreamingResponse('req-live-stream')
+    const [updatedEntry] = history.getRecentRequests()
+    expect(updatedEntry.messageList.at(-1)).toEqual({
+      role: 'assistant',
+      content: 'Hello',
+      thinking: 'thinking...',
+    })
+  })
 })

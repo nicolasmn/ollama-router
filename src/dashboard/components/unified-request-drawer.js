@@ -7,7 +7,7 @@ import {
   formatFailureCategory,
   formatRetryHint,
   renderFlagBadges,
-  renderMessageThread,
+  renderConversationThread,
   routeTarget,
 } from './dashboard-utils.js'
 
@@ -332,7 +332,7 @@ export class UnifiedRequestDrawer extends LitElement {
 
       <div class="detail-section">
         <h3>Conversation</h3>
-        ${renderMessageThread(this.request)}
+        ${renderConversationThread(this.request)}
       </div>
 
       ${this.request.error

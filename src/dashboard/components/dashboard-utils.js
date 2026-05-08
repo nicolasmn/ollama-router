@@ -205,6 +205,174 @@ export function renderFlagBadges(analysis = {}) {
 }
 
 export function renderMessageThread(request) {
+  return renderConversationThread(request)
+}
+
+// ─── Conversation Thread Renderer ─────────────────────────────────
+
+function renderTypingIndicator(label = 'Typing') {
+  return html`
+    <span class="typing-indicator" aria-label="${label}">
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+    </span>
+  `
+}
+
+function renderContentWithCodeBlocks(content, options = {}) {
+  if (!content) {
+    return options.showTyping
+      ? renderTypingIndicator(options.typingLabel || 'Typing')
+      : html`<span class="muted">(empty)</span>`
+  }
+
+  // Split on fenced code blocks (```lang\n...\n```)
+  const parts = []
+  const fencedRegex = /```(\w*)\n?([\s\S]*?)```/g
+  let lastIndex = 0
+  let match
+
+  while ((match = fencedRegex.exec(content)) !== null) {
+    const before = content.slice(lastIndex, match.index)
+    if (before) parts.push(renderInlineText(before))
+    const lang = match[1] || ''
+    const code = match[2]
+    parts.push(
+      html`<pre class="msg-code-block"><code class="msg-code-lang">${lang
+        ? html`<span class="msg-code-label">${lang}</span>`
+        : ''}</code><code>${code}</code></pre>`,
+    )
+    lastIndex = match.index + match[0].length
+  }
+
+  const trailing = content.slice(lastIndex)
+  if (trailing) parts.push(renderInlineText(trailing))
+  return parts
+}
+
+function renderInlineText(text) {
+  // Wrap `inline code` with <code> tags — split on backtick pairs
+  const inlineParts = []
+  const inlineRegex = /`([^`]+)`/g
+  let lastIdx = 0
+  let m
+
+  while ((m = inlineRegex.exec(text)) !== null) {
+    const before = text.slice(lastIdx, m.index)
+    if (before) inlineParts.push(html`<span class="msg-text">${before}</span>`)
+    inlineParts.push(html`<code class="msg-code-inline">${m[1]}</code>`)
+    lastIdx = m.index + m[0].length
+  }
+
+  const rest = text.slice(lastIdx)
+  if (rest) inlineParts.push(html`<span class="msg-text">${rest}</span>`)
+  return inlineParts
+}
+
+function renderThinkingBlock(thinking, inProgress = false) {
+  if (!thinking && !inProgress) return ''
+  return html`
+    <details class="msg-thinking ${inProgress ? 'is-live' : ''}" ?open=${inProgress}>
+      <summary class="msg-thinking-summary">
+        <span class="msg-thinking-icon">◆</span>
+        Thinking
+      </summary>
+      <div class="msg-thinking-content">
+        ${thinking || renderTypingIndicator('Thinking in progress')}
+      </div>
+    </details>
+  `
+}
+
+function renderToolCallBlocks(toolCalls) {
+  if (!toolCalls?.length) return ''
+  return toolCalls.map((tc) => {
+    let prettyArgs = tc.function.arguments
+    try {
+      prettyArgs = JSON.stringify(JSON.parse(tc.function.arguments), null, 2)
+    } catch {
+      // keep raw
+    }
+    return html`
+      <div class="msg-tool-call">
+        <div class="msg-tool-call-header">
+          <span class="msg-tool-call-icon">ƒ</span>
+          <span class="msg-tool-call-name">${tc.function.name}</span>
+          ${tc.id ? html`<span class="msg-tool-call-id">${tc.id}</span>` : ''}
+        </div>
+        <pre class="msg-tool-call-args">${prettyArgs}</pre>
+      </div>
+    `
+  })
+}
+
+function renderToolResultBlock(msg, allMessages) {
+  // Find the matching tool_call to show its function name
+  let fnName = msg.name || ''
+  if (!fnName && msg.toolCallId && allMessages) {
+    for (const m of allMessages) {
+      if (m.toolCalls) {
+        const tc = m.toolCalls.find((c) => c.id === msg.toolCallId)
+        if (tc) {
+          fnName = tc.function.name
+          break
+        }
+      }
+    }
+  }
+  return html`
+    <div class="msg-tool-result">
+      <div class="msg-tool-result-header">
+        <span class="msg-tool-result-icon">↩</span>
+        ${fnName
+          ? html`<span class="msg-tool-result-name">${fnName}</span>`
+          : html`<span class="msg-tool-result-name muted">tool result</span>`}
+        ${msg.toolCallId
+          ? html`<span class="msg-tool-call-id">${msg.toolCallId}</span>`
+          : ''}
+      </div>
+      <pre class="msg-tool-result-content">${msg.content || html`<span class="muted">(empty)</span>`}</pre>
+    </div>
+  `
+}
+
+function renderMessageBody(msg, allMessages, isLiveAssistant = false) {
+  if (msg.role === 'tool') {
+    return renderToolResultBlock(msg, allMessages)
+  }
+
+  const thinking = renderThinkingBlock(msg.thinking, isLiveAssistant)
+  const toolCalls = renderToolCallBlocks(msg.toolCalls)
+  const content = renderContentWithCodeBlocks(msg.content, {
+    showTyping: isLiveAssistant,
+    typingLabel: 'Assistant is typing',
+  })
+
+  if (msg.role === 'system' && msg.content?.length > 200) {
+    return html`
+      ${thinking}
+      ${toolCalls}
+      <details class="msg-system-details">
+        <summary class="msg-system-summary">
+          ${msg.content.slice(0, 120).trim()}…
+        </summary>
+        <div class="msg-body-inner">${content}</div>
+      </details>
+    `
+  }
+
+  return html`${thinking}${toolCalls}<div class="msg-body-inner">${content}</div>`
+}
+
+const ROLE_LABELS = {
+  system: 'System',
+  user: 'User',
+  assistant: 'Assistant',
+  tool: 'Tool',
+}
+
+export function renderConversationThread(request) {
   if (!request) {
     return html`<div class="empty">No request selected.</div>`
   }
@@ -215,27 +383,39 @@ export function renderMessageThread(request) {
     </div>`
   }
 
+  const messages = request.messageList
+  const requestInProgress =
+    request.status === 'waiting' || request.status === 'running'
+
   return html`
     <div class="message-thread">
-      ${request.messageList
-        .slice()
-        .reverse()
-        .map(
-          (msg, i) => html`
-            <div class="msg msg--${msg.role}">
-              <div class="msg-header">
-                <span class="msg-avatar msg-avatar--${msg.role}"
-                  >${msg.role.charAt(0).toUpperCase()}</span
-                >
-                <span class="msg-role">${msg.role}</span>
-                <span class="msg-index">#${i + 1}</span>
-              </div>
-              <div class="msg-body">
-                ${msg.content || html`<span class="muted">(empty)</span>`}
-              </div>
+      ${messages.map(
+        (msg, i) => {
+          const isLastMessage = i === messages.length - 1
+          const isLiveAssistant =
+            requestInProgress && isLastMessage && msg.role === 'assistant'
+
+          return html`
+          <div class="msg msg--${msg.role}">
+            <div class="msg-header">
+              <span class="msg-avatar msg-avatar--${msg.role}">
+                ${msg.role === 'tool'
+                  ? html`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>`
+                  : msg.role.charAt(0).toUpperCase()}
+              </span>
+              <span class="msg-role">
+                ${ROLE_LABELS[msg.role] ?? msg.role}
+              </span>
+              ${msg.name ? html`<span class="msg-fn-name">${msg.name}</span>` : ''}
+              <span class="msg-index">#${i + 1}</span>
             </div>
-          `,
-        )}
+            <div class="msg-body">
+              ${renderMessageBody(msg, messages, isLiveAssistant)}
+            </div>
+          </div>
+        `
+        },
+      )}
     </div>
   `
 }
