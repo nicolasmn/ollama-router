@@ -101,7 +101,7 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   const __dirname = dirname(__filename)
   app.use(
     '/dashboard-assets',
-    express.static(join(__dirname, '..', 'dashboard')),
+    express.static(join(__dirname, 'dashboard')),
   )
 
   createRoutes(
