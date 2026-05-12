@@ -7,16 +7,43 @@ import type { ModelProfileData } from '../src/models.js'
 
 function makeDiscovery(
   nodes: Record<string, Record<string, ModelProfileData>>,
+  cloudHosts: string[] = [],
+  metricsOverrides: Record<
+    string,
+    Record<
+      string,
+      Partial<{
+        recentLatency: number
+        recentTps: number
+        lastRoutedAt: number
+      }>
+    >
+  > = {},
 ): DiscoveryManager {
   const dm = new DiscoveryManager({ ollamaNodes: [] })
-  ;(dm as any).getScanStatus = () => ({ inProgress: false, lastScanMs: Date.now(), lastScanAgo: 0 })
+  ;(dm as any).getScanStatus = () => ({
+    inProgress: false,
+    lastScanMs: Date.now(),
+    lastScanAgo: 0,
+  })
   ;(dm as any).discoverNetworkNodes = jest.fn(async () => {})
+  const cloudSet = new Set(cloudHosts)
   for (const [host, models] of Object.entries(nodes)) {
-    const node = new NodeInfo(host)
+    const node = new NodeInfo(host, cloudSet.has(host))
     node.reachable = true
     for (const [name, profileData] of Object.entries(models)) {
       const profile = new ModelProfile(profileData)
-      node.models.set(name, new ModelInfo(name, 'test', 1e9, profile))
+      const info = new ModelInfo(name, 'test', 1e9, profile)
+      const overrides = metricsOverrides[host]?.[name]
+      if (overrides) {
+        if (overrides.recentLatency !== undefined)
+          info.recentLatency = overrides.recentLatency
+        if (overrides.recentTps !== undefined)
+          info.recentTps = overrides.recentTps
+        if (overrides.lastRoutedAt !== undefined)
+          info.lastRoutedAt = overrides.lastRoutedAt
+      }
+      node.models.set(name, info)
     }
     dm.inventory.set(host, node)
   }
@@ -189,6 +216,10 @@ describe('RequestRouter', () => {
       expect(ids).toContain('auto')
       expect(ids).toContain('auto-fast')
       expect(ids).toContain('auto-think')
+      expect(ids).toContain('auto-local')
+      expect(ids).not.toContain('auto-cloud')
+      expect(ids).toContain('auto-local')
+      expect(ids).not.toContain('auto-cloud')
       expect(ids).toContain('gemma4:e4b')
       expect(ids).toContain('gemma4:26b')
       expect(ids).toContain('qwen2.5:1.5b')
@@ -199,6 +230,385 @@ describe('RequestRouter', () => {
       const catalog = router.getModelCatalog()
       const gemmaEntries = catalog.filter((m) => m.id === 'gemma4:26b')
       expect(gemmaEntries.length).toBe(1)
+    })
+  })
+
+  describe('cloud routing', () => {
+    it('auto includes cloud candidates', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://local:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+          'http://cloud:11434': {
+            'gemma4:27b': {
+              supportsTools: true,
+              parameters: 27,
+              contextLength: 128000,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+      })) as any[]
+      const hosts = result.map((c: any) => c.nodeHost)
+      expect(hosts).toContain('http://cloud:11434')
+    })
+
+    it('auto-local excludes cloud candidates', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://local:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+          'http://cloud:11434': {
+            'gemma4:27b': {
+              supportsTools: true,
+              parameters: 27,
+              contextLength: 128000,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto-local',
+        messages: [{ role: 'user', content: 'hi' }],
+      })) as any[]
+      for (const c of result) expect(c.nodeHost).not.toBe('http://cloud:11434')
+    })
+
+    it('auto-local throws 404 when only cloud nodes are available', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://cloud:11434': {
+            'gemma4:27b': {
+              supportsTools: true,
+              parameters: 27,
+              contextLength: 128000,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = await r.selectForChat({
+        model: 'auto-local',
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(result).toBeNull()
+    })
+
+    it('cloud wins auto routing when measured latency and TPS is materially better', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://local:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+          'http://cloud:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+        {
+          'http://local:11434': {
+            'gemma4:e4b': { recentLatency: 5000, recentTps: 3 },
+          },
+          'http://cloud:11434': {
+            'gemma4:e4b': { recentLatency: 150, recentTps: 90 },
+          },
+        },
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      })) as any
+      expect(result.nodeHost).toBe('http://cloud:11434')
+    })
+
+    it('local wins in near-tie due to cloud cost preference', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://local:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+          'http://cloud:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+        {
+          'http://local:11434': {
+            'gemma4:e4b': { recentLatency: 500, recentTps: 20 },
+          },
+          'http://cloud:11434': {
+            'gemma4:e4b': { recentLatency: 300, recentTps: 25 },
+          },
+        },
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      })) as any
+      expect(result.nodeHost).toBe('http://local:11434')
+    })
+
+    it('auto-think includes cloud thinking-capable models', async () => {
+      const discovery = makeDiscovery(
+        {
+          'http://local:11434': {
+            'small:7b': {
+              supportsTools: true,
+              supportsThinking: false,
+              parameters: 7,
+              contextLength: 8192,
+            },
+          },
+          'http://cloud:11434': {
+            'think:32b': {
+              supportsTools: true,
+              supportsThinking: true,
+              parameters: 32,
+              contextLength: 128000,
+            },
+          },
+        },
+        ['http://cloud:11434'],
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.setUnlimited('http://cloud:11434')
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto-think',
+        messages: [{ role: 'user', content: 'think hard' }],
+      })) as any[]
+      expect(result).not.toBeNull()
+      expect(result.length).toBeGreaterThan(0)
+      for (const c of result)
+        expect(c.modelInfo.profile.supportsThinking).toBe(true)
+    })
+  })
+
+  describe('load penalty', () => {
+    it('busy node is penalized and idle node of equal quality is preferred', async () => {
+      const discovery = makeDiscovery({
+        'http://node-busy:11434': {
+          'gemma4:e4b': {
+            supportsTools: true,
+            parameters: 4,
+            contextLength: 8192,
+          },
+        },
+        'http://node-idle:11434': {
+          'gemma4:e4b': {
+            supportsTools: true,
+            parameters: 4,
+            contextLength: 8192,
+          },
+        },
+      })
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.incrementLoad('http://node-busy:11434')
+      lm.incrementLoad('http://node-busy:11434') // utilisation = 2/3
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      })) as any
+      expect(result.nodeHost).toBe('http://node-idle:11434')
+    })
+
+    it('saturated node is excluded entirely regardless of model quality', async () => {
+      const discovery = makeDiscovery({
+        'http://node-full:11434': {
+          'gemma4:27b': {
+            supportsTools: true,
+            parameters: 27,
+            contextLength: 128000,
+          },
+        },
+        'http://node-free:11434': {
+          'gemma4:e4b': {
+            supportsTools: true,
+            parameters: 4,
+            contextLength: 8192,
+          },
+        },
+      })
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      lm.incrementLoad('http://node-full:11434')
+      lm.incrementLoad('http://node-full:11434')
+      lm.incrementLoad('http://node-full:11434') // at hard cap
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+      })) as any[]
+      for (const c of result)
+        expect(c.nodeHost).not.toBe('http://node-full:11434')
+    })
+  })
+
+  describe('warm-model affinity', () => {
+    it('recently routed model gets warm bonus over cold model on same node', async () => {
+      const now = Date.now()
+      const discovery = makeDiscovery(
+        {
+          'http://node-a:11434': {
+            'model-warm': {
+              supportsTools: true,
+              parameters: 7,
+              contextLength: 8192,
+            },
+            'model-cold': {
+              supportsTools: true,
+              parameters: 7,
+              contextLength: 8192,
+            },
+          },
+        },
+        [],
+        {
+          'http://node-a:11434': {
+            'model-warm': { lastRoutedAt: now - 60_000 }, // 1 min ago
+            'model-cold': { lastRoutedAt: 0 },
+          },
+        },
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      })) as any
+      expect(result.modelName).toBe('model-warm')
+    })
+
+    it('warm model on one node beats same model on cold node', async () => {
+      const now = Date.now()
+      const discovery = makeDiscovery(
+        {
+          'http://node-warm:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+          'http://node-cold:11434': {
+            'gemma4:e4b': {
+              supportsTools: true,
+              parameters: 4,
+              contextLength: 8192,
+            },
+          },
+        },
+        [],
+        {
+          'http://node-warm:11434': {
+            'gemma4:e4b': { lastRoutedAt: now - 30_000 },
+          }, // 30s ago
+          'http://node-cold:11434': { 'gemma4:e4b': { lastRoutedAt: 0 } },
+        },
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      const r = new RequestRouter(discovery, lm)
+      const result = (await r.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      })) as any
+      expect(result.nodeHost).toBe('http://node-warm:11434')
+    })
+
+    it('switch penalty applies when a different model is warm on the same node', async () => {
+      const now = Date.now()
+      const discovery = makeDiscovery(
+        {
+          'http://node-a:11434': {
+            'model-hot': {
+              supportsTools: true,
+              parameters: 7,
+              contextLength: 8192,
+            },
+            'model-needs-load': {
+              supportsTools: true,
+              parameters: 7,
+              contextLength: 8192,
+            },
+          },
+          'http://node-b:11434': {
+            'model-needs-load': {
+              supportsTools: true,
+              parameters: 7,
+              contextLength: 8192,
+            },
+          },
+        },
+        [],
+        {
+          'http://node-a:11434': {
+            'model-hot': { lastRoutedAt: now - 60_000 }, // warm on node-a
+            'model-needs-load': { lastRoutedAt: 0 }, // cold — would need eviction
+          },
+          'http://node-b:11434': {
+            'model-needs-load': { lastRoutedAt: 0 }, // cold but no eviction needed
+          },
+        },
+      )
+      const lm = new LoadManager({ maxConcurrentPerNode: 3 })
+      const r = new RequestRouter(discovery, lm)
+      // Requesting model-needs-load: node-b should win because node-a needs to evict model-hot first
+      const result = (await r.selectForChat({
+        model: 'model-needs-load',
+        messages: [{ role: 'user', content: 'hi' }],
+      })) as any[]
+      expect(result[0].nodeHost).toBe('http://node-b:11434')
     })
   })
 })

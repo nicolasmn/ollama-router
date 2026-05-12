@@ -84,9 +84,10 @@ Notes for `/v1/responses`:
 
 You can set the `model` field in requests to either a concrete model name or a router alias.
 
-- `auto`: default router behavior (best candidate)
-- `auto-fast`: prefers small/fast models and falls back to `auto` if none match
-- `auto-think`: strictly routes only to thinking-capable models
+- `auto`: default router behavior — picks the best candidate across local and cloud nodes
+- `auto-fast`: prefers small/fast models; includes cloud when no suitable local is available
+- `auto-think`: routes only to thinking-capable models; includes cloud candidates
+- `auto-local`: local-only variant — never routes to cloud nodes
 - `<real-model-name>`: routes only to that model across discovered nodes
 
 Notes:
@@ -117,7 +118,7 @@ Discovery is adaptive and uses three triggers:
 	- If connected only to localhost nodes, scans every 60 seconds.
 	- If connected to at least one non-localhost node, scans every 30 minutes.
 
-2. On-request scan for virtual models (`auto`, `auto-fast`, `auto-think`)
+2. On-request scan for virtual models (`auto`, `auto-fast`, `auto-think`, `auto-local`)
 	- If the previous scan is fresh (< 5 minutes), scan runs async in background.
 	- If scan data is stale (>= 5 minutes), router waits up to 3 seconds for a fresh scan, then falls back to current inventory.
 

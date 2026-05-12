@@ -9,16 +9,74 @@ import type { ModelInfo } from './models.js'
 const logger = createLogger('router')
 
 /** Virtual model aliases exposed in catalog and used by ollama.ts */
-export const VIRTUAL_MODELS = new Set<string>(['auto', 'auto-fast', 'auto-think', 'auto-cloud'])
+export const VIRTUAL_MODELS = new Set<string>([
+  'auto',
+  'auto-fast',
+  'auto-think',
+  'auto-local',
+])
 
 /**
- * Score penalty applied to cloud node candidates.
- * Ensures local candidates win when both local and cloud have the same model.
- * Cloud wins only when it is the sole node with that model.
+ * Small preference bonus for local nodes over cloud candidates.
+ * Cloud nodes compete on measured latency/TPS merit and win when materially faster or better.
+ * Only overridden by `auto-local` which excludes cloud entirely.
  */
-const CLOUD_SCORE_PENALTY = 50
+const CLOUD_COST_PREFERENCE = 8
+
+/**
+ * Maximum load penalty points at 100 % node utilisation.
+ * Scaled by getUtilization() so partially-loaded nodes receive proportional penalties.
+ */
+const LOAD_PENALTY_MAX = 15
+
+/** Bonus when a model is the most recently active on its node (likely warm in VRAM). */
+const WARM_MODEL_BONUS = 8
+
+/** Penalty when a different model was more recently active on the same node (likely needs eviction). */
+const MODEL_SWITCH_PENALTY = 5
+
+const WARM_RECENT_MS = 2 * 60 * 1000    // < 2 min → full warm bonus
+const WARM_ACTIVE_MS = 5 * 60 * 1000    // < 5 min → half warm bonus
+const WARM_INACTIVE_MS = 10 * 60 * 1000 // < 10 min → small warm signal
 
 const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
+
+/**
+ * Computes a warm-model bias for a candidate on a given node.
+ * Returns a positive bonus when this model is likely warm in VRAM, or a negative
+ * penalty when a different model was more recently active and the node probably
+ * needs to evict the old one before loading this one.
+ */
+function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>): number {
+  const now = Date.now()
+
+  // Find the most recently routed model on this node
+  let mostRecentlyRouted: ModelInfo | null = null
+  let maxRoutedAt = 0
+  for (const m of nodeModels.values()) {
+    if (m.lastRoutedAt > maxRoutedAt) {
+      maxRoutedAt = m.lastRoutedAt
+      mostRecentlyRouted = m
+    }
+  }
+
+  if (mostRecentlyRouted === null || maxRoutedAt === 0) return 0
+
+  const recentModelAge = now - maxRoutedAt
+
+  if (mostRecentlyRouted === model) {
+    // This model is the most recently used on this node → likely warm in VRAM
+    const age = now - model.lastRoutedAt
+    if (age < WARM_RECENT_MS) return WARM_MODEL_BONUS
+    if (age < WARM_ACTIVE_MS) return Math.round(WARM_MODEL_BONUS / 2)
+    if (age < WARM_INACTIVE_MS) return 2
+    return 0
+  }
+
+  // A different model is more recently active → this model likely needs loading (eviction penalty)
+  if (recentModelAge < WARM_ACTIVE_MS) return -MODEL_SWITCH_PENALTY
+  return 0
+}
 
 export interface RoutingCandidate {
   nodeHost: string
@@ -94,7 +152,11 @@ export class RequestRouter {
       for (const modelName of node.models.keys()) {
         if (!seen.has(modelName)) {
           seen.add(modelName)
-          models.push({ id: modelName, object: 'model', owned_by: node.cloud ? 'ollama-cloud' : 'ollama' })
+          models.push({
+            id: modelName,
+            object: 'model',
+            owned_by: node.cloud ? 'ollama-cloud' : 'ollama',
+          })
         }
       }
     }
@@ -137,9 +199,8 @@ export class RequestRouter {
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
 
-      // For auto-cloud: include all nodes (local + cloud).
-      // For other virtual models: skip cloud nodes — they are only for explicit auto-cloud routing.
-      if (alias !== 'auto-cloud' && node.cloud) continue
+      // auto-local: local-only routing. All other virtual aliases (auto, auto-fast, auto-think) include cloud.
+      if (alias === 'auto-local' && node.cloud) continue
 
       if (!this.load.canAcceptRequest(nodeHost)) continue
 
@@ -153,8 +214,10 @@ export class RequestRouter {
         if (analysis.needsTools && !profile.supportsTools) continue
         if (analysis.needsVision && !profile.supportsVision) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
-        const baseScore = this._scoreModel(modelInfo, analysis, alias)
-        const score = node.cloud ? baseScore - CLOUD_SCORE_PENALTY : baseScore
+        const baseScore = this._scoreModel(modelInfo, analysis, alias, nodeHost)
+        const warmBonus = computeWarmBonus(modelInfo, node.models)
+        const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+        const score = baseScore + warmBonus + cloudAdjustment
         candidates.push({ nodeHost, modelName, modelInfo, score })
       }
     }
@@ -184,22 +247,23 @@ export class RequestRouter {
       if (!this.load.canAcceptRequest(nodeHost)) continue
       const modelInfo = node.models.get(model)
       if (!modelInfo) continue
-      const loadPenalty = this.load.getCurrentLoad(nodeHost) * 2
+      const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
       const latencyScore = modelInfo.recentLatency
         ? Math.max(0, 20 - modelInfo.recentLatency / 500)
         : 10
-      // Apply same cloud penalty as _selectVirtual: local wins when both nodes
-      // have the model, cloud wins only when it is the sole provider.
-      const score = node.cloud
-        ? latencyScore - loadPenalty - CLOUD_SCORE_PENALTY
-        : latencyScore - loadPenalty
+      const warmBonus = computeWarmBonus(modelInfo, node.models)
+      const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+      const score = latencyScore - loadPenalty + warmBonus + cloudAdjustment
       candidates.push({ nodeHost, modelName: model, modelInfo, score })
     }
 
     if (candidates.length === 0) {
       let modelExists = false
       for (const node of nodes.values()) {
-        if (node.models.has(model)) { modelExists = true; break }
+        if (node.models.has(model)) {
+          modelExists = true
+          break
+        }
       }
       if (!modelExists) {
         const err = Object.assign(new Error(`Model not found: ${model}`), {
@@ -227,6 +291,7 @@ export class RequestRouter {
     modelInfo: ModelInfo,
     requirements: AnalysisResult,
     alias: string,
+    nodeHost: string,
   ): number {
     const { profile } = modelInfo
     const params = profile.parameters || 0
@@ -249,7 +314,7 @@ export class RequestRouter {
           ? 2
           : 0
 
-    const loadPenalty = this.load.getCurrentLoad(modelInfo.name || '') * 2
+    const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
 
     let sizeFit = 0
     if (alias === 'auto-fast' || requirements.preferFast) {

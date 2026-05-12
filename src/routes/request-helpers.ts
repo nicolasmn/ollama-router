@@ -185,152 +185,308 @@ export interface StreamingRequestOptions {
   signal?: AbortSignal
 }
 
-export async function handleStreamingRequest(opts: StreamingRequestOptions): Promise<void> {
+export async function handleStreamingRequest(
+  opts: StreamingRequestOptions,
+): Promise<void> {
   const {
-    requestId, reqBody, candidate, endpoint,
-    forwardContentType = false, sseTerminator = false,
-    res, discoveryManager, loadManager, requestHistoryManager, signal,
+    requestId,
+    reqBody,
+    candidate,
+    endpoint,
+    forwardContentType = false,
+    sseTerminator = false,
+    res,
+    discoveryManager,
+    loadManager,
+    requestHistoryManager,
+    signal,
   } = opts
 
-  const resolvedCandidate = Array.isArray(candidate) ? candidate[0] : candidate
-  const { nodeHost, modelName } = resolvedCandidate || {}
-  const requestedModel = (reqBody.model as string | undefined) ?? modelName
+  // Normalise to array — enables pre-header fallback across candidates
+  const candidateList = Array.isArray(candidate) ? candidate : [candidate]
+  const requestedModel =
+    (reqBody.model as string | undefined) ?? candidateList[0]?.modelName
 
-  if (!nodeHost || !modelName) {
+  if (!candidateList[0]?.nodeHost || !candidateList[0]?.modelName) {
     logger.error({ requestId, endpoint }, 'Missing streaming candidate')
-    requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 503, error: 'No suitable models available' })
+    requestHistoryManager.finishRequest(requestId, {
+      status: 'failed',
+      responseStatus: 503,
+      error: 'No suitable models available',
+    })
     res.status(503).json({ error: 'No suitable models available' })
     return
   }
 
   if (signal?.aborted) {
-    requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, abortReason: 'client_disconnect', failureCategory: 'client_abort', retryHint: 'no_retry', nodeHost, modelName })
+    requestHistoryManager.finishRequest(requestId, {
+      status: 'aborted',
+      responseStatus: 0,
+      abortReason: 'client_disconnect',
+      failureCategory: 'client_abort',
+      retryHint: 'no_retry',
+    })
     return
   }
 
-  try {
-    loadManager.incrementLoad(nodeHost)
-  } catch {
-    logger.warn({ requestId, nodeHost }, 'Node capacity exceeded')
-    requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'capacity' })
-    requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 429, error: 'Node at capacity', nodeHost, modelName })
-    res.status(429).json({ error: 'Node at capacity' })
-    return
-  }
-
-  const apiKey = discoveryManager.getCloudApiKey(nodeHost)
-  const body = sanitizeMessages({ ...reqBody, model: modelName })
-
-  const startTime = Date.now()
   const abortController = new AbortController()
   const onClientClose = () => abortController.abort()
   const removeExternalAbortListener = bindAbortSignal(signal, abortController)
   res.once('close', onClientClose)
 
   try {
-    requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'waiting', attemptReason: 'first_try' })
+    for (let index = 0; index < candidateList.length; index++) {
+      const { nodeHost, modelName } = candidateList[index]
 
-    const resp = await request(`${nodeHost}${endpoint}`, {
-      method: 'POST',
-      headers: buildHeaders(apiKey),
-      body: JSON.stringify(body),
-      headersTimeout: INFERENCE_TIMEOUT,
-      bodyTimeout: INFERENCE_TIMEOUT,
-      signal: abortController.signal,
-    })
-
-    if (resp.statusCode === 503) throw new Error('Node busy')
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      let detail = ''
-      try { detail = await resp.body.text() } catch { /* ignore */ }
-      throw Object.assign(new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`), { statusCode: resp.statusCode })
-    }
-
-    if (forwardContentType) {
-      const ct = resp.headers['content-type']
-      if (ct) res.setHeader('Content-Type', ct as string)
-    } else {
-      res.setHeader('Content-Type', 'application/x-ndjson')
-    }
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('X-Accel-Buffering', 'no')
-
-    let lineBuffer = ''
-    const captureTransform = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        lineBuffer += chunk.toString('utf-8')
-        let nl = lineBuffer.indexOf('\n')
-        const outputLines: string[] = []
-        while (nl !== -1) {
-          let line = lineBuffer.slice(0, nl)
-          lineBuffer = lineBuffer.slice(nl + 1)
-          const trimmed = line.trim()
-          if (trimmed) {
-            try {
-              let parsed = JSON.parse(trimmed) as Record<string, unknown>
-              if (requestedModel && parsed.model !== requestedModel) {
-                parsed = { ...parsed, model: requestedModel }
-                line = JSON.stringify(parsed)
-              }
-              requestHistoryManager.applyStreamingEvent(requestId, parsed)
-            } catch { /* pass through */ }
-          }
-          outputLines.push(line + '\n')
-          nl = lineBuffer.indexOf('\n')
-        }
-        callback(null, outputLines.join(''))
-      },
-      flush(callback) {
-        const trimmed = lineBuffer.trim()
-        if (trimmed) {
-          try {
-            let parsed = JSON.parse(trimmed) as Record<string, unknown>
-            if (requestedModel && parsed.model !== requestedModel) {
-              parsed = { ...parsed, model: requestedModel }
-              lineBuffer = JSON.stringify(parsed)
-            }
-            requestHistoryManager.applyStreamingEvent(requestId, parsed)
-          } catch { /* ignore */ }
-        }
-        callback(null, lineBuffer)
-      },
-    })
-    await pipeline(resp.body, captureTransform, res)
-
-    const latency = Date.now() - startTime
-    discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0, endpoint)
-    requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
-    requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName })
-    requestHistoryManager.finalizeStreamingResponse(requestId)
-    logger.info({ requestId, nodeHost, modelName, endpoint, latency }, 'Streaming request successful')
-  } catch (err) {
-    const typedErr = err as RouterError
-    const clientDisconnected = isAbortError(typedErr) || typedErr?.code === 'ERR_STREAM_DESTROYED' || res.destroyed
-    const latency = Date.now() - startTime
-
-    if (clientDisconnected) {
-      const abortReason = signal?.aborted || res.destroyed ? 'client_disconnect' : 'upstream_abort'
-      logger.info({ requestId, nodeHost, modelName, latency }, 'Client disconnected during streaming')
-      requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'aborted', latency })
-      requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, latency, abortReason, failureCategory: 'client_abort', retryHint: 'no_retry', nodeHost, modelName })
-    } else {
-      const { failureCategory, retryHint } = categorizeFailure(typedErr)
-      const responseStatus = res.headersSent ? res.statusCode : 503
-      logger.error({ requestId, nodeHost, modelName, endpoint, err: typedErr.message }, 'Streaming request failed')
-      discoveryManager.recordModelFailure(nodeHost, modelName, typedErr as NodeJS.ErrnoException)
-      requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'failed', latency, error: typedErr.message })
-      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus, latency, failureCategory, retryHint, nodeHost, modelName, error: typedErr.message })
-      if (!res.headersSent) {
-        res.status(503).json({ error: typedErr.message })
-      } else if (!res.writableEnded) {
-        if (sseTerminator) res.write('data: [DONE]\n\n')
-        res.end()
+      if (signal?.aborted) {
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'aborted',
+          responseStatus: 0,
+          abortReason: 'client_disconnect',
+          failureCategory: 'client_abort',
+          retryHint: 'no_retry',
+          nodeHost,
+          modelName,
+        })
+        return
       }
+
+      try {
+        loadManager.incrementLoad(nodeHost)
+      } catch {
+        logger.warn({ requestId, nodeHost }, 'Node capacity exceeded')
+        requestHistoryManager.recordAttempt(requestId, {
+          nodeHost,
+          modelName,
+          status: 'capacity',
+        })
+        if (index < candidateList.length - 1) continue
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'failed',
+          responseStatus: 429,
+          error: 'Node at capacity',
+          nodeHost,
+          modelName,
+        })
+        res.status(429).json({ error: 'Node at capacity' })
+        return
+      }
+
+      const apiKey = discoveryManager.getCloudApiKey(nodeHost)
+      const body = sanitizeMessages({ ...reqBody, model: modelName })
+      const startTime = Date.now()
+
+      try {
+        requestHistoryManager.recordAttempt(requestId, {
+          nodeHost,
+          modelName,
+          status: 'waiting',
+          attemptReason: index === 0 ? 'first_try' : 'fallback_error',
+        })
+
+        const resp = await request(`${nodeHost}${endpoint}`, {
+          method: 'POST',
+          headers: buildHeaders(apiKey),
+          body: JSON.stringify(body),
+          headersTimeout: INFERENCE_TIMEOUT,
+          bodyTimeout: INFERENCE_TIMEOUT,
+          signal: abortController.signal,
+        })
+
+        if (resp.statusCode === 503) throw new Error('Node busy')
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          let detail = ''
+          try {
+            detail = await resp.body.text()
+          } catch {
+            /* ignore */
+          }
+          throw Object.assign(
+            new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`),
+            { statusCode: resp.statusCode },
+          )
+        }
+
+        // ── Streaming begins — no fallback to another candidate after this point ──
+        if (forwardContentType) {
+          const ct = resp.headers['content-type']
+          if (ct) res.setHeader('Content-Type', ct as string)
+        } else {
+          res.setHeader('Content-Type', 'application/x-ndjson')
+        }
+        res.setHeader('Cache-Control', 'no-cache')
+        res.setHeader('X-Accel-Buffering', 'no')
+
+        let lineBuffer = ''
+        const captureTransform = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            lineBuffer += chunk.toString('utf-8')
+            let nl = lineBuffer.indexOf('\n')
+            const outputLines: string[] = []
+            while (nl !== -1) {
+              let line = lineBuffer.slice(0, nl)
+              lineBuffer = lineBuffer.slice(nl + 1)
+              const trimmed = line.trim()
+              if (trimmed) {
+                try {
+                  let parsed = JSON.parse(trimmed) as Record<string, unknown>
+                  if (requestedModel && parsed.model !== requestedModel) {
+                    parsed = { ...parsed, model: requestedModel }
+                    line = JSON.stringify(parsed)
+                  }
+                  requestHistoryManager.applyStreamingEvent(requestId, parsed)
+                } catch {
+                  /* pass through */
+                }
+              }
+              outputLines.push(line + '\n')
+              nl = lineBuffer.indexOf('\n')
+            }
+            callback(null, outputLines.join(''))
+          },
+          flush(callback) {
+            const trimmed = lineBuffer.trim()
+            if (trimmed) {
+              try {
+                let parsed = JSON.parse(trimmed) as Record<string, unknown>
+                if (requestedModel && parsed.model !== requestedModel) {
+                  parsed = { ...parsed, model: requestedModel }
+                  lineBuffer = JSON.stringify(parsed)
+                }
+                requestHistoryManager.applyStreamingEvent(requestId, parsed)
+              } catch {
+                /* ignore */
+              }
+            }
+            callback(null, lineBuffer)
+          },
+        })
+        await pipeline(resp.body, captureTransform, res)
+
+        const latency = Date.now() - startTime
+        discoveryManager.updateModelMetrics(
+          nodeHost,
+          modelName,
+          latency,
+          0,
+          endpoint,
+        )
+        requestHistoryManager.recordAttempt(requestId, {
+          nodeHost,
+          modelName,
+          status: 'success',
+          latency,
+        })
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'success',
+          responseStatus: 200,
+          latency,
+          nodeHost,
+          modelName,
+        })
+        requestHistoryManager.finalizeStreamingResponse(requestId)
+        logger.info(
+          { requestId, nodeHost, modelName, endpoint, latency },
+          'Streaming request successful',
+        )
+        return
+      } catch (err) {
+        const typedErr = err as RouterError
+        const clientDisconnected =
+          isAbortError(typedErr) ||
+          typedErr?.code === 'ERR_STREAM_DESTROYED' ||
+          res.destroyed
+        const latency = Date.now() - startTime
+
+        if (clientDisconnected) {
+          const abortReason =
+            signal?.aborted || res.destroyed
+              ? 'client_disconnect'
+              : 'upstream_abort'
+          logger.info(
+            { requestId, nodeHost, modelName, latency },
+            'Client disconnected during streaming',
+          )
+          requestHistoryManager.recordAttempt(requestId, {
+            nodeHost,
+            modelName,
+            status: 'aborted',
+            latency,
+          })
+          requestHistoryManager.finishRequest(requestId, {
+            status: 'aborted',
+            responseStatus: 0,
+            latency,
+            abortReason,
+            failureCategory: 'client_abort',
+            retryHint: 'no_retry',
+            nodeHost,
+            modelName,
+          })
+          return
+        }
+
+        discoveryManager.recordModelFailure(
+          nodeHost,
+          modelName,
+          typedErr as NodeJS.ErrnoException,
+        )
+        requestHistoryManager.recordAttempt(requestId, {
+          nodeHost,
+          modelName,
+          status: 'failed',
+          latency,
+          error: typedErr.message,
+        })
+
+        if (!res.headersSent && index < candidateList.length - 1) {
+          logger.warn(
+            { requestId, nodeHost, modelName, endpoint, err: typedErr.message },
+            'Streaming attempt failed, trying next candidate',
+          )
+          continue
+        }
+
+        const { failureCategory, retryHint } = categorizeFailure(typedErr)
+        const responseStatus = res.headersSent ? res.statusCode : 503
+        logger.error(
+          { requestId, nodeHost, modelName, endpoint, err: typedErr.message },
+          'Streaming request failed',
+        )
+        requestHistoryManager.finishRequest(requestId, {
+          status: 'failed',
+          responseStatus,
+          latency,
+          failureCategory,
+          retryHint,
+          nodeHost,
+          modelName,
+          error: typedErr.message,
+        })
+        if (!res.headersSent) {
+          res.status(503).json({ error: typedErr.message })
+        } else if (!res.writableEnded) {
+          if (sseTerminator) res.write('data: [DONE]\n\n')
+          res.end()
+        }
+        return
+      } finally {
+        loadManager.decrementLoad(nodeHost)
+      }
+    }
+
+    // All candidates were at capacity or exhausted without a successful response
+    if (!res.headersSent) {
+      requestHistoryManager.finishRequest(requestId, {
+        status: 'failed',
+        responseStatus: 503,
+        error: 'No suitable models available',
+      })
+      res.status(503).json({ error: 'No suitable models available' })
     }
   } finally {
     removeExternalAbortListener()
     res.off('close', onClientClose)
-    loadManager.decrementLoad(nodeHost)
   }
 }
 
