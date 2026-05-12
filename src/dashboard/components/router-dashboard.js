@@ -136,7 +136,7 @@ export class RouterDashboard extends LitElement {
     this.rescanMessage = ''
 
     try {
-      const response = await fetch('/discovery/scan-now', {
+      const response = await fetch('/admin/discovery/scan-now', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
@@ -182,7 +182,7 @@ export class RouterDashboard extends LitElement {
               ?disabled=${this.scanInProgress}
               title="Trigger immediate network scan"
             >
-              <span class="rescan-icon" aria-hidden="true">⟳</span>
+              <span class="rescan-icon" aria-hidden="true">↻</span>
               <span class="rescan-label"
                 >${this.scanInProgress ? 'Scanning...' : 'Rescan'}</span
               >

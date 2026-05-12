@@ -11,6 +11,7 @@ export class NodeCard extends LitElement {
     _cloudLoading: { state: true },
     _cloudError: { state: true },
     _cloudMutating: { state: true },
+    _collapsed: { state: true },
   }
 
   constructor() {
@@ -22,6 +23,12 @@ export class NodeCard extends LitElement {
     this._cloudLoading = false
     this._cloudError = ''
     this._cloudMutating = false
+    this._collapsed = false
+    this._lastKnownModels = {}
+  }
+
+  _toggleCollapsed() {
+    this._collapsed = !this._collapsed
   }
 
   createRenderRoot() {
@@ -57,7 +64,9 @@ export class NodeCard extends LitElement {
       )
     } catch (err) {
       this._removeError = err.message
-      setTimeout(() => { this._removeError = '' }, 4000)
+      setTimeout(() => {
+        this._removeError = ''
+      }, 4000)
     } finally {
       this._removing = false
     }
@@ -69,7 +78,10 @@ export class NodeCard extends LitElement {
     this._cloudError = ''
     try {
       const res = await fetch('/admin/cloud/models')
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText)
+      if (!res.ok)
+        throw new Error(
+          (await res.json().catch(() => ({}))).error ?? res.statusText,
+        )
       const data = await res.json()
       // available = all models from ollama.com; filter out already-active ones in render
       this._cloudAvailable = data.available ?? []
@@ -89,12 +101,17 @@ export class NodeCard extends LitElement {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       })
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText)
+      if (!res.ok)
+        throw new Error(
+          (await res.json().catch(() => ({}))).error ?? res.statusText,
+        )
       // Refresh available list so dropdown removes the just-added model
       await this._fetchCloudAvailable()
     } catch (err) {
       this._cloudError = err.message
-      setTimeout(() => { this._cloudError = '' }, 4000)
+      setTimeout(() => {
+        this._cloudError = ''
+      }, 4000)
     } finally {
       this._cloudMutating = false
     }
@@ -104,12 +121,20 @@ export class NodeCard extends LitElement {
     if (this._cloudMutating) return
     this._cloudMutating = true
     try {
-      const res = await fetch(`/admin/cloud/models/${encodeURIComponent(name)}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText)
+      const res = await fetch(
+        `/admin/cloud/models/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok)
+        throw new Error(
+          (await res.json().catch(() => ({}))).error ?? res.statusText,
+        )
       await this._fetchCloudAvailable()
     } catch (err) {
       this._cloudError = err.message
-      setTimeout(() => { this._cloudError = '' }, 4000)
+      setTimeout(() => {
+        this._cloudError = ''
+      }, 4000)
     } finally {
       this._cloudMutating = false
     }
@@ -160,7 +185,15 @@ export class NodeCard extends LitElement {
   render() {
     if (!this.node) return html``
 
-    const models = Object.values(this.node.models || {})
+    // Keep last known models so they remain visible when the node goes offline
+    const liveModels = this.node.models || {}
+    if (this.node.reachable && Object.keys(liveModels).length > 0) {
+      this._lastKnownModels = liveModels
+    }
+    const effectiveModels = Object.keys(liveModels).length > 0
+      ? liveModels
+      : this._lastKnownModels
+    const models = Object.values(effectiveModels)
     const hostShort = this.node.host.replace(/^https?:\/\//, '')
     const isCloud = !!this.node.cloud
     const activeNames = new Set(models.map((m) => m.name))
@@ -169,7 +202,11 @@ export class NodeCard extends LitElement {
 
     return html`
       <div class="node-card ${cardStateClass}">
-        <div class="node-header">
+        <button
+          class="node-header node-header--btn"
+          type="button"
+          @click=${this._toggleCollapsed}
+        >
           <div class="node-title">
             <div class="node-dot ${this.node.reachable ? 'ok' : 'err'}"></div>
             <span class="node-host">${hostShort}</span>
@@ -180,12 +217,14 @@ export class NodeCard extends LitElement {
               ${this.node.reachable ? 'Online' : 'Offline'}
             </span>
             ${this.node.activeRequests > 0
-              ? html`<span class="badge b-blue">${this.node.activeRequests} active</span>`
+              ? html`<span class="badge b-blue"
+                  >${this.node.activeRequests} active</span
+                >`
               : ''}
             ${Number.isFinite(this.node.maxConcurrentRequests)
               ? html`<span class="badge ${this.node.atCapacity ? 'b-red' : ''}">
-                  ${Math.round((this.node.utilization || 0) * 100)}%
-                  · ${this.node.activeRequests || 0}/${this.node.maxConcurrentRequests}
+                  ${this.node.activeRequests || 0}/${this.node
+                    .maxConcurrentRequests}
                 </span>`
               : ''}
             <span class="badge">
@@ -194,103 +233,141 @@ export class NodeCard extends LitElement {
             ${!isCloud && !this.node.reachable
               ? html`
                   <button
-                    class="btn-remove ${this._removing ? 'removing' : ''}"
+                    class="btn-cloud-remove"
                     title="Remove stale node from inventory"
                     ?disabled=${this._removing}
-                    @click=${this._onRemove}
+                    @click=${(e) => { e.stopPropagation(); this._onRemove() }}
                   >
-                    ${this._removing ? 'Removing…' : '✕ Remove'}
+                    ✕
                   </button>
                   ${this._removeError
-                    ? html`<span class="remove-error">${this._removeError}</span>`
+                    ? html`<span class="remove-error"
+                        >${this._removeError}</span
+                      >`
                     : ''}
                 `
               : ''}
+            <span class="panel-collapse-icon"
+              >${this._collapsed ? '▸' : '▾'}</span
+            >
           </div>
-        </div>
+        </button>
 
-        <div class="models-wrap">
-          <table>
-            <colgroup>
-              <col class="c-model" />
-              ${isCloud ? '' : html`<col class="c-size" />`}
-              <col class="c-params" />
-              <col class="c-ctx" />
-              <col class="c-latency" />
-              <col class="c-tps" />
-              <col class="c-reqs" />
-              <col class="c-failures" />
-              <col class="c-lastused" />
-              ${isCloud ? html`<col class="c-action" />` : ''}
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Model</th>
-                ${isCloud ? '' : html`<th>Size</th>`}
-                <th>Params</th>
-                <th>Ctx</th>
-                <th>Latency</th>
-                <th>TPS</th>
-                <th>Reqs</th>
-                <th>Fails</th>
-                <th>Last used</th>
-                ${isCloud ? html`<th></th>` : ''}
-              </tr>
-            </thead>
-            <tbody>
-              ${models.length === 0 && !isCloud
-                ? html`
-                    <tr><td colspan="9" class="empty">No models discovered on this node.</td></tr>
-                  `
-                : models.map((model) => html`
-                    <tr class="${model.activeRequests > 0 ? 'model-active' : ''}">
-                      <td class="td-model">
-                        <div class="model-name">
-                          ${model.activeRequests > 0
-                            ? html`<span class="model-active-dot" title="${model.activeRequests} request(s) running"></span>`
-                            : ''}
-                          ${model.name}
-                        </div>
-                        <div class="model-fam">${model.family || '\u2014'}</div>
-                        <div class="model-caps">${renderCaps(model.profile)}</div>
-                      </td>
-                      ${isCloud ? '' : html`<td class="mono">${fmt.bytes(model.size)}</td>`}
-                      <td class="mono">${fmt.params(model.profile?.parameters)}</td>
-                      <td class="mono">${fmt.ctx(model.profile?.contextLength)}</td>
-                      <td>
-                        <span class="mono ${latCls(model.recentLatency)}">
-                          ${fmt.duration(model.recentLatency)}
-                        </span>
-                      </td>
-                      <td class="mono">${fmt.tps(model.recentTps)}</td>
-                      <td class="mono">${model.totalRequests || 0}</td>
-                      <td class="mono ${model.failures > 0 ? 'bad' : ''}">${model.failures || 0}</td>
-                      <td
-                        class="mono muted"
-                        title="${model.lastRoutedAt
-                          ? new Date(model.lastRoutedAt).toLocaleString()
-                          : 'Never used'}"
-                      >
-                        ${fmt.ago(model.lastRoutedAt)}
-                      </td>
-                      ${isCloud
-                        ? html`
-                            <td class="td-action">
-                              <button
-                                class="btn-cloud-remove"
-                                title="Remove ${model.name} from cloud node"
-                                ?disabled=${this._cloudMutating}
-                                @click=${() => this._removeModel(model.name)}
-                              >✕</button>
+        ${this._collapsed
+          ? ''
+          : html`
+            <div class="models-wrap">
+              <table>
+                <colgroup>
+                  <col class="c-model" />
+                  ${isCloud ? '' : html`<col class="c-size" />`}
+                  <col class="c-params" />
+                  <col class="c-ctx" />
+                  <col class="c-latency" />
+                  <col class="c-tps" />
+                  <col class="c-reqs" />
+                  <col class="c-failures" />
+                  <col class="c-lastused" />
+                  ${isCloud ? html`<col class="c-action" />` : ''}
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    ${isCloud ? '' : html`<th>Size</th>`}
+                    <th>Params</th>
+                    <th>Ctx</th>
+                    <th>Latency</th>
+                    <th>TPS</th>
+                    <th>Reqs</th>
+                    <th>Fails</th>
+                    <th>Last used</th>
+                    ${isCloud ? html`<th></th>` : ''}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${models.length === 0 && !isCloud
+                    ? html`
+                        <tr>
+                          <td colspan="9" class="empty">
+                            No models discovered on this node.
+                          </td>
+                        </tr>
+                      `
+                    : models.map(
+                        (model) => html`
+                          <tr
+                            class="${model.activeRequests > 0
+                              ? 'model-active'
+                              : ''}"
+                          >
+                            <td class="td-model">
+                              <div class="model-name">
+                                ${model.activeRequests > 0
+                                  ? html`<span
+                                      class="model-active-dot"
+                                      title="${model.activeRequests} request(s) running"
+                                    ></span>`
+                                  : ''}
+                                ${model.name}
+                              </div>
+                              <div class="model-fam">
+                                ${model.family || '\u2014'}
+                              </div>
+                              <div class="model-caps">
+                                ${renderCaps(model.profile)}
+                              </div>
                             </td>
-                          `
-                        : ''}
-                    </tr>
-                  `)}
-              ${isCloud ? this._renderAddRow(activeNames) : ''}
-            </tbody>
-          </table>
-        </div>
+                            ${isCloud
+                              ? ''
+                              : html`<td class="mono">
+                                  ${fmt.bytes(model.size)}
+                                </td>`}
+                            <td class="mono">
+                              ${fmt.params(model.profile?.parameters)}
+                            </td>
+                            <td class="mono">
+                              ${fmt.ctx(model.profile?.contextLength)}
+                            </td>
+                            <td>
+                              <span class="mono ${latCls(model.recentLatency)}">
+                                ${fmt.duration(model.recentLatency)}
+                              </span>
+                            </td>
+                            <td class="mono">${fmt.tps(model.recentTps)}</td>
+                            <td class="mono">${model.totalRequests || 0}</td>
+                            <td class="mono ${model.failures > 0 ? 'bad' : ''}">
+                              ${model.failures || 0}
+                            </td>
+                            <td
+                              class="mono muted"
+                              title="${model.lastRoutedAt
+                                ? new Date(model.lastRoutedAt).toLocaleString()
+                                : 'Never used'}"
+                            >
+                              ${fmt.ago(model.lastRoutedAt)}
+                            </td>
+                            ${isCloud
+                              ? html`
+                                  <td class="td-action">
+                                    <button
+                                      class="btn-cloud-remove"
+                                      title="Remove ${model.name} from cloud node"
+                                      ?disabled=${this._cloudMutating}
+                                      @click=${() => this._removeModel(model.name)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </td>
+                                `
+                              : ''}
+                          </tr>
+                        `,
+                      )}
+                  ${isCloud ? this._renderAddRow(activeNames) : ''}
+                </tbody>
+              </table>
+            </div>
+          `}
       </div>
     `
   }
