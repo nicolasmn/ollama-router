@@ -81,37 +81,42 @@ export class WsManager {
     }
 
     const nodes = Object.fromEntries(
-      Array.from(inventory.entries()).map(([nodeHost, node]) => [
-        nodeHost,
-        {
-          host: node.host,
-          reachable: node.reachable,
-          lastSeen: node.lastSeen,
-          activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
-          maxConcurrentRequests: this.#loadManager.getMaxConcurrentPerNode(),
-          atCapacity: this.#loadManager.isAtCapacity(nodeHost),
-          utilization: this.#loadManager.getUtilization(nodeHost),
-          models: Object.fromEntries(
-            Array.from(node.models.entries()).map(([modelName, modelInfo]) => [
-              modelName,
-              {
-                name: modelInfo.name,
-                family: modelInfo.family,
-                size: modelInfo.size,
-                profile: modelInfo.profile,
-                recentLatency: modelInfo.recentLatency,
-                recentTps: modelInfo.recentTps,
-                failures: modelInfo.failures,
-                totalRequests: modelInfo.totalRequests || 0,
-                activeRequests:
-                  activeModels.get(nodeHost)?.get(modelName) || 0,
-                lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
-                lastRoutedAt: modelInfo.lastRoutedAt,
-              },
-            ]),
-          ),
-        },
-      ]),
+      Array.from(inventory.entries()).map(([nodeHost, node]) => {
+        const isCloud = node.cloud ?? false
+        return [
+          nodeHost,
+          {
+            host: node.host,
+            reachable: node.reachable,
+            cloud: isCloud,
+            lastSeen: node.lastSeen,
+            activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
+            // Cloud nodes have no concurrency cap — null hides the capacity bar in the UI
+            maxConcurrentRequests: isCloud ? null : this.#loadManager.getMaxConcurrentPerNode(),
+            atCapacity: this.#loadManager.isAtCapacity(nodeHost),
+            utilization: this.#loadManager.getUtilization(nodeHost),
+            models: Object.fromEntries(
+              Array.from(node.models.entries()).map(([modelName, modelInfo]) => [
+                modelName,
+                {
+                  name: modelInfo.name,
+                  family: modelInfo.family,
+                  size: modelInfo.size,
+                  profile: modelInfo.profile,
+                  recentLatency: modelInfo.recentLatency,
+                  recentTps: modelInfo.recentTps,
+                  failures: modelInfo.failures,
+                  totalRequests: modelInfo.totalRequests || 0,
+                  activeRequests:
+                    activeModels.get(nodeHost)?.get(modelName) || 0,
+                  lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
+                  lastRoutedAt: modelInfo.lastRoutedAt,
+                },
+              ]),
+            ),
+          },
+        ]
+      }),
     )
 
     return {

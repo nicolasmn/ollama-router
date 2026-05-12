@@ -13,12 +13,25 @@ const DEFAULT_MAX_CONCURRENT = 3
 export class LoadManager {
   private maxConcurrentPerNode: number
   private loads: Map<string, number>
+  /** Nodes that bypass the concurrent request cap (e.g. cloud nodes). */
+  private unlimitedNodes: Set<string>
   private onNodeLoadChange?: (nodeHost: string, currentLoad: number) => void
 
   constructor(config: LoadManagerConfig = {}) {
     this.maxConcurrentPerNode = config.maxConcurrentPerNode ?? DEFAULT_MAX_CONCURRENT
     this.loads = new Map()
+    this.unlimitedNodes = new Set()
     this.onNodeLoadChange = config.onNodeLoadChange
+  }
+
+  /** Mark a node as having no concurrent request cap (e.g. ollama.com cloud). */
+  setUnlimited(nodeHost: string): void {
+    this.unlimitedNodes.add(nodeHost)
+  }
+
+  /** Remove the unlimited override for a node. */
+  clearUnlimited(nodeHost: string): void {
+    this.unlimitedNodes.delete(nodeHost)
   }
 
   getCurrentLoad(nodeHost: string): number {
@@ -30,6 +43,7 @@ export class LoadManager {
   }
 
   getUtilization(nodeHost: string): number {
+    if (this.unlimitedNodes.has(nodeHost)) return 0
     const max = this.maxConcurrentPerNode
     if (max <= 0) return 0
     return this.getCurrentLoad(nodeHost) / max
@@ -37,6 +51,7 @@ export class LoadManager {
 
   /** Returns true when node is AT or OVER capacity (no more requests accepted). */
   isAtCapacity(nodeHost: string): boolean {
+    if (this.unlimitedNodes.has(nodeHost)) return false
     return this.getCurrentLoad(nodeHost) >= this.maxConcurrentPerNode
   }
 
@@ -47,7 +62,7 @@ export class LoadManager {
 
   incrementLoad(nodeHost: string): void {
     const current = this.getCurrentLoad(nodeHost)
-    if (current >= this.maxConcurrentPerNode) {
+    if (!this.unlimitedNodes.has(nodeHost) && current >= this.maxConcurrentPerNode) {
       throw new Error(`Node ${nodeHost} at capacity (${current}/${this.maxConcurrentPerNode})`)
     }
     const next = current + 1

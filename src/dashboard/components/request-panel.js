@@ -5,6 +5,8 @@ import {
   compactPreview,
   endpointLabel,
   fmt,
+  isCloudRequest,
+  requestInlineError,
   requestMetaItems,
   routeTarget,
   statusClass,
@@ -96,6 +98,9 @@ export class RequestPanel extends LitElement {
     const isActive =
       this.drawerOpen && this.selectedRequestId === request.requestId
 
+    const cloud = isCloudRequest(request)
+    const inlineError = requestInlineError(request)
+
     return html`
       <div class="request-row ${isActive ? 'active' : ''}">
         <button
@@ -107,14 +112,27 @@ export class RequestPanel extends LitElement {
           <span class="request-main">
             <span class="request-topline">
               <span class="badge">${endpointLabel(request.endpointType)}</span>
+              ${cloud
+                ? html`<span
+                    class="badge b-blue"
+                    title="Routed to ollama.com cloud"
+                    >☁ cloud</span
+                  >`
+                : ''}
               <span class="request-route"
                 >${request.requestedModel || 'auto'}</span
               >
-              <span class="request-target">→ ${routeTarget(request)}</span>
+              <span class="mono request-target">→ ${routeTarget(request)}</span>
             </span>
-            <span class="request-preview"
-              >${compactPreview(request.promptPreview)}</span
-            >
+            ${inlineError
+              ? html`<span class="request-inline-error" title=${inlineError}
+                  >${inlineError.length > 80
+                    ? inlineError.slice(0, 79) + '…'
+                    : inlineError}</span
+                >`
+              : html`<span class="request-preview"
+                  >${compactPreview(request.promptPreview)}</span
+                >`}
             <span class="request-meta">
               ${metaItems.map(
                 (item, index) => html`

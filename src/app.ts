@@ -3,16 +3,19 @@ import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
-import pino from 'pino'
+import { createLogger } from './logger.js'
 import { DiscoveryManager } from './discovery-manager.js'
 import { LoadManager } from './load-manager.js'
 import { RequestHistoryManager } from './request-history.js'
 import { RequestRouter } from './request-router.js'
 import { WsManager } from './ws-manager.js'
 import { createRoutes } from './routes/index.js'
+import {
+  OLLAMA_CLOUD_URL,
+  OLLAMA_CLOUD_API_KEY,
+} from './config.js'
 
-const logger = pino()
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const logger = createLogger('app')
 
 export interface AppConfig {
   ollamaNodes: string[]
@@ -54,6 +57,8 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     autoDiscover: config.autoDiscover,
     networkScanInterval: config.networkScanInterval,
     metricsFile: config.metricsFile ?? null,
+    cloudUrl: OLLAMA_CLOUD_URL,
+    cloudApiKey: OLLAMA_CLOUD_API_KEY,
   })
 
   const loadManager = new LoadManager({
@@ -63,6 +68,11 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
       if (node) node.activeRequests = currentLoad
     },
   })
+
+  // Cloud node has no concurrency cap — register it as unlimited.
+  if (OLLAMA_CLOUD_URL && OLLAMA_CLOUD_API_KEY) {
+    loadManager.setUnlimited(OLLAMA_CLOUD_URL)
+  }
 
   discoveryManager.setInventoryUpdateHandler((inventory) => {
     const activeNodeHosts = new Set(inventory.keys())

@@ -92,6 +92,7 @@ export interface NodeInfoJSON {
   lastFailure: number
   activeRequests: number
   models: Record<string, ModelInfoJSON>
+  cloud?: boolean
 }
 
 export class NodeInfo {
@@ -102,8 +103,10 @@ export class NodeInfo {
   lastFailure: number
   activeRequests: number
   models: Map<string, ModelInfo>
+  /** True when this node is the ollama.com cloud endpoint. Requires auth header. */
+  cloud: boolean
 
-  constructor(host: string) {
+  constructor(host: string, cloud = false) {
     this.host = host
     this.reachable = false
     this.lastSeen = 0
@@ -111,5 +114,6 @@ export class NodeInfo {
     this.lastFailure = 0
     this.activeRequests = 0
     this.models = new Map()
+    this.cloud = cloud
   }
 }

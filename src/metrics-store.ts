@@ -17,29 +17,38 @@ export interface PersistedModelMetrics {
 
 interface PersistedFile {
   knownNodes: string[]
+  cloudModels: string[]
   metrics: Record<string, Record<string, PersistedModelMetrics>>
 }
 
 export interface LoadedData {
   knownNodes: string[]
+  cloudModels: string[]
   metrics: Map<string, Map<string, PersistedModelMetrics>>
 }
 
-export function loadMetrics(filePath: string): LoadedData {
+export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
   try {
     const raw = readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw) as PersistedFile
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { knownNodes: [], metrics: new Map() }
+      return { knownNodes: [], cloudModels: [], metrics: new Map() }
     }
 
     const knownNodes: string[] = Array.isArray(parsed.knownNodes)
-      ? parsed.knownNodes.filter((v) => typeof v === 'string')
+      ? parsed.knownNodes
+          .filter((v) => typeof v === 'string')
+          .filter((v) => !cloudUrl || v !== cloudUrl)
+      : []
+
+    const cloudModels: string[] = Array.isArray(parsed.cloudModels)
+      ? parsed.cloudModels.filter((v) => typeof v === 'string')
       : []
 
     const metrics = new Map<string, Map<string, PersistedModelMetrics>>()
     if (typeof parsed.metrics === 'object' && parsed.metrics !== null) {
       for (const [host, models] of Object.entries(parsed.metrics)) {
+        if (cloudUrl && host === cloudUrl) continue
         if (typeof models !== 'object' || models === null) continue
         const modelMap = new Map<string, PersistedModelMetrics>()
         for (const [name, m] of Object.entries(models)) {
@@ -56,18 +65,20 @@ export function loadMetrics(filePath: string): LoadedData {
       }
     }
 
-    return { knownNodes, metrics }
+    return { knownNodes, cloudModels, metrics }
   } catch {
-    return { knownNodes: [], metrics: new Map() }
+    return { knownNodes: [], cloudModels: [], metrics: new Map() }
   }
 }
 
 export function saveMetrics(
   filePath: string,
-  nodes: Map<string, Pick<NodeInfo, 'models'>>,
+  nodes: Map<string, Pick<NodeInfo, 'models' | 'cloud'>>,
+  cloudModels: string[] = [],
 ): void {
   const metricsOutput: Record<string, Record<string, PersistedModelMetrics>> = {}
   for (const [host, node] of nodes) {
+    if ((node as NodeInfo).cloud) continue
     const modelRecord: Record<string, PersistedModelMetrics> = {}
     for (const [name, model] of node.models) {
       const m = model as unknown as PersistedModelMetrics
@@ -85,7 +96,10 @@ export function saveMetrics(
   }
 
   const output: PersistedFile = {
-    knownNodes: Array.from(nodes.keys()),
+    knownNodes: Array.from(nodes.entries())
+      .filter(([, node]) => !(node as NodeInfo).cloud)
+      .map(([host]) => host),
+    cloudModels,
     metrics: metricsOutput,
   }
 
@@ -99,16 +113,18 @@ export function saveMetrics(
 
 export class MetricsStore {
   private filePath: string
+  private cloudUrl: string
 
-  constructor(filePath: string) {
+  constructor(filePath: string, cloudUrl = '') {
     this.filePath = filePath
+    this.cloudUrl = cloudUrl
   }
 
   load(): LoadedData {
-    return loadMetrics(this.filePath)
+    return loadMetrics(this.filePath, this.cloudUrl)
   }
 
-  persist(nodes: Map<string, Pick<NodeInfo, 'models'>>): void {
-    saveMetrics(this.filePath, nodes)
+  persist(nodes: Map<string, Pick<NodeInfo, 'models' | 'cloud'>>, cloudModels: string[] = []): void {
+    saveMetrics(this.filePath, nodes, cloudModels)
   }
 }

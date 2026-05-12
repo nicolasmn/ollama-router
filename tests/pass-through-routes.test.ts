@@ -23,12 +23,15 @@ function createDiscoveryManager(nodeHost: string, modelName: string) {
       [
         nodeHost,
         {
-          models: new Map([[modelName, { profile: { supportsThinking: true } }]]),
+          models: new Map([
+            [modelName, { profile: { supportsThinking: true } }],
+          ]),
         },
       ],
     ]),
     updateModelMetrics: jest.fn(),
     recordModelFailure: jest.fn(),
+    getCloudApiKey: jest.fn(),
   } as unknown as DiscoveryManager
 }
 
@@ -67,12 +70,18 @@ describe('native pass-through routes', () => {
         for await (const chunk of req) chunks.push(chunk as Buffer)
         upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
-          id: 'chatcmpl_test', object: 'chat.completion', created: 1,
-          model: (upstreamBody as any).model,
-          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }))
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl_test',
+            object: 'chat.completion',
+            created: 1,
+            model: upstreamBody!.model,
+            choices: [
+              { index: 0, message: { role: 'assistant', content: 'ok' } },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+        )
         return
       }
       res.writeHead(404); res.end()
@@ -168,7 +177,7 @@ describe('native pass-through routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'auto', previous_response_id: 'resp_prev', input: 'hi' }),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(400)
     expect(json.param).toBe('previous_response_id')
     expect(upstreamCalls).toBe(0)
@@ -228,7 +237,7 @@ describe('/v1/messages route', () => {
       headers: { 'Content-Type': 'application/json', 'x-api-key': 'test', 'anthropic-version': '2023-06-01' },
       body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
     expect(json.type).toBe('message')
@@ -336,7 +345,7 @@ describe('/api/generate and /api/chat routes', () => {
     const response = await fetch(`${routerBase}/api/generate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
     expect(json.done).toBe(true)
@@ -366,7 +375,7 @@ describe('/api/generate and /api/chat routes', () => {
     const response = await fetch(`${routerBase}/api/chat`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
     expect(json.done).toBe(true)

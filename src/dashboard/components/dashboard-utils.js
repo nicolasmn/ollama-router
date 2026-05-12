@@ -84,8 +84,25 @@ export function statusClass(status) {
   return 'failed'
 }
 
+export function isCloudRequest(request) {
+  if (request.selectedNode && request.selectedNode.includes('ollama.com')) return true
+  return request.attempts?.some((a) => a.nodeHost?.includes('ollama.com')) ?? false
+}
+
 export function routeTarget(request) {
-  return request.selectedModel || request.candidates?.[0]?.modelName || '—'
+  const model = request.selectedModel || request.candidates?.[0]?.modelName || '—'
+  if (isCloudRequest(request)) {
+    return `${model} (cloud)`
+  }
+  return model
+}
+
+export function requestInlineError(request) {
+  if (request.status !== 'failed' && request.status !== 'rejected') return null
+  // Prefer top-level error, fall back to last attempt error
+  if (request.error) return request.error
+  const lastAttempt = request.attempts?.[request.attempts.length - 1]
+  return lastAttempt?.error || null
 }
 
 export function compactPreview(text) {

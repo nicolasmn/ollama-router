@@ -1,5 +1,4 @@
 // index.ts - Application entry point
-import pino from 'pino'
 import {
   OLLAMA_NODES,
   DISCOVERY_INTERVAL,
@@ -10,8 +9,9 @@ import {
   METRICS_FILE,
 } from './src/config.js'
 import { createApp } from './src/app.js'
+import { createLogger } from './src/logger.js'
 
-const logger = pino()
+const logger = createLogger('index')
 
 try {
   const { server, managers } = await createApp({

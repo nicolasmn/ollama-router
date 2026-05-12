@@ -9,7 +9,14 @@ import type { ModelInfo } from './models.js'
 const logger = createLogger('router')
 
 /** Virtual model aliases exposed in catalog and used by ollama.ts */
-export const VIRTUAL_MODELS = new Set<string>(['auto', 'auto-fast', 'auto-think'])
+export const VIRTUAL_MODELS = new Set<string>(['auto', 'auto-fast', 'auto-think', 'auto-cloud'])
+
+/**
+ * Score penalty applied to cloud node candidates.
+ * Ensures local candidates win when both local and cloud have the same model.
+ * Cloud wins only when it is the sole node with that model.
+ */
+const CLOUD_SCORE_PENALTY = 50
 
 const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
 
@@ -87,7 +94,7 @@ export class RequestRouter {
       for (const modelName of node.models.keys()) {
         if (!seen.has(modelName)) {
           seen.add(modelName)
-          models.push({ id: modelName, object: 'model', owned_by: 'ollama' })
+          models.push({ id: modelName, object: 'model', owned_by: node.cloud ? 'ollama-cloud' : 'ollama' })
         }
       }
     }
@@ -129,6 +136,11 @@ export class RequestRouter {
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
+
+      // For auto-cloud: include all nodes (local + cloud).
+      // For other virtual models: skip cloud nodes — they are only for explicit auto-cloud routing.
+      if (alias !== 'auto-cloud' && node.cloud) continue
+
       if (!this.load.canAcceptRequest(nodeHost)) continue
 
       for (const [modelName, modelInfo] of node.models) {
@@ -141,7 +153,8 @@ export class RequestRouter {
         if (analysis.needsTools && !profile.supportsTools) continue
         if (analysis.needsVision && !profile.supportsVision) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
-        const score = this._scoreModel(modelInfo, analysis, alias)
+        const baseScore = this._scoreModel(modelInfo, analysis, alias)
+        const score = node.cloud ? baseScore - CLOUD_SCORE_PENALTY : baseScore
         candidates.push({ nodeHost, modelName, modelInfo, score })
       }
     }
@@ -175,7 +188,11 @@ export class RequestRouter {
       const latencyScore = modelInfo.recentLatency
         ? Math.max(0, 20 - modelInfo.recentLatency / 500)
         : 10
-      const score = latencyScore - loadPenalty
+      // Apply same cloud penalty as _selectVirtual: local wins when both nodes
+      // have the model, cloud wins only when it is the sole provider.
+      const score = node.cloud
+        ? latencyScore - loadPenalty - CLOUD_SCORE_PENALTY
+        : latencyScore - loadPenalty
       candidates.push({ nodeHost, modelName: model, modelInfo, score })
     }
 
@@ -195,6 +212,14 @@ export class RequestRouter {
     }
 
     candidates.sort((a, b) => b.score - a.score)
+    logger.debug(
+      candidates.slice(0, 3).map((c) => ({
+        model: c.modelName,
+        node: c.nodeHost,
+        score: Math.round(c.score * 10) / 10,
+      })),
+      'Top routing candidates (_selectConcrete)',
+    )
     return isStreaming ? candidates[0] : candidates
   }
 

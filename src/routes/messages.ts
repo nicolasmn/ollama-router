@@ -53,7 +53,7 @@ export function setupMessagesRoutes(
     if (isStreaming) {
       await handleStreamingRequest({
         requestId, reqBody, candidate: candidates, endpoint: '/v1/messages',
-        sseTerminator: false, res, discoveryManager, loadManager, requestHistoryManager,
+        forwardContentType: true, sseTerminator: false, res, discoveryManager, loadManager, requestHistoryManager,
         signal: abortController.signal,
       })
     } else {

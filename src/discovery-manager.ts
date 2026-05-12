@@ -24,6 +24,8 @@ export interface DiscoveryConfig {
   networkScanInterval?: number
   networkScanIntervalActive?: number
   metricsFile?: string | null
+  cloudUrl?: string
+  cloudApiKey?: string
 }
 
 const DEFAULT_PROBE_INTERVAL = 30_000
@@ -44,7 +46,9 @@ export class DiscoveryManager {
   networkScanIntervalActive: number
   private inventoryUpdateHandler: ((inventory: Map<string, NodeInfo>) => void) | null
   private _pendingMetrics: Map<string, Map<string, PersistedModelMetrics>> | null
-
+  private cloudUrl: string
+  private cloudApiKey: string
+  readonly cloudModels: string[]
   autoDiscover: boolean
 
   constructor(config: DiscoveryConfig = {}) {
@@ -59,14 +63,114 @@ export class DiscoveryManager {
     this.networkScanIntervalActive = config.networkScanIntervalActive ?? DEFAULT_SCAN_INTERVAL_ACTIVE
     this.autoDiscover = config.autoDiscover ?? false
     this.inventoryUpdateHandler = null
-    this.metricsStore = config.metricsFile ? new MetricsStore(config.metricsFile) : null
+    this.metricsStore = config.metricsFile
+      ? new MetricsStore(config.metricsFile, config.cloudUrl ?? '')
+      : null
     this.scanner = new NetworkScanner()
     this._pendingMetrics = null
+    this.cloudUrl = config.cloudUrl ?? ''
+    this.cloudApiKey = config.cloudApiKey ?? ''
+    this.cloudModels = []
 
-    const seeds = config.ollamaNodes ?? []
-    for (const host of seeds) {
+    for (const host of config.ollamaNodes ?? []) {
       const normalized = host.startsWith('http') ? host : `http://${host}`
       this.inventory.set(normalized, new NodeInfo(normalized))
+    }
+  }
+
+  /**
+   * Fetch a real ModelProfile from the cloud /api/show endpoint.
+   * Falls back to an empty profile on any error so registration never blocks.
+   */
+  private async _fetchCloudProfile(modelName: string): Promise<ModelProfile> {
+    try {
+      const { request } = await import('undici')
+      const resp = await request(`${this.cloudUrl}/api/show`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.cloudApiKey}`,
+        },
+        body: JSON.stringify({ name: modelName }),
+        headersTimeout: 8000,
+        bodyTimeout: 15000,
+      })
+      if (resp.statusCode !== 200) {
+        await resp.body.dump()
+        logger.warn({ modelName, status: resp.statusCode }, 'Cloud /api/show returned non-200, using empty profile')
+        return new ModelProfile()
+      }
+      const data = await resp.body.json()
+      return this.buildModelProfile(data)
+    } catch (err) {
+      logger.warn({ modelName, err: (err as Error).message }, 'Cloud /api/show fetch failed, using empty profile')
+      return new ModelProfile()
+    }
+  }
+
+  async registerCloudNode(): Promise<void> {
+    if (!this.cloudUrl || !this.cloudApiKey) return
+
+    const existing = this.inventory.get(this.cloudUrl)
+    const node = existing ?? new NodeInfo(this.cloudUrl, true)
+
+    node.cloud = true
+    node.reachable = true
+    node.lastSeen = Date.now()
+
+    // Remove models no longer in the active list
+    const seenNames = new Set(this.cloudModels)
+    for (const name of node.models.keys()) {
+      if (!seenNames.has(name)) node.models.delete(name)
+    }
+
+    // Add new models — fetch real profile from /api/show for each
+    const newModels = this.cloudModels.filter((name) => !node.models.has(name))
+    await Promise.allSettled(
+      newModels.map(async (modelName) => {
+        const profile = await this._fetchCloudProfile(modelName)
+        const modelInfo = new ModelInfo(modelName, profile.architecture || '', 0, profile)
+        modelInfo.lastSeen = Date.now()
+        node.models.set(modelName, modelInfo)
+        logger.debug({ modelName, supportsTools: profile.supportsTools, supportsThinking: profile.supportsThinking }, 'Cloud model profile fetched')
+      }),
+    )
+
+    if (!existing) this.inventory.set(this.cloudUrl, node)
+    logger.info({ cloudUrl: this.cloudUrl, models: this.cloudModels }, 'Cloud node registered')
+  }
+
+  addCloudModel(name: string): void {
+    if (this.cloudModels.includes(name)) return
+    ;(this.cloudModels as string[]).push(name)
+    // Fire-and-forget — profile fetch is async; inventory updates when done
+    this.registerCloudNode()
+      .then(() => this.persistMetrics())
+      .catch((err: Error) => logger.warn({ err: err.message }, 'addCloudModel registerCloudNode failed'))
+  }
+
+  removeCloudModel(name: string): boolean {
+    const idx = this.cloudModels.indexOf(name)
+    if (idx === -1) return false
+    ;(this.cloudModels as string[]).splice(idx, 1)
+    // Sync removal — no network call needed
+    const node = this.inventory.get(this.cloudUrl)
+    if (node) node.models.delete(name)
+    this.persistMetrics()
+    logger.info({ cloudUrl: this.cloudUrl, models: this.cloudModels }, 'Cloud node registered')
+    return true
+  }
+
+  getCloudApiKey(nodeHost: string): string {
+    return this.inventory.get(nodeHost)?.cloud ? this.cloudApiKey : ''
+  }
+
+  getCloudInfo(): { configured: boolean; cloudUrl: string; cloudApiKey: string; models: string[] } {
+    return {
+      configured: !!(this.cloudUrl && this.cloudApiKey),
+      cloudUrl: this.cloudUrl,
+      cloudApiKey: this.cloudApiKey,
+      models: [...this.cloudModels],
     }
   }
 
@@ -74,23 +178,16 @@ export class DiscoveryManager {
     this.inventoryUpdateHandler = handler
   }
 
-  getNodes(): Map<string, NodeInfo> {
-    return this.inventory
-  }
+  getNodes(): Map<string, NodeInfo> { return this.inventory }
 
   getReachableNodeCount(): number {
     let count = 0
-    for (const node of this.inventory.values()) {
-      if (node.reachable) count++
-    }
+    for (const node of this.inventory.values()) if (node.reachable) count++
     return count
   }
 
-  /** True if any non-localhost node is in inventory (regardless of reachability). */
   isConnectedToNetworkNodes(): boolean {
-    for (const host of this.inventory.keys()) {
-      if (!this._isLocalhost(host)) return true
-    }
+    for (const host of this.inventory.keys()) if (!this._isLocalhost(host)) return true
     return false
   }
 
@@ -106,12 +203,7 @@ export class DiscoveryManager {
 
   getScanStatus(): ScanStatus {
     const lastScanAgo = this._lastScanMs === 0 ? -1 : Date.now() - this._lastScanMs
-    return {
-      inProgress: this._scanInProgress,
-      lastScanMs: this._lastScanMs,
-      lastScanAgo,
-      lastError: this._lastScanError,
-    }
+    return { inProgress: this._scanInProgress, lastScanMs: this._lastScanMs, lastScanAgo, lastError: this._lastScanError }
   }
 
   buildModelProfile(data: unknown): ModelProfile {
@@ -121,18 +213,12 @@ export class DiscoveryManager {
       ? new Set<string>(d.capabilities as string[])
       : new Set<string>()
     const modelInfo = (d.model_info ?? {}) as Record<string, unknown>
-
     const paramCount = modelInfo['general.parameter_count'] as number | undefined
     const parameters = paramCount ? paramCount / 1e9 : 0
-
     let contextLength = 4096
     for (const [key, val] of Object.entries(modelInfo)) {
-      if (key.endsWith('.context_length') && typeof val === 'number') {
-        contextLength = val
-        break
-      }
+      if (key.endsWith('.context_length') && typeof val === 'number') { contextLength = val; break }
     }
-
     let architecture = ''
     let embeddingDim = 0
     const archVal = modelInfo['general.architecture']
@@ -141,13 +227,8 @@ export class DiscoveryManager {
       const dimKey = `${architecture}.embedding_length`
       if (typeof modelInfo[dimKey] === 'number') embeddingDim = modelInfo[dimKey] as number
     }
-
     return new ModelProfile({
-      capabilities,
-      parameters,
-      contextLength,
-      architecture,
-      embeddingDim,
+      capabilities, parameters, contextLength, architecture, embeddingDim,
       supportsTools: capabilities.has('tools'),
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),
@@ -158,8 +239,7 @@ export class DiscoveryManager {
 
   markNodeUnreachable(nodeHost: string): void {
     const node = this.inventory.get(nodeHost)
-    if (!node) return
-    if (!node.reachable) return // single-fire design
+    if (!node || !node.reachable || node.cloud) return
     node.reachable = false
     node.failures++
     node.lastFailure = Date.now()
@@ -170,22 +250,28 @@ export class DiscoveryManager {
     logger.info('Initializing DiscoveryManager')
 
     if (this.metricsStore) {
-      const { knownNodes, metrics } = this.metricsStore.load()
-      // Restore previously discovered nodes not present in seed config
+      const { knownNodes, cloudModels, metrics } = this.metricsStore.load()
       for (const host of knownNodes) {
         if (!this.inventory.has(host)) {
           logger.info({ host }, 'Restoring known node from persistence')
           this.inventory.set(host, new NodeInfo(host))
         }
       }
-      // Hold metrics to apply after probe populates node.models
+      for (const name of cloudModels) {
+        if (!this.cloudModels.includes(name)) {
+          ;(this.cloudModels as string[]).push(name)
+        }
+      }
+      if (cloudModels.length > 0) logger.info({ cloudModels }, 'Restored cloud models from persistence')
       this._pendingMetrics = metrics.size > 0 ? metrics : null
     }
+
+    // Must run after metrics restore so model list is populated
+    await this.registerCloudNode()
 
     if (this.autoDiscover) await this.discoverNetworkNodes()
     await this.performProbe()
 
-    // Apply persisted metrics to freshly probed models
     if (this._pendingMetrics) {
       this._applyLoadedMetrics(this._pendingMetrics)
       this._pendingMetrics = null
@@ -194,9 +280,7 @@ export class DiscoveryManager {
     return this.getReachableNodeCount()
   }
 
-  private _applyLoadedMetrics(
-    metrics: Map<string, Map<string, PersistedModelMetrics>>,
-  ): void {
+  private _applyLoadedMetrics(metrics: Map<string, Map<string, PersistedModelMetrics>>): void {
     for (const [host, modelMetrics] of metrics) {
       const node = this.inventory.get(host)
       if (!node) continue
@@ -209,41 +293,31 @@ export class DiscoveryManager {
         model.totalRequests = m.totalRequests
         model.lastRoutedAt = m.lastRoutedAt
         model.lastRoutingEndpoint = m.lastRoutingEndpoint
-        logger.debug({ host, name }, 'Restored persisted metrics for model')
       }
     }
   }
 
-  /** Flush current inventory metrics to disk. Call on graceful shutdown. */
   persistMetrics(): void {
-    this.metricsStore?.persist(this.inventory)
+    this.metricsStore?.persist(this.inventory, this.cloudModels)
   }
 
-  /**
-   * Remove a node from the inventory and immediately persist.
-   * Returns false if the host was not found.
-   */
   removeNode(host: string): boolean {
     if (!this.inventory.has(host)) return false
     this.inventory.delete(host)
     logger.info({ host }, 'Node manually removed from inventory')
-    this.metricsStore?.persist(this.inventory)
+    this.persistMetrics()
     return true
   }
 
   startPeriodicProbe(): void {
     if (this.probeTimer) return
     this.probeTimer = setInterval(
-      () => this.performProbe().catch((err: Error) => {
-        logger.warn({ err: err.message }, 'Periodic probe failed')
-      }),
+      () => this.performProbe().catch((err: Error) => logger.warn({ err: err.message }, 'Periodic probe failed')),
       this.discoveryInterval,
     )
     if (this.autoDiscover) {
       this.scanTimer = setInterval(
-        () => this.discoverNetworkNodes().catch((err: Error) => {
-          logger.warn({ err: err.message }, 'Periodic scan failed')
-        }),
+        () => this.discoverNetworkNodes().catch((err: Error) => logger.warn({ err: err.message }, 'Periodic scan failed')),
         this._determineNextScanInterval(),
       )
     }
@@ -279,14 +353,14 @@ export class DiscoveryManager {
   }
 
   async performProbe(): Promise<void> {
-    const probes = Array.from(this.inventory.keys()).map((host) =>
-      this._probeNode(host).catch((err: Error) => {
-        logger.warn({ host, err: err.message }, 'Node probe failed')
-      }),
-    )
+    const probes = Array.from(this.inventory.entries())
+      .filter(([, node]) => !node.cloud)
+      .map(([host]) =>
+        this._probeNode(host).catch((err: Error) => logger.warn({ host, err: err.message }, 'Node probe failed')),
+      )
     await Promise.allSettled(probes)
     this.inventoryUpdateHandler?.(this.inventory)
-    this.metricsStore?.persist(this.inventory)
+    this.persistMetrics()
   }
 
   private async _probeNode(host: string): Promise<void> {
@@ -295,10 +369,7 @@ export class DiscoveryManager {
     try {
       const { request } = await import('undici')
       const tagsResp = await request(`${host}/api/tags`, { headersTimeout: 5000, bodyTimeout: 5000 })
-      if (tagsResp.statusCode !== 200) {
-        this.markNodeUnreachable(host)
-        return
-      }
+      if (tagsResp.statusCode !== 200) { this.markNodeUnreachable(host); return }
       const tagsData = (await tagsResp.body.json()) as { models?: Array<Record<string, unknown>> }
       const apiModels = tagsData.models ?? []
 
@@ -311,50 +382,41 @@ export class DiscoveryManager {
       for (const raw of apiModels) {
         const name = raw.name as string
         seenNames.add(name)
-
         if (!node.models.has(name)) {
           const details = (raw.details ?? {}) as Record<string, unknown>
-          node.models.set(
+          node.models.set(name, new ModelInfo(
             name,
-            new ModelInfo(
-              name,
-              (details.family as string) ?? '',
-              (raw.size as number) ?? 0,
-              new ModelProfile(),
-            ),
-          )
+            (details.family as string) ?? '',
+            (raw.size as number) ?? 0,
+            new ModelProfile(),
+          ))
           newModelNames.push(name)
         }
         node.models.get(name)!.lastSeen = Date.now()
       }
       if (newModelNames.length > 0) {
-        await Promise.allSettled(
-          newModelNames.map(async (name) => {
-            try {
-              const showResp = await request(`${host}/api/show`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
-                headersTimeout: 5000,
-                bodyTimeout: 10000,
-              })
-              if (showResp.statusCode === 200) {
-                const showData = await showResp.body.json()
-                const profile = this.buildModelProfile(showData)
-                const model = node.models.get(name)
-                if (model) {
-                  model.profile = profile
-                  if (!model.family && profile.architecture)
-                    model.family = profile.architecture
-                }
-              } else {
-                await showResp.body.dump()
+        await Promise.allSettled(newModelNames.map(async (name) => {
+          try {
+            const showResp = await request(`${host}/api/show`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name }),
+              headersTimeout: 5000,
+              bodyTimeout: 10000,
+            })
+            if (showResp.statusCode === 200) {
+              const showData = await showResp.body.json()
+              const profile = this.buildModelProfile(showData)
+              const model = node.models.get(name)
+              if (model) {
+                model.profile = profile
+                if (!model.family && profile.architecture) model.family = profile.architecture
               }
-            } catch {
-              /* keep default profile */
+            } else {
+              await showResp.body.dump()
             }
-          }),
-        )
+          } catch { /* keep default profile */ }
+        }))
       }
       for (const name of node.models.keys()) {
         if (!seenNames.has(name)) node.models.delete(name)
@@ -370,10 +432,7 @@ export class DiscoveryManager {
     }
     for (const [host, freshNode] of freshNodes) {
       const existing = this.inventory.get(host)
-      if (!existing) {
-        this.inventory.set(host, freshNode)
-        continue
-      }
+      if (!existing) { this.inventory.set(host, freshNode); continue }
       freshNode.activeRequests = existing.activeRequests
       for (const [name, freshModel] of freshNode.models) {
         const existingModel = existing.models.get(name)
@@ -390,25 +449,17 @@ export class DiscoveryManager {
     }
   }
 
-  updateModelMetrics(
-    nodeHost: string,
-    modelName: string,
-    latencyMs: number,
-    tokens: number,
-    endpoint?: string,
-  ): void {
+  updateModelMetrics(nodeHost: string, modelName: string, latencyMs: number, tokens: number, endpoint?: string): void {
     const node = this.inventory.get(nodeHost)
     const model = node?.models.get(modelName)
     if (!model) return
-
     if (model.totalRequests === 0) {
       model.recentLatency = latencyMs
       model.recentTps = tokens > 0 ? (tokens / latencyMs) * 1000 : 0
     } else {
       model.recentLatency = EMA_ALPHA * latencyMs + (1 - EMA_ALPHA) * model.recentLatency
       if (tokens > 0) {
-        const newTps = (tokens / latencyMs) * 1000
-        model.recentTps = EMA_ALPHA * newTps + (1 - EMA_ALPHA) * model.recentTps
+        model.recentTps = EMA_ALPHA * ((tokens / latencyMs) * 1000) + (1 - EMA_ALPHA) * model.recentTps
       }
     }
     model.totalRequests++
@@ -416,15 +467,10 @@ export class DiscoveryManager {
     if (endpoint) model.lastRoutingEndpoint = endpoint
   }
 
-  recordModelFailure(
-    nodeHost: string,
-    modelName: string,
-    err: NodeJS.ErrnoException,
-  ): void {
+  recordModelFailure(nodeHost: string, modelName: string, err: NodeJS.ErrnoException): void {
     const node = this.inventory.get(nodeHost)
     const model = node?.models.get(modelName)
     if (model) model.failures++
-    const isNetworkError = err?.code === 'ECONNREFUSED' || err?.code === 'ECONNRESET'
-    if (isNetworkError) this.markNodeUnreachable(nodeHost)
+    if (err?.code === 'ECONNREFUSED' || err?.code === 'ECONNRESET') this.markNodeUnreachable(nodeHost)
   }
 }
