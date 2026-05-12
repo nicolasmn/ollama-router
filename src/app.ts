@@ -97,9 +97,11 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
 
   const app = express()
   app.use(express.json({ limit: '10mb' }))
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = dirname(__filename)
   app.use(
     '/dashboard-assets',
-    express.static(join(process.cwd(), 'dist', 'src', 'dashboard')),
+    express.static(join(__dirname, '..', 'dashboard')),
   )
 
   createRoutes(

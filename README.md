@@ -137,26 +137,50 @@ Prerequisites:
 - Node.js 18+
 - npm
 
-Install and run:
+Install, build, and run:
 
 ```bash
 npm install
+npm run build
 npm start
 ```
 
-Development mode:
+Development mode (clean build + watch for TypeScript, dashboard, and app changes):
 
 ```bash
 npm run dev
 ```
 
+## npm Scripts
+
+| Script | Description |
+|--------|-------------|
+| `build` | Clean `dist/`, compile TypeScript, bundle and copy dashboard assets |
+| `build:ts` | TypeScript-only compile step (`tsconfig.build.json`, no tests in output) |
+| `build:dashboard` | Bundle dashboard JS and copy static assets to `dist/src/dashboard/` |
+| `clean` | Remove `dist/` entirely |
+| `start` | Run `dist/index.js` (requires prior build) |
+| `dev` | Full build then parallel watch: TypeScript, dashboard bundle, and `tsx` app runner |
+| `typecheck` | Type-check entire codebase including tests — no output emitted |
+| `check` | `typecheck` + `lint` + `test` in one command |
+| `test` | Run Jest test suite |
+| `lint` | ESLint across `src/` and `index.ts` |
+| `lint:fix` | ESLint with auto-fix |
+| `format` | Prettier write |
+| `format:check` | Prettier check |
+
 ## TypeScript
 
-The codebase is fully TypeScript. Runtime uses `tsx` (no compile step — types stripped at runtime). Type-checking is a separate step:
+The codebase is fully TypeScript. Production is compiled via `tsc` (`tsconfig.build.json`) into `dist/`. Only `index.ts` and `src/**/*.ts` are emitted — tests are never part of the build output. Type-checking runs against the full project including tests:
 
 ```bash
 npm run typecheck
 ```
+
+Two TypeScript configs:
+
+- `tsconfig.json` — full project typecheck (includes `tests/`); used by `typecheck` and IDEs
+- `tsconfig.build.json` — production emit only (excludes `tests/`); used by `build` and `dev`
 
 Shared API types live in `src/types/`: `OpenAIApiTypes.ts`, `OllamaApiTypes.ts`, `AnthropicApiTypes.ts`. Internal types (routing, config, models) are re-exported from `src/types/index.ts`.
 
