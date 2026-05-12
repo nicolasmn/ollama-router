@@ -25,13 +25,15 @@ export function setupEmbeddingsRoutes(
     const abortController = new AbortController()
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
+    let requestId = ''
 
     try {
-    const requestId = makeRequestId()
+    requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
     const analysis = requestRouter.analyzeRequest(reqBody, 'embeddings')
 
     requestHistoryManager.startRequest({ requestId, endpointType: 'embeddings', reqBody, analysis })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'embeddings', res,
@@ -56,6 +58,7 @@ export function setupEmbeddingsRoutes(
     }
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }

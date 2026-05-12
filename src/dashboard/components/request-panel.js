@@ -67,6 +67,15 @@ export class RequestPanel extends LitElement {
     )
   }
 
+  async handleTerminate(requestId, event) {
+    event.stopPropagation()
+    try {
+      await fetch(`/admin/requests/${encodeURIComponent(requestId)}`, { method: 'DELETE' })
+    } catch {
+      // ignore — dashboard will reflect the change on next WS update
+    }
+  }
+
   toggleCollapsed() {
     this.collapsed = !this.collapsed
     if (!this.collapsed) this.page = 0
@@ -81,6 +90,7 @@ export class RequestPanel extends LitElement {
   }
 
   renderRequestRow(request) {
+    const isRunningOrWaiting = request.status === 'running' || request.status === 'waiting'
     const statusBadgeClass =
       request.status === 'success'
         ? 'b-green'
@@ -172,6 +182,14 @@ export class RequestPanel extends LitElement {
             </span>
           </span>
         </button>
+        ${isRunningOrWaiting
+          ? html`<button
+              class="request-terminate-btn"
+              type="button"
+              title="Terminate request"
+              @click=${(e) => this.handleTerminate(request.requestId, e)}
+            >✕</button>`
+          : ''}
       </div>
     `
   }

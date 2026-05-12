@@ -26,14 +26,16 @@ export function setupChatRoutes(
     const abortController = new AbortController()
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
+    let requestId = ''
 
     try {
-    const requestId = makeRequestId()
+    requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
     const isStreaming = Boolean(reqBody?.stream)
     const analysis = requestRouter.analyzeRequest(reqBody, 'chat')
 
     requestHistoryManager.startRequest({ requestId, endpointType: 'chat', reqBody, analysis })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'chat', res,
@@ -66,6 +68,7 @@ export function setupChatRoutes(
     }
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }

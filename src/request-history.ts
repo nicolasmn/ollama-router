@@ -402,10 +402,26 @@ function summariseCandidate(candidate: {
 export class RequestHistoryManager {
   limit: number
   requests: RequestEntry[]
+  readonly #abortControllers = new Map<string, AbortController>()
 
   constructor({ limit = DEFAULT_LIMIT }: RequestHistoryConfig = {}) {
     this.limit = limit
     this.requests = []
+  }
+
+  registerAbortController(requestId: string, controller: AbortController): void {
+    this.#abortControllers.set(requestId, controller)
+  }
+
+  unregisterAbortController(requestId: string): void {
+    this.#abortControllers.delete(requestId)
+  }
+
+  terminateRequest(requestId: string): boolean {
+    const controller = this.#abortControllers.get(requestId)
+    if (!controller) return false
+    controller.abort()
+    return true
   }
 
   startRequest({
@@ -513,6 +529,7 @@ export class RequestHistoryManager {
   finishRequest(requestId: string, result: FinishRequestOptions = {}): boolean {
     const entry = this.#findRequest(requestId)
     if (!entry) return false
+    this.#abortControllers.delete(requestId)
     if (entry.executionStartedAt === 0) {
       entry.executionStartedAt = Date.now()
     }

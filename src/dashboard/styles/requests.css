@@ -115,6 +115,33 @@
   border-left: 1px solid rgba(37, 42, 69, 0.45);
 }
 
+.request-terminate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  flex-shrink: 0;
+  margin-right: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.request-row:hover .request-terminate-btn {
+  opacity: 1;
+}
+
+.request-terminate-btn:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .request-action-btn {
   display: flex;
   align-items: center;

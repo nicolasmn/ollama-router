@@ -26,9 +26,10 @@ export function setupResponsesRoutes(
     const abortController = new AbortController()
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
+    let requestId = ''
 
     try {
-    const requestId = makeRequestId()
+    requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
 
     if (reqBody.previous_response_id) {
@@ -43,6 +44,7 @@ export function setupResponsesRoutes(
     const analysis = requestRouter.analyzeRequest(reqBody, 'responses')
 
     requestHistoryManager.startRequest({ requestId, endpointType: 'responses', reqBody, analysis })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'responses', res,
@@ -74,6 +76,7 @@ export function setupResponsesRoutes(
     }
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }

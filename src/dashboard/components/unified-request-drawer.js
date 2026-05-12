@@ -38,6 +38,15 @@ export class UnifiedRequestDrawer extends LitElement {
     )
   }
 
+  async handleTerminate() {
+    if (!this.request) return
+    try {
+      await fetch(`/admin/requests/${encodeURIComponent(this.request.requestId)}`, { method: 'DELETE' })
+    } catch {
+      // ignore — dashboard will reflect change on next WS update
+    }
+  }
+
   toggleAttempts() {
     this.attemptExpanded = !this.attemptExpanded
   }
@@ -347,6 +356,7 @@ export class UnifiedRequestDrawer extends LitElement {
   }
 
   render() {
+    const isActive = this.request && (this.request.status === 'running' || this.request.status === 'waiting')
     return html`
       <div
         class="drawer-shell ${this.open ? 'open' : ''}"
@@ -363,13 +373,23 @@ export class UnifiedRequestDrawer extends LitElement {
                   : 'Select a request from the list.'}
               </div>
             </div>
-            <button
-              class="drawer-close"
-              type="button"
-              @click=${() => this.emitClose()}
-            >
-              ✕
-            </button>
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              ${isActive
+                ? html`<button
+                    class="drawer-terminate-btn"
+                    type="button"
+                    title="Terminate this request"
+                    @click=${() => this.handleTerminate()}
+                  >Terminate</button>`
+                : ''}
+              <button
+                class="drawer-close"
+                type="button"
+                @click=${() => this.emitClose()}
+              >
+                ✕
+              </button>
+            </div>
           </div>
           <div class="drawer-body">${this.renderRequestDetails()}</div>
         </aside>

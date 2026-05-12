@@ -41,6 +41,7 @@ export function setupOllamaInferenceRoutes(
       reqBody: req.body as Record<string, unknown>,
       analysis: {},
     })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     try {
       const candidates = await selectCandidatesOrHandleError({
@@ -155,6 +156,7 @@ export function setupOllamaInferenceRoutes(
       if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 
@@ -175,6 +177,7 @@ export function setupOllamaInferenceRoutes(
       reqBody: req.body as Record<string, unknown>,
       analysis: {},
     })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     try {
       const candidates = await selectCandidatesOrHandleError({
@@ -289,6 +292,7 @@ export function setupOllamaInferenceRoutes(
       if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }

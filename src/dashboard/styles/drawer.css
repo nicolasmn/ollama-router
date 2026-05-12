@@ -67,6 +67,22 @@
   cursor: pointer;
 }
 
+.drawer-terminate-btn {
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.drawer-terminate-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
 .drawer-body {
   min-height: 0;
   padding: 1rem 1.25rem 1.5rem;

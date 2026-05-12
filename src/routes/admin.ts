@@ -124,6 +124,27 @@ export function createAdminRouter({
     res.json(requestHistoryManager.getRecentRequests())
   })
 
+  r.delete('/requests/:requestId', (req, res) => {
+    const { requestId } = req.params
+    const entry = requestHistoryManager.getRecentRequests().find((r) => r.requestId === requestId)
+    if (!entry) {
+      res.status(404).json({ error: 'Request not found' })
+      return
+    }
+    const activeStatuses = new Set(['waiting', 'running'])
+    if (!activeStatuses.has(entry.status)) {
+      res.status(409).json({ error: 'Request is not active' })
+      return
+    }
+    const terminated = requestHistoryManager.terminateRequest(requestId)
+    if (!terminated) {
+      res.status(409).json({ error: 'Request has no active abort handle' })
+      return
+    }
+    logger.info({ requestId }, 'Request terminated via admin API')
+    res.json({ ok: true, requestId })
+  })
+
   // ---------------------------------------------------------------------------
   // Cloud model management
   // ---------------------------------------------------------------------------

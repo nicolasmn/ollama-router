@@ -26,9 +26,10 @@ export function setupMessagesRoutes(
     const abortController = new AbortController()
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
+    let requestId = ''
 
     try {
-    const requestId = makeRequestId()
+    requestId = makeRequestId()
     const reqBody = req.body as Record<string, unknown>
 
     if (!reqBody.max_tokens) {
@@ -40,6 +41,7 @@ export function setupMessagesRoutes(
     const analysis = requestRouter.analyzeRequest(reqBody, 'chat')
 
     requestHistoryManager.startRequest({ requestId, endpointType: 'chat', reqBody, analysis })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'messages', res,
@@ -71,6 +73,7 @@ export function setupMessagesRoutes(
     }
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }
