@@ -110,6 +110,70 @@ describe('DiscoveryManager - Network Connectivity', () => {
   })
 })
 
+describe('DiscoveryManager._isLocalhost — self-address detection', () => {
+  /**
+   * Build a DiscoveryManager whose selfAddresses field is seeded with
+   * a controlled set of IPs, bypassing the real networkInterfaces() call.
+   * We reach into the private field directly (TypeScript cast) because
+   * the logic is pure and testable without a full OS mock.
+   *
+   * IPs are stored without brackets — matching networkInterfaces() output.
+   * URL.hostname returns '[fd00::1]' for IPv6 literals (RFC 3986 bracket
+   * notation); _isLocalhost strips the brackets before the Set lookup.
+   */
+  function makeWithSelfAddresses(ips: string[]): DiscoveryManager {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    ;(dm as unknown as { selfAddresses: Set<string> }).selfAddresses = new Set(ips)
+    return dm
+  }
+
+  it('returns true for own LAN IPv4 (the bug scenario)', () => {
+    const dm = makeWithSelfAddresses(['192.168.178.23'])
+    expect(dm._isLocalhost('http://192.168.178.23:11434')).toBe(true)
+  })
+
+  it('returns true for own LAN IPv4 without port', () => {
+    const dm = makeWithSelfAddresses(['10.0.0.5'])
+    expect(dm._isLocalhost('http://10.0.0.5')).toBe(true)
+  })
+
+  it('returns true for own IPv6 LAN address (brackets stripped from URL.hostname)', () => {
+    // networkInterfaces() stores 'fd00::1'; URL.hostname returns '[fd00::1]'
+    // _isLocalhost strips the brackets before the Set lookup
+    const dm = makeWithSelfAddresses(['fd00::1'])
+    expect(dm._isLocalhost('http://[fd00::1]:11434')).toBe(true)
+  })
+
+  it('returns false for a different machine on the same subnet', () => {
+    const dm = makeWithSelfAddresses(['192.168.178.23'])
+    expect(dm._isLocalhost('http://192.168.178.42:11434')).toBe(false)
+  })
+
+  it('returns false when selfAddresses is empty', () => {
+    const dm = makeWithSelfAddresses([])
+    expect(dm._isLocalhost('http://192.168.1.1:11434')).toBe(false)
+  })
+
+  it('handles malformed URL without throwing', () => {
+    const dm = makeWithSelfAddresses(['192.168.1.1'])
+    expect(() => dm._isLocalhost('not-a-url')).not.toThrow()
+    expect(dm._isLocalhost('not-a-url')).toBe(false)
+  })
+
+  it('isConnectedToNetworkNodes returns false when only own LAN IP is in inventory', () => {
+    const dm = makeWithSelfAddresses(['192.168.178.23'])
+    dm.inventory.set('http://192.168.178.23:11434', new NodeInfo('http://192.168.178.23:11434'))
+    expect(dm.isConnectedToNetworkNodes()).toBe(false)
+  })
+
+  it('isConnectedToNetworkNodes returns true when another machine is in inventory', () => {
+    const dm = makeWithSelfAddresses(['192.168.178.23'])
+    dm.inventory.set('http://192.168.178.23:11434', new NodeInfo('http://192.168.178.23:11434'))
+    dm.inventory.set('http://192.168.178.42:11434', new NodeInfo('http://192.168.178.42:11434'))
+    expect(dm.isConnectedToNetworkNodes()).toBe(true)
+  })
+})
+
 describe('DiscoveryManager.removeNode', () => {
   function makeManager(...hosts: string[]) {
     const dm = new DiscoveryManager({ ollamaNodes: [] })

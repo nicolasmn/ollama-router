@@ -5,10 +5,22 @@ import { createLogger } from './logger.js'
 import { MetricsStore } from './metrics-store.js'
 import type { PersistedModelMetrics } from './metrics-store.js'
 import { NetworkScanner } from './network-scanner.js'
+import { networkInterfaces } from 'node:os'
 
 const logger = createLogger('discovery')
 
 const EMA_ALPHA = 0.2
+
+/** Collect all non-loopback IPv4/IPv6 addresses assigned to this machine. */
+function getSelfAddresses(): Set<string> {
+  const addrs = new Set<string>()
+  for (const ifaces of Object.values(networkInterfaces())) {
+    for (const iface of ifaces ?? []) {
+      if (!iface.internal) addrs.add(iface.address)
+    }
+  }
+  return addrs
+}
 
 export interface ScanStatus {
   inProgress: boolean
@@ -50,6 +62,8 @@ export class DiscoveryManager {
   private cloudApiKey: string
   readonly cloudModels: string[]
   autoDiscover: boolean
+  /** LAN/WLAN addresses of this machine, resolved once at startup. */
+  private readonly selfAddresses: Set<string>
 
   constructor(config: DiscoveryConfig = {}) {
     this.inventory = new Map()
@@ -71,6 +85,8 @@ export class DiscoveryManager {
     this.cloudUrl = config.cloudUrl ?? ''
     this.cloudApiKey = config.cloudApiKey ?? ''
     this.cloudModels = []
+    this.selfAddresses = getSelfAddresses()
+    logger.debug({ selfAddresses: [...this.selfAddresses] }, 'Self-addresses resolved')
 
     for (const host of config.ollamaNodes ?? []) {
       const normalized = host.startsWith('http') ? host : `http://${host}`
@@ -191,8 +207,26 @@ export class DiscoveryManager {
     return false
   }
 
+  /**
+   * Returns true when `host` resolves to this machine.
+   *
+   * Covers:
+   *   - Standard loopback aliases: localhost, 127.0.0.1, ::1
+   *   - Any LAN/WLAN IP currently assigned to a local network interface
+   *     (e.g. 192.168.178.23 when the router listens on port 11434)
+   *
+   * Note: URL.hostname returns '[fd00::1]' for IPv6 literals (RFC 3986
+   * bracket notation). networkInterfaces() stores addresses without brackets.
+   * We strip leading '[' and trailing ']' before the Set lookup.
+   */
   _isLocalhost(host: string): boolean {
-    return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/.test(host)
+    if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/.test(host)) return true
+    try {
+      const hostname = new URL(host).hostname.replace(/^\[|\]$/g, '')
+      return this.selfAddresses.has(hostname)
+    } catch {
+      return false
+    }
   }
 
   _determineNextScanInterval(): number {
