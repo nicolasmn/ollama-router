@@ -90,12 +90,12 @@ export function createAdminRouter({
       res.status(404).json({ error: 'Node not found' })
       return
     }
-    if (node.reachable) {
-      res.status(409).json({ error: 'Cannot remove a reachable node' })
+    if (node.cloud) {
+      res.status(403).json({ error: 'Cloud node cannot be removed via this endpoint' })
       return
     }
     discoveryManager.removeNode(host)
-    logger.info({ host }, 'Node removed via admin API')
+    logger.info({ host, reachable: node.reachable }, 'Node removed via admin API')
     res.json({ ok: true, host })
   })
 

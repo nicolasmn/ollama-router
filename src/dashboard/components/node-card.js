@@ -230,11 +230,11 @@ export class NodeCard extends LitElement {
             <span class="badge">
               ${models.length} model${models.length === 1 ? '' : 's'}
             </span>
-            ${!isCloud && !this.node.reachable
+            ${!isCloud
               ? html`
                   <button
                     class="btn-cloud-remove"
-                    title="Remove stale node from inventory"
+                    title="Remove node from inventory"
                     ?disabled=${this._removing}
                     @click=${(e) => { e.stopPropagation(); this._onRemove() }}
                   >
