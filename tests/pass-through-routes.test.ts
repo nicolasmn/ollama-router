@@ -31,7 +31,7 @@ function createDiscoveryManager(nodeHost: string, modelName: string) {
     ]),
     updateModelMetrics: jest.fn(),
     recordModelFailure: jest.fn(),
-    getCloudApiKey: jest.fn(),
+    getCloudApiKey: jest.fn().mockReturnValue(null),
   } as unknown as DiscoveryManager
 }
 
@@ -287,7 +287,7 @@ describe('/v1/messages route', () => {
     app.use(express.json())
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
-      selectForChat: jest.fn(() => ({ nodeHost: upstreamBase, modelName: routedModel })),
+      selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
     } as any
     setupMessagesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
