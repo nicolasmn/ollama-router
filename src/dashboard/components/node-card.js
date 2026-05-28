@@ -25,6 +25,7 @@ export class NodeCard extends LitElement {
     this._cloudMutating = false
     this._collapsed = false
     this._lastKnownModels = {}
+    this._collapseInitialized = false
   }
 
   _toggleCollapsed() {
@@ -35,10 +36,17 @@ export class NodeCard extends LitElement {
     return this
   }
 
+  updated(changedProps) {
+    // Set initial collapsed state based on reachability — only once on first
+    // node assignment. After that the user's manual toggle takes precedence.
+    if (changedProps.has('node') && this.node && !this._collapseInitialized) {
+      this._collapseInitialized = true
+      this._collapsed = !this.node.reachable
+    }
+  }
+
   connectedCallback() {
     super.connectedCallback()
-    // Pre-fetch available models when card mounts for a cloud node so the
-    // dropdown is ready without a user gesture.
     if (this.node?.cloud) this._fetchCloudAvailable()
   }
 
@@ -64,15 +72,12 @@ export class NodeCard extends LitElement {
       )
     } catch (err) {
       this._removeError = err.message
-      setTimeout(() => {
-        this._removeError = ''
-      }, 4000)
+      setTimeout(() => { this._removeError = '' }, 4000)
     } finally {
       this._removing = false
     }
   }
 
-  /** Fetch the list of models available on ollama.com (not yet active). */
   async _fetchCloudAvailable() {
     this._cloudLoading = true
     this._cloudError = ''
@@ -83,7 +88,6 @@ export class NodeCard extends LitElement {
           (await res.json().catch(() => ({}))).error ?? res.statusText,
         )
       const data = await res.json()
-      // available = all models from ollama.com; filter out already-active ones in render
       this._cloudAvailable = data.available ?? []
     } catch (err) {
       this._cloudError = err.message
@@ -105,13 +109,10 @@ export class NodeCard extends LitElement {
         throw new Error(
           (await res.json().catch(() => ({}))).error ?? res.statusText,
         )
-      // Refresh available list so dropdown removes the just-added model
       await this._fetchCloudAvailable()
     } catch (err) {
       this._cloudError = err.message
-      setTimeout(() => {
-        this._cloudError = ''
-      }, 4000)
+      setTimeout(() => { this._cloudError = '' }, 4000)
     } finally {
       this._cloudMutating = false
     }
@@ -132,9 +133,7 @@ export class NodeCard extends LitElement {
       await this._fetchCloudAvailable()
     } catch (err) {
       this._cloudError = err.message
-      setTimeout(() => {
-        this._cloudError = ''
-      }, 4000)
+      setTimeout(() => { this._cloudError = '' }, 4000)
     } finally {
       this._cloudMutating = false
     }
@@ -143,11 +142,10 @@ export class NodeCard extends LitElement {
   _onDropdownChange(e) {
     const name = e.target.value
     if (!name) return
-    e.target.value = '' // reset to placeholder
+    e.target.value = ''
     this._addModel(name)
   }
 
-  /** Render the always-visible "add model" dropdown row at the bottom of the table. */
   _renderAddRow(activeNames) {
     const inactive = this._cloudAvailable
       .filter((m) => !activeNames.has(m.name))
@@ -173,7 +171,7 @@ export class NodeCard extends LitElement {
                     : '+ Add cloud model…'}
               </option>
               ${inactive.map(
-                (m) => html` <option value=${m.name}>${m.name}</option> `,
+                (m) => html`<option value=${m.name}>${m.name}</option>`,
               )}
             </select>
           </div>
@@ -185,188 +183,194 @@ export class NodeCard extends LitElement {
   render() {
     if (!this.node) return html``
 
-    // Keep last known models so they remain visible when the node goes offline
     const liveModels = this.node.models || {}
     if (this.node.reachable && Object.keys(liveModels).length > 0) {
       this._lastKnownModels = liveModels
     }
-    const effectiveModels = Object.keys(liveModels).length > 0
-      ? liveModels
-      : this._lastKnownModels
+    const effectiveModels =
+      Object.keys(liveModels).length > 0 ? liveModels : this._lastKnownModels
     const models = Object.values(effectiveModels)
     const hostShort = this.node.host.replace(/^https?:\/\//, '')
     const isCloud = !!this.node.cloud
     const activeNames = new Set(models.map((m) => m.name))
-
     const cardStateClass = this.node.reachable ? 'ok' : 'err'
 
     return html`
       <div class="node-card ${cardStateClass}">
-        <button
-          class="node-header node-header--btn"
-          type="button"
-          @click=${this._toggleCollapsed}
-        >
-          <div class="node-title">
-            <div class="node-dot ${this.node.reachable ? 'ok' : 'err'}"></div>
-            <span class="node-host">${hostShort}</span>
-          </div>
-          <div class="node-meta">
-            ${isCloud ? html`<span class="badge b-blue">☁ Cloud</span>` : ''}
-            <span class="badge ${this.node.reachable ? 'b-green' : 'b-red'}">
-              ${this.node.reachable ? 'Online' : 'Offline'}
-            </span>
-            ${this.node.activeRequests > 0
-              ? html`<span class="badge b-blue"
-                  >${this.node.activeRequests} active</span
-                >`
-              : ''}
-            ${Number.isFinite(this.node.maxConcurrentRequests)
-              ? html`<span class="badge ${this.node.atCapacity ? 'b-red' : ''}">
-                  ${this.node.activeRequests || 0}/${this.node
-                    .maxConcurrentRequests}
-                </span>`
-              : ''}
-            <span class="badge">
-              ${models.length} model${models.length === 1 ? '' : 's'}
-            </span>
+        <!-- ── Header: split into summary (collapse trigger) + action buttons ── -->
+        <div class="node-header">
+          <!-- Left: clickable summary area -->
+          <button
+            class="node-summary"
+            type="button"
+            aria-expanded=${!this._collapsed}
+            @click=${this._toggleCollapsed}
+          >
+            <div class="node-title">
+              <div class="node-dot ${this.node.reachable ? 'ok' : 'err'}"></div>
+              <span class="node-host">${hostShort}</span>
+            </div>
+            <div class="node-badges">
+              ${isCloud ? html`<span class="badge b-blue">☁ Cloud</span>` : ''}
+              <span class="badge ${this.node.reachable ? 'b-green' : 'b-red'}">
+                ${this.node.reachable ? 'Online' : 'Offline'}
+              </span>
+              ${this.node.activeRequests > 0
+                ? html`<span class="badge b-blue">${this.node.activeRequests} active</span>`
+                : ''}
+              ${Number.isFinite(this.node.maxConcurrentRequests)
+                ? html`<span class="badge ${this.node.atCapacity ? 'b-red' : ''}">
+                    ${this.node.activeRequests || 0}/${this.node.maxConcurrentRequests}
+                  </span>`
+                : ''}
+              <span class="badge">
+                ${models.length} model${models.length === 1 ? '' : 's'}
+              </span>
+            </div>
+          </button>
+
+          <!-- Right: fixed action buttons -->
+          <div class="node-actions">
             ${!isCloud
               ? html`
                   <button
-                    class="btn-cloud-remove"
+                    class="node-action-btn node-action-remove"
                     title="Remove node from inventory"
+                    aria-label="Remove node"
                     ?disabled=${this._removing}
-                    @click=${(e) => { e.stopPropagation(); this._onRemove() }}
+                    @click=${this._onRemove}
                   >
-                    ✕
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round"
+                      aria-hidden="true">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                      <path d="M10 11v6M14 11v6"/>
+                      <path d="M9 6V4h6v2"/>
+                    </svg>
                   </button>
                   ${this._removeError
-                    ? html`<span class="remove-error"
-                        >${this._removeError}</span
-                      >`
+                    ? html`<span class="remove-error">${this._removeError}</span>`
                     : ''}
                 `
               : ''}
-            <span class="panel-collapse-icon"
-              >${this._collapsed ? '▸' : '▾'}</span
+            <button
+              class="node-action-btn node-action-collapse"
+              type="button"
+              aria-label=${this._collapsed ? 'Expand node' : 'Collapse node'}
+              @click=${this._toggleCollapsed}
             >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"
+                aria-hidden="true"
+                style="transition: transform 0.2s; transform: rotate(${this._collapsed ? '-90deg' : '0deg'})">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
           </div>
-        </button>
+        </div>
 
         ${this._collapsed
           ? ''
           : html`
-            <div class="models-wrap">
-              <table>
-                <colgroup>
-                  <col class="c-model" />
-                  ${isCloud ? '' : html`<col class="c-size" />`}
-                  <col class="c-params" />
-                  <col class="c-ctx" />
-                  <col class="c-latency" />
-                  <col class="c-tps" />
-                  <col class="c-reqs" />
-                  <col class="c-failures" />
-                  <col class="c-lastused" />
-                  ${isCloud ? html`<col class="c-action" />` : ''}
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Model</th>
-                    ${isCloud ? '' : html`<th>Size</th>`}
-                    <th>Params</th>
-                    <th>Ctx</th>
-                    <th>Latency</th>
-                    <th>TPS</th>
-                    <th>Reqs</th>
-                    <th>Fails</th>
-                    <th>Last used</th>
-                    ${isCloud ? html`<th></th>` : ''}
-                  </tr>
-                </thead>
-                <tbody>
-                  ${models.length === 0 && !isCloud
-                    ? html`
+            ${models.length === 0 && !isCloud
+              ? html`
+                  <div class="node-empty-state">
+                    <span class="node-empty-icon">📭</span>
+                    <span class="node-empty-text">No models discovered</span>
+                    <span class="node-empty-sub">
+                      ${this.node.reachable ? 'Node online but no models loaded.' : 'Node offline.'}
+                    </span>
+                  </div>
+                `
+              : html`
+                  <div class="models-wrap">
+                    <table>
+                      <colgroup>
+                        <col class="c-model" />
+                        ${isCloud ? '' : html`<col class="c-size" />`}
+                        <col class="c-params" />
+                        <col class="c-ctx" />
+                        <col class="c-latency" />
+                        <col class="c-tps" />
+                        <col class="c-reqs" />
+                        <col class="c-failures" />
+                        <col class="c-lastused" />
+                        ${isCloud ? html`<col class="c-action" />` : ''}
+                      </colgroup>
+                      <thead>
                         <tr>
-                          <td colspan="9" class="empty">
-                            No models discovered on this node.
-                          </td>
+                          <th>Model</th>
+                          ${isCloud ? '' : html`<th>Size</th>`}
+                          <th>Params</th>
+                          <th>Ctx</th>
+                          <th>Latency</th>
+                          <th>TPS</th>
+                          <th>Reqs</th>
+                          <th>Fails</th>
+                          <th>Last used</th>
+                          ${isCloud ? html`<th></th>` : ''}
                         </tr>
-                      `
-                    : models.map(
-                        (model) => html`
-                          <tr
-                            class="${model.activeRequests > 0
-                              ? 'model-active'
-                              : ''}"
-                          >
-                            <td class="td-model">
-                              <div class="model-name">
-                                ${model.activeRequests > 0
-                                  ? html`<span
-                                      class="model-active-dot"
-                                      title="${model.activeRequests} request(s) running"
-                                    ></span>`
-                                  : ''}
-                                ${model.name}
-                              </div>
-                              <div class="model-fam">
-                                ${model.family || '\u2014'}
-                              </div>
-                              <div class="model-caps">
-                                ${renderCaps(model.profile)}
-                              </div>
-                            </td>
-                            ${isCloud
-                              ? ''
-                              : html`<td class="mono">
-                                  ${fmt.bytes(model.size)}
-                                </td>`}
-                            <td class="mono">
-                              ${fmt.params(model.profile?.parameters)}
-                            </td>
-                            <td class="mono">
-                              ${fmt.ctx(model.profile?.contextLength)}
-                            </td>
-                            <td>
-                              <span class="mono ${latCls(model.recentLatency)}">
-                                ${fmt.duration(model.recentLatency)}
-                              </span>
-                            </td>
-                            <td class="mono">${fmt.tps(model.recentTps)}</td>
-                            <td class="mono">${model.totalRequests || 0}</td>
-                            <td class="mono ${model.failures > 0 ? 'bad' : ''}">
-                              ${model.failures || 0}
-                            </td>
-                            <td
-                              class="mono muted"
-                              title="${model.lastRoutedAt
-                                ? new Date(model.lastRoutedAt).toLocaleString()
-                                : 'Never used'}"
-                            >
-                              ${fmt.ago(model.lastRoutedAt)}
-                            </td>
-                            ${isCloud
-                              ? html`
-                                  <td class="td-action">
-                                    <button
-                                      class="btn-cloud-remove"
-                                      title="Remove ${model.name} from cloud node"
-                                      ?disabled=${this._cloudMutating}
-                                      @click=${() => this._removeModel(model.name)}
-                                    >
-                                      ✕
-                                    </button>
-                                  </td>
-                                `
-                              : ''}
-                          </tr>
-                        `,
-                      )}
-                  ${isCloud ? this._renderAddRow(activeNames) : ''}
-                </tbody>
-              </table>
-            </div>
+                      </thead>
+                      <tbody>
+                        ${models.map(
+                          (model) => html`
+                            <tr class="${model.activeRequests > 0 ? 'model-active' : ''}">
+                              <td class="td-model">
+                                <div class="model-name">
+                                  ${model.activeRequests > 0
+                                    ? html`<span class="model-active-dot"
+                                        title="${model.activeRequests} request(s) running"
+                                      ></span>`
+                                    : ''}
+                                  ${model.name}
+                                </div>
+                                <div class="model-fam">${model.family || '\u2014'}</div>
+                                <div class="model-caps">${renderCaps(model.profile)}</div>
+                              </td>
+                              ${isCloud
+                                ? ''
+                                : html`<td class="mono">${fmt.bytes(model.size)}</td>`}
+                              <td class="mono">${fmt.params(model.profile?.parameters)}</td>
+                              <td class="mono">${fmt.ctx(model.profile?.contextLength)}</td>
+                              <td>
+                                <span class="mono ${latCls(model.recentLatency)}">
+                                  ${fmt.duration(model.recentLatency)}
+                                </span>
+                              </td>
+                              <td class="mono">${fmt.tps(model.recentTps)}</td>
+                              <td class="mono">${model.totalRequests || 0}</td>
+                              <td class="mono ${model.failures > 0 ? 'bad' : ''}">
+                                ${model.failures || 0}
+                              </td>
+                              <td class="mono muted"
+                                title="${model.lastRoutedAt
+                                  ? new Date(model.lastRoutedAt).toLocaleString()
+                                  : 'Never used'}">
+                                ${fmt.ago(model.lastRoutedAt)}
+                              </td>
+                              ${isCloud
+                                ? html`
+                                    <td class="td-action">
+                                      <button
+                                        class="btn-cloud-remove"
+                                        title="Remove ${model.name} from cloud node"
+                                        ?disabled=${this._cloudMutating}
+                                        @click=${() => this._removeModel(model.name)}
+                                      >✕</button>
+                                    </td>
+                                  `
+                                : ''}
+                            </tr>
+                          `,
+                        )}
+                        ${isCloud ? this._renderAddRow(activeNames) : ''}
+                      </tbody>
+                    </table>
+                  </div>
+                `}
           `}
       </div>
     `

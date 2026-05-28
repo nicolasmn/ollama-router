@@ -14,7 +14,7 @@ const DEST = join(ROOT, 'dist', 'src', 'dashboard')
 
 mkdirSync(DEST, { recursive: true })
 
-const files = ['index.html', 'styles.css', 'favicon.svg']
+const files = ['index.html', 'styles.css', 'favicon.svg', 'logo.svg']
 for (const file of files) {
   cpSync(join(SRC, file), join(DEST, file))
 }

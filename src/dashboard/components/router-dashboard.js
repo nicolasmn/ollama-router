@@ -170,7 +170,13 @@ export class RouterDashboard extends LitElement {
     return html`
       <header>
         <div class="logo">
-          <span class="logo-icon">🦙</span>
+          <img
+            class="logo-icon"
+            src="/dashboard-assets/logo.svg"
+            alt="Ollama Router"
+            width="32"
+            height="32"
+          />
           <h1>Ollama Router <span>/ Dashboard</span></h1>
         </div>
         <div class="header-controls">

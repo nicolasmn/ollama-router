@@ -4,27 +4,92 @@
   overflow: hidden;
 }
 
+/* ── Header: two-zone flex row ── */
+
 .node-header {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface2);
 }
 
-.node-header--btn {
-  width: 100%;
+/* Summary: fills remaining width, click to collapse */
+.node-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
   background: transparent;
   border: 0;
   color: inherit;
   text-align: left;
   cursor: pointer;
+  padding: 0;
 }
 
-.node-header--btn:hover {
-  background: rgba(255, 255, 255, 0.02);
+.node-summary:hover {
+  background: transparent;
+}
+
+/* Action buttons column */
+.node-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding-left: 0.25rem;
+}
+
+.node-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.node-action-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg);
+}
+
+.node-action-remove:hover {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.25);
+}
+
+.node-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Title row */
+.node-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* Badges row */
+.node-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
 }
 
 .node-card.ok {
@@ -55,7 +120,43 @@
 .node-host {
   font-size: 0.875rem;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+/* ── Empty state (no models, non-cloud) ── */
+
+.node-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0.25rem;
+  padding: 1.5rem 1.25rem;
+  color: var(--muted);
+}
+
+.node-empty-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  opacity: 0.4;
+  margin-bottom: 0.2rem;
+}
+
+.node-empty-text {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.node-empty-sub {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* ── Models table ── */
 
 .models-wrap {
   overflow-x: auto;
@@ -68,45 +169,16 @@ table {
   table-layout: fixed;
 }
 
-col.c-model {
-  width: 28%;
-}
-
-col.c-size {
-  width: 9%;
-}
-
-col.c-params {
-  width: 7%;
-}
-
-col.c-ctx {
-  width: 6%;
-}
-
-col.c-latency {
-  width: 9%;
-}
-
-col.c-tps {
-  width: 7%;
-}
-
-col.c-reqs {
-  width: 6%;
-}
-
-col.c-failures {
-  width: 6%;
-}
-
-col.c-lastused {
-  width: 10%;
-}
-
-col.c-action {
-  width: 5%;
-}
+col.c-model  { width: 28%; }
+col.c-size   { width: 9%;  }
+col.c-params { width: 7%;  }
+col.c-ctx    { width: 6%;  }
+col.c-latency{ width: 9%;  }
+col.c-tps    { width: 7%;  }
+col.c-reqs   { width: 6%;  }
+col.c-failures{ width: 6%; }
+col.c-lastused{ width: 10%;}
+col.c-action { width: 5%;  }
 
 thead th {
   font-size: 0.6875rem;
@@ -171,13 +243,8 @@ tbody tr:hover td {
 }
 
 @keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
 }
 
 tbody tr.model-active td {
@@ -220,73 +287,18 @@ tbody tr.model-active td:first-child {
   line-height: 1;
 }
 
-.cap-fallback {
-  font-size: 0.75rem;
-}
+.cap-fallback { font-size: 0.75rem; }
 
-.cap.vision {
-  background: rgba(167, 139, 250, 0.15);
-  color: var(--purple);
-}
-
-.cap.vision::before {
-  content: '👁️';
-}
-
-.cap.tools {
-  background: rgba(96, 165, 250, 0.15);
-  color: var(--blue);
-}
-
-.cap.tools::before {
-  content: '🛠️';
-}
-
-.cap.thinking {
-  background: rgba(251, 191, 36, 0.15);
-  color: var(--yellow);
-}
-
-.cap.thinking::before {
-  content: '🧠';
-}
-
-.cap.audio {
-  background: rgba(103, 232, 249, 0.15);
-  color: var(--cyan);
-}
-
-.cap.audio::before {
-  content: '🔊';
-}
-
-.cap.embedding {
-  background: rgba(74, 222, 128, 0.15);
-  color: var(--green);
-}
-
-.cap.embedding::before {
-  content: '🧬';
-}
-
-@container node-card (max-width: 44rem) {
-  .node-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.75rem 1rem;
-  }
-
-  .node-meta {
-    width: 100%;
-  }
-
-  thead th,
-  tbody td {
-    padding-left: 1rem;
-    padding-right: 1rem;
-  }
-}
+.cap.vision    { background: rgba(167,139,250,0.15); color: var(--purple); }
+.cap.vision::before    { content: '👁️'; }
+.cap.tools     { background: rgba(96,165,250,0.15);  color: var(--blue);   }
+.cap.tools::before     { content: '🛠️'; }
+.cap.thinking  { background: rgba(251,191,36,0.15);  color: var(--yellow); }
+.cap.thinking::before  { content: '🧠'; }
+.cap.audio     { background: rgba(103,232,249,0.15); color: var(--cyan);   }
+.cap.audio::before     { content: '🔊'; }
+.cap.embedding { background: rgba(74,222,128,0.15);  color: var(--green);  }
+.cap.embedding::before { content: '🧬'; }
 
 /* ── Cloud node ── */
 
@@ -306,8 +318,6 @@ tbody tr.model-active td:first-child {
   background: rgba(96, 165, 250, 0.16);
   border-color: rgba(96, 165, 250, 0.6);
 }
-
-/* Cloud panel */
 
 .cloud-panel {
   border-bottom: 1px solid var(--border);
@@ -354,9 +364,7 @@ tbody tr.model-active td:first-child {
   margin: 0.75rem 0 0.4rem;
 }
 
-.cloud-section-label:first-of-type {
-  margin-top: 0;
-}
+.cloud-section-label:first-of-type { margin-top: 0; }
 
 .cloud-model-list {
   list-style: none;
@@ -456,8 +464,6 @@ tbody tr.model-active td:first-child {
   margin-bottom: 0.5rem;
 }
 
-/* ── Cloud empty state ── */
-
 .cloud-empty-state {
   display: flex;
   flex-direction: column;
@@ -507,8 +513,6 @@ tbody tr.model-active td:first-child {
   border-color: rgba(96, 165, 250, 0.65);
 }
 
-/* ── Cloud add-model row ── */
-
 tr.cloud-add-row td {
   padding: 0.6rem 1.25rem;
   border-top: 1px solid rgba(96, 165, 250, 0.12);
@@ -526,7 +530,6 @@ tr.cloud-add-row td {
   color: var(--red);
 }
 
-/* Custom-styled select — replaces the bare OS <select> */
 .cloud-add-select {
   appearance: none;
   -webkit-appearance: none;
