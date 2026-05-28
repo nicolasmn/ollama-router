@@ -82,18 +82,23 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   const requestRouter = new RequestRouter(discoveryManager, loadManager)
   const requestHistoryManager = new RequestHistoryManager()
 
-  const reachableCount = await discoveryManager.initialize()
-  if (reachableCount === 0) {
-    logger.warn(
-      {
-        autoDiscover: config.autoDiscover,
-        configuredNodes: config.ollamaNodes.length,
-      },
-      'No reachable nodes found at startup — will retry on next probe interval',
-    )
-  }
-
-  discoveryManager.startPeriodicProbe()
+  // Run discovery in the background so the HTTP server can start immediately.
+  // startPeriodicProbe() is chained to run after initialize() completes.
+  discoveryManager
+    .initialize()
+    .then((reachableCount) => {
+      if (reachableCount === 0) {
+        logger.warn(
+          {
+            autoDiscover: config.autoDiscover,
+            configuredNodes: config.ollamaNodes.length,
+          },
+          'No reachable nodes found after discovery — will retry on next probe interval',
+        )
+      }
+      discoveryManager.startPeriodicProbe()
+    })
+    .catch((err: Error) => logger.warn({ err: err.message }, 'Background initialization failed'))
 
   const app = express()
   app.use(express.json({ limit: '10mb' }))

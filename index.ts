@@ -26,9 +26,7 @@ try {
 
   server.listen(PORT, () => {
     logger.info(`Router listening on port ${PORT}`)
-    logger.info(
-      `Discovered ${managers.discovery.getReachableNodeCount()} reachable nodes`,
-    )
+    logger.info('Discovery running in background — nodes will appear as they come online')
   })
 
   let shuttingDown = false

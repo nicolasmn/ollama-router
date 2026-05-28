@@ -303,8 +303,10 @@ export class DiscoveryManager {
     // Must run after metrics restore so model list is populated
     await this.registerCloudNode()
 
-    if (this.autoDiscover) await this.discoverNetworkNodes()
+    // Probe known/configured nodes first so they become available quickly,
+    // then run the slow network scan for new nodes in the background.
     await this.performProbe()
+    if (this.autoDiscover) await this.discoverNetworkNodes()
 
     if (this._pendingMetrics) {
       this._applyLoadedMetrics(this._pendingMetrics)
