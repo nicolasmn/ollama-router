@@ -68,6 +68,7 @@ export interface RequestEntry {
   requestedModel: string
   status: string
   stream: boolean
+  forcedModel: boolean
   createdAt: number
   executionStartedAt: number
   finishedAt: number
@@ -97,6 +98,7 @@ export interface StartRequestOptions {
   endpointType: string
   reqBody: Record<string, unknown>
   analysis: Partial<AnalysisSummary>
+  forcedModel?: boolean
 }
 
 export interface RecordAttemptOptions {
@@ -429,6 +431,7 @@ export class RequestHistoryManager {
     endpointType,
     reqBody,
     analysis,
+    forcedModel = false,
   }: StartRequestOptions): RequestEntry {
     const preview = buildPreview(reqBody, endpointType)
     const conversation = buildConversationInfo(reqBody, endpointType, preview)
@@ -442,6 +445,7 @@ export class RequestHistoryManager {
       requestedModel: String(reqBody?.model || 'auto'),
       status: 'waiting',
       stream: Boolean(reqBody?.stream),
+      forcedModel,
       createdAt: Date.now(),
       executionStartedAt: 0,
       finishedAt: 0,

@@ -1,4 +1,3 @@
-
 # Ollama Router
 
 Ollama Router is a lightweight OpenAI-compatible gateway in front of multiple Ollama nodes.
@@ -94,6 +93,46 @@ Notes:
 
 - Unknown model names return `404`.
 - Alias names are reserved and also listed in `/v1/models`.
+
+## Force-Model Override
+
+Force a specific model for the **next single request**, bypassing normal routing logic. The override is one-shot — consumed on the first routed request, then automatically cleared.
+
+### From the dashboard
+
+1. Open the dashboard and expand a node card.
+2. Click the **▶** button on any model row to set that model as the override.
+3. A yellow banner appears at the top of the dashboard: `Next request forced to <model>`.
+4. Click **✕ Cancel** in the banner to clear the override before it is consumed.
+
+The ▶ button is disabled on offline nodes. The banner updates in real time via the WebSocket connection.
+
+### Via the admin API
+
+```bash
+# Set override (validates model exists on a reachable node)
+curl -X POST http://localhost:8000/admin/force-model \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.2"}'
+# → { "ok": true, "model": "llama3.2", "expiresAt": 1234567890000 }
+
+# Check current state
+curl http://localhost:8000/admin/force-model
+# → { "active": true, "model": "llama3.2", "expiresAt": ... }
+# → { "active": false, "model": null, "expiresAt": null }
+
+# Clear manually
+curl -X DELETE http://localhost:8000/admin/force-model
+# → { "ok": true, "cleared": true }
+```
+
+### Behaviour details
+
+- **One-shot**: override consumed on first request routed after it is set.
+- **TTL**: auto-expires after 10 minutes if not consumed.
+- **Validation**: `POST` rejects model names not found on any reachable node (`404`).
+- **Logging**: router logs `forcedModel: true` + original model name at `info` level when override applies.
+- **Metrics**: resulting `RoutingCandidate` is tagged `forcedModel: true` for history/trace filtering.
 
 ## Configuration
 

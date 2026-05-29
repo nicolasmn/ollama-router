@@ -56,7 +56,10 @@ export function createRoutes(
   setupMessagesRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaInferenceRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaRoutes(app, discoveryManager)
-  app.use('/admin', createAdminRouter({ discoveryManager, loadManager, requestHistoryManager }))
+  app.use(
+    '/admin',
+    createAdminRouter({ discoveryManager, loadManager, requestHistoryManager }),
+  )
 }
 
 /** @deprecated use createRoutes */

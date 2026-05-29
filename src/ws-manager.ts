@@ -5,6 +5,8 @@ import type { Server } from 'node:http'
 import type { DiscoveryManager } from './discovery-manager.js'
 import type { LoadManager } from './load-manager.js'
 import type { RequestHistoryManager, RequestEntry } from './request-history.js'
+import { forceModelStore } from './force-model-store.js'
+import { disabledModelsStore } from './disabled-models-store.js'
 
 const BROADCAST_INTERVAL_MS = 2000
 const ACTIVE_STATUSES = new Set(['waiting', 'running'])
@@ -92,32 +94,46 @@ export class WsManager {
             lastSeen: node.lastSeen,
             activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
             // Cloud nodes have no concurrency cap — null hides the capacity bar in the UI
-            maxConcurrentRequests: isCloud ? null : this.#loadManager.getMaxConcurrentPerNode(),
+            maxConcurrentRequests: isCloud
+              ? null
+              : this.#loadManager.getMaxConcurrentPerNode(),
             atCapacity: this.#loadManager.isAtCapacity(nodeHost),
             utilization: this.#loadManager.getUtilization(nodeHost),
             models: Object.fromEntries(
-              Array.from(node.models.entries()).map(([modelName, modelInfo]) => [
-                modelName,
-                {
-                  name: modelInfo.name,
-                  family: modelInfo.family,
-                  size: modelInfo.size,
-                  profile: modelInfo.profile,
-                  recentLatency: modelInfo.recentLatency,
-                  recentTps: modelInfo.recentTps,
-                  failures: modelInfo.failures,
-                  totalRequests: modelInfo.totalRequests || 0,
-                  activeRequests:
-                    activeModels.get(nodeHost)?.get(modelName) || 0,
-                  lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
-                  lastRoutedAt: modelInfo.lastRoutedAt,
-                },
-              ]),
+              Array.from(node.models.entries()).map(
+                ([modelName, modelInfo]) => [
+                  modelName,
+                  {
+                    name: modelInfo.name,
+                    family: modelInfo.family,
+                    size: modelInfo.size,
+                    profile: modelInfo.profile,
+                    recentLatency: modelInfo.recentLatency,
+                    recentTps: modelInfo.recentTps,
+                    failures: modelInfo.failures,
+                    totalRequests: modelInfo.totalRequests || 0,
+                    activeRequests:
+                      activeModels.get(nodeHost)?.get(modelName) || 0,
+                    lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
+                    lastRoutedAt: modelInfo.lastRoutedAt,
+                    disabled: disabledModelsStore.isDisabled(
+                      nodeHost,
+                      modelName,
+                    ),
+                  },
+                ],
+              ),
             ),
           },
         ]
       }),
     )
+
+    // Include force-model override state so dashboard reflects live without polling
+    const forceOverrideEntry = forceModelStore.get()
+    const forceOverride = forceOverrideEntry
+      ? { model: forceOverrideEntry.model, expiresAt: forceOverrideEntry.expiresAt }
+      : null
 
     return {
       type: 'inventory',
@@ -125,6 +141,7 @@ export class WsManager {
         timestamp: Date.now(),
         nodes,
         requests: recentRequests,
+        forceOverride,
         scan: {
           inProgress: scanStatus.inProgress,
           lastScanMs: scanStatus.lastScanMs,

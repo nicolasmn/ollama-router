@@ -14,6 +14,8 @@ export class RouterDashboard extends LitElement {
     drawerOpen: { state: true },
     scanInProgress: { state: true },
     rescanMessage: { state: true },
+    _forceOverride: { state: true },
+    _clearingOverride: { state: true },
   }
 
   constructor() {
@@ -24,6 +26,8 @@ export class RouterDashboard extends LitElement {
     this.drawerOpen = false
     this.scanInProgress = false
     this.rescanMessage = ''
+    this._forceOverride = null  // { model, expiresAt } | null
+    this._clearingOverride = false
     this.ws = null
     this.retryTimer = null
   }
@@ -35,6 +39,13 @@ export class RouterDashboard extends LitElement {
   connectedCallback() {
     super.connectedCallback()
     this.connect()
+    // Listen for force-model-set from node-card children (bubbled)
+    this.addEventListener('force-model-set', (e) => {
+      this._forceOverride = { model: e.detail.model, expiresAt: e.detail.expiresAt }
+    })
+    this.addEventListener('force-model-cleared', () => {
+      this._forceOverride = null
+    })
   }
 
   disconnectedCallback() {
@@ -45,33 +56,27 @@ export class RouterDashboard extends LitElement {
 
   connect() {
     const protocol = globalThis.location.protocol === 'https:' ? 'wss' : 'ws'
-    this.ws = new globalThis.WebSocket(
-      `${protocol}://${globalThis.location.host}/ws`,
-    )
+    this.ws = new globalThis.WebSocket(`${protocol}://${globalThis.location.host}/ws`)
 
-    this.ws.onopen = () => {
-      this.wsState = 'connected'
-    }
+    this.ws.onopen = () => { this.wsState = 'connected' }
 
     this.ws.onclose = () => {
       this.wsState = 'reconnecting'
       this.retryTimer = setTimeout(() => this.connect(), 3000)
     }
 
-    this.ws.onerror = () => {
-      this.wsState = 'disconnected'
-    }
+    this.ws.onerror = () => { this.wsState = 'disconnected' }
 
     this.ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
         if (message.type === 'inventory') {
           this.payload = message.data
+          // Keep override banner in sync with server-side truth from WS payload
+          this._forceOverride = message.data.forceOverride ?? null
           if (
             this.selectedRequestId &&
-            !this.requests.some(
-              (request) => request.requestId === this.selectedRequestId,
-            )
+            !this.requests.some((request) => request.requestId === this.selectedRequestId)
           ) {
             this.selectedRequestId = null
             this.drawerOpen = false
@@ -97,9 +102,7 @@ export class RouterDashboard extends LitElement {
 
   get scanStatus() {
     const scan = this.payload.scan || {}
-    if (scan.lastScanAgo === -1) {
-      return 'Never scanned'
-    }
+    if (scan.lastScanAgo === -1) return 'Never scanned'
     return `Scanned ${this._formatTime(scan.lastScanAgo)} ago`
   }
 
@@ -115,9 +118,7 @@ export class RouterDashboard extends LitElement {
   }
 
   get selectedRequest() {
-    return this.requests.find(
-      (request) => request.requestId === this.selectedRequestId,
-    )
+    return this.requests.find((request) => request.requestId === this.selectedRequestId)
   }
 
   openRequest(requestId) {
@@ -131,37 +132,67 @@ export class RouterDashboard extends LitElement {
 
   async onRescanClick() {
     if (this.scanInProgress) return
-
     this.scanInProgress = true
     this.rescanMessage = ''
-
     try {
       const response = await fetch('/admin/discovery/scan-now', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
-
-      if (!response.ok) {
-        throw new Error(`Scan failed: ${response.statusText}`)
-      }
-
+      if (!response.ok) throw new Error(`Scan failed: ${response.statusText}`)
       const result = await response.json()
       this.rescanMessage = `Scan complete: ${result.nodeCount} nodes found`
-      setTimeout(() => {
-        this.rescanMessage = ''
-      }, 3000)
+      setTimeout(() => { this.rescanMessage = '' }, 3000)
     } catch (err) {
       this.rescanMessage = `Scan error: ${err.message}`
-      setTimeout(() => {
-        this.rescanMessage = ''
-      }, 5000)
+      setTimeout(() => { this.rescanMessage = '' }, 5000)
     } finally {
       this.scanInProgress = false
     }
   }
 
+  async _clearForceOverride() {
+    if (this._clearingOverride) return
+    this._clearingOverride = true
+    try {
+      await fetch('/admin/force-model', { method: 'DELETE' })
+      this._forceOverride = null
+    } catch {
+      // WS will sync state on next tick anyway
+    } finally {
+      this._clearingOverride = false
+    }
+  }
+
   handleRequestSelected(event) {
     this.openRequest(event.detail.requestId)
+  }
+
+  _renderForceOverrideBanner() {
+    if (!this._forceOverride) return ''
+    const { model, expiresAt } = this._forceOverride
+    const remainingMs = expiresAt - Date.now()
+    const remainingMin = Math.floor(remainingMs / 1000 / 60)
+    const ttlLabel = remainingMs <= 0
+      ? 'expired'
+      : remainingMin < 1
+        ? '<1m'
+        : `~${remainingMin}m`
+    return html`
+      <div class="force-override-banner">
+        <span class="force-override-icon">▶</span>
+        <span class="force-override-label">
+          Next request forced to <strong>${model}</strong>
+          <span class="force-override-ttl"> &mdash; expires in ${ttlLabel}</span>
+        </span>
+        <button
+          class="force-override-cancel"
+          ?disabled=${this._clearingOverride}
+          @click=${this._clearForceOverride}
+          title="Cancel forced model override"
+        >✕ Cancel</button>
+      </div>
+    `
   }
 
   render() {
@@ -213,6 +244,8 @@ export class RouterDashboard extends LitElement {
       </header>
 
       <main>
+        ${this._renderForceOverrideBanner()}
+
         <dashboard-summary .summary=${summary}></dashboard-summary>
 
         <request-panel
@@ -225,7 +258,11 @@ export class RouterDashboard extends LitElement {
         <div class="nodes">
           ${this.nodes.length
             ? this.nodes.map(
-                (node) => html`<node-card .node=${node}></node-card>`,
+                (node) =>
+                  html`<node-card
+                    .node=${node}
+                    .forcedModel=${this._forceOverride?.model ?? null}
+                  ></node-card>`,
               )
             : html`<div class="empty">No nodes configured.</div>`}
         </div>

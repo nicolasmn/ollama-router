@@ -36,6 +36,9 @@ export const NETWORK_SCAN_INTERVAL: number = Number.parseInt(
 export const METRICS_FILE: string =
   process.env.METRICS_FILE || './data/model-metrics.json'
 
+export const DISABLED_MODELS_FILE: string =
+  process.env.DISABLED_MODELS_FILE || './data/disabled-models.json'
+
 /**
  * Timeout in ms for inference requests.
  * Default: 600 000 ms (10 min) — large models on Pi can be slow.

@@ -13,7 +13,9 @@ import { createRoutes } from './routes/index.js'
 import {
   OLLAMA_CLOUD_URL,
   OLLAMA_CLOUD_API_KEY,
+  DISABLED_MODELS_FILE,
 } from './config.js'
+import { disabledModelsStore } from './disabled-models-store.js'
 
 const logger = createLogger('app')
 
@@ -50,6 +52,8 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     },
     'Creating application with config',
   )
+
+  disabledModelsStore.configure(DISABLED_MODELS_FILE)
 
   const discoveryManager = new DiscoveryManager({
     ollamaNodes: config.ollamaNodes,
@@ -98,15 +102,19 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
       }
       discoveryManager.startPeriodicProbe()
     })
-    .catch((err: Error) => logger.warn({ err: err.message }, 'Background initialization failed'))
+    .catch((err: Error) =>
+      logger.warn({ err: err.message }, 'Background initialization failed'),
+    )
 
   const app = express()
   app.use(express.json({ limit: '10mb' }))
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
+  app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))
+  // In dev (tsx), __dirname resolves to src/ which has no bundle; also serve dist/src/dashboard/
   app.use(
     '/dashboard-assets',
-    express.static(join(__dirname, 'dashboard')),
+    express.static(join(__dirname, '../../dist/src/dashboard')),
   )
 
   createRoutes(

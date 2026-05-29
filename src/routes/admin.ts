@@ -5,6 +5,8 @@ import { request as undiciRequest } from 'undici'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestHistoryManager } from '../request-history.js'
+import { forceModelStore } from '../force-model-store.js'
+import { disabledModelsStore } from '../disabled-models-store.js'
 import { createLogger } from '../logger.js'
 
 const logger = createLogger('admin')
@@ -49,7 +51,9 @@ export function createAdminRouter({
               failures: node.failures,
               activeRequests: loadManager.getCurrentLoad(host),
               // Cloud nodes have no concurrency cap — return null so UI hides the capacity bar
-              maxConcurrentRequests: isCloud ? null : loadManager.getMaxConcurrentPerNode(),
+              maxConcurrentRequests: isCloud
+                ? null
+                : loadManager.getMaxConcurrentPerNode(),
               atCapacity: loadManager.isAtCapacity(host),
               utilization: loadManager.getUtilization(host),
               modelCount: node.models.size,
@@ -67,6 +71,7 @@ export function createAdminRouter({
                     totalRequests: info.totalRequests,
                     lastRoutingEndpoint: info.lastRoutingEndpoint,
                     lastRoutedAt: info.lastRoutedAt,
+                    disabled: disabledModelsStore.isDisabled(node.host, name),
                   },
                 ]),
               ),
@@ -91,11 +96,16 @@ export function createAdminRouter({
       return
     }
     if (node.cloud) {
-      res.status(403).json({ error: 'Cloud node cannot be removed via this endpoint' })
+      res
+        .status(403)
+        .json({ error: 'Cloud node cannot be removed via this endpoint' })
       return
     }
     discoveryManager.removeNode(host)
-    logger.info({ host, reachable: node.reachable }, 'Node removed via admin API')
+    logger.info(
+      { host, reachable: node.reachable },
+      'Node removed via admin API',
+    )
     res.json({ ok: true, host })
   })
 
@@ -126,7 +136,9 @@ export function createAdminRouter({
 
   r.delete('/requests/:requestId', (req, res) => {
     const { requestId } = req.params
-    const entry = requestHistoryManager.getRecentRequests().find((r) => r.requestId === requestId)
+    const entry = requestHistoryManager
+      .getRecentRequests()
+      .find((r) => r.requestId === requestId)
     if (!entry) {
       res.status(404).json({ error: 'Request not found' })
       return
@@ -143,6 +155,111 @@ export function createAdminRouter({
     }
     logger.info({ requestId }, 'Request terminated via admin API')
     res.json({ ok: true, requestId })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Per-node model disable/enable
+  // ---------------------------------------------------------------------------
+
+  /**
+   * PUT /admin/inventory/nodes/:host/models/:name
+   * Body: { disabled: boolean }
+   * Disabled models stay visible in the dashboard but are skipped by the router.
+   */
+  r.put('/inventory/nodes/:host/models/:name', (req, res) => {
+    const host = decodeURIComponent(req.params.host)
+    const name = decodeURIComponent(req.params.name)
+    const disabled = (req.body as Record<string, unknown>)?.disabled
+    if (typeof disabled !== 'boolean') {
+      res
+        .status(400)
+        .json({ error: 'Missing or invalid "disabled" boolean field' })
+      return
+    }
+    const node = discoveryManager.getNodes().get(host)
+    if (!node) {
+      res.status(404).json({ error: 'Node not found' })
+      return
+    }
+    if (!node.models.has(name)) {
+      res.status(404).json({ error: `Model "${name}" not on node` })
+      return
+    }
+    const changed = disabled
+      ? disabledModelsStore.disable(host, name)
+      : disabledModelsStore.enable(host, name)
+    logger.info(
+      { host, name, disabled, changed },
+      'Model disable state updated',
+    )
+    res.json({ ok: true, host, name, disabled })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Force-model override — one-shot model pin for the next routed request
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /admin/force-model
+   * Returns current override state.
+   */
+  r.get('/force-model', (_req, res) => {
+    const entry = forceModelStore.get()
+    res.json(
+      entry
+        ? { active: true, model: entry.model, expiresAt: entry.expiresAt }
+        : { active: false, model: null, expiresAt: null },
+    )
+  })
+
+  /**
+   * POST /admin/force-model
+   * Body: { model: string }
+   * Sets override for next routed request. Validates model exists on any reachable node.
+   * Accepts both exact names ("llama3.2:latest") and tag-less names ("llama3.2") — the
+   * stored value is normalised to the exact key found in node.models so routing works.
+   */
+  r.post('/force-model', (req, res) => {
+    const model = (req.body as Record<string, unknown>)?.model
+    if (!model || typeof model !== 'string') {
+      res.status(400).json({ error: 'Missing or invalid "model" field' })
+      return
+    }
+
+    // Resolve exact model key from node.models — handles tag-less lookups e.g. "llama3.2"
+    // matching "llama3.2:latest". Returns the stored key so downstream routing uses the
+    // canonical name.
+    let resolvedModel: string | null = null
+    outer: for (const node of discoveryManager.getNodes().values()) {
+      if (!node.reachable) continue
+      for (const key of node.models.keys()) {
+        if (key === model || key.startsWith(model + ':')) {
+          resolvedModel = key
+          break outer
+        }
+      }
+    }
+
+    if (!resolvedModel) {
+      res.status(404).json({ error: `Model "${model}" not found on any reachable node` })
+      return
+    }
+
+    forceModelStore.set(resolvedModel)
+    const entry = forceModelStore.get()!
+    logger.info({ model: resolvedModel, requested: model }, 'Force-model override set via admin API')
+    res.json({ ok: true, model: entry.model, expiresAt: entry.expiresAt })
+  })
+
+  /**
+   * DELETE /admin/force-model
+   * Clears active override.
+   */
+  r.delete('/force-model', (_req, res) => {
+    const had = forceModelStore.get() !== null
+    forceModelStore.clear()
+    logger.info('Force-model override cleared via admin API')
+    res.json({ ok: true, cleared: had })
   })
 
   // ---------------------------------------------------------------------------

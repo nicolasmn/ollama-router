@@ -5,6 +5,8 @@ import { createLogger } from './logger.js'
 import type { DiscoveryManager } from './discovery-manager.js'
 import type { LoadManager } from './load-manager.js'
 import type { ModelInfo } from './models.js'
+import { forceModelStore } from './force-model-store.js'
+import { disabledModelsStore } from './disabled-models-store.js'
 
 const logger = createLogger('router')
 
@@ -83,6 +85,7 @@ export interface RoutingCandidate {
   modelName: string
   modelInfo: ModelInfo
   score: number
+  forcedModel?: boolean
 }
 
 export interface ModelCatalogEntry {
@@ -115,33 +118,78 @@ export class RequestRouter {
     return this.analyzer.analyze(reqBody, endpointType)
   }
 
+  /**
+   * Applies a pending force-model override to the request body.
+   * Mutates reqBody.model so downstream candidate selection uses the forced model.
+   * Must be called AFTER capturing the original model name for history/logging.
+   * Returns the forced model name, or null if no override was active.
+   */
+  private _applyOverride(reqBody: Record<string, unknown>): string | null {
+    const forced = forceModelStore.consume()
+    if (!forced) return null
+    logger.info(
+      { forcedModel: forced, originalModel: reqBody.model },
+      'Force-model override applied — bypassing normal routing',
+    )
+    reqBody.model = forced
+    return forced
+  }
+
+  private _tagForced(
+    result: RoutingCandidate | RoutingCandidate[] | null,
+  ): void {
+    if (!result) return
+    if (Array.isArray(result)) result.forEach((c) => (c.forcedModel = true))
+    else result.forcedModel = true
+  }
+
   async selectForChat(
     reqBody: Record<string, unknown>,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    // Capture original model BEFORE override mutates reqBody, so history reflects client intent
+    const originalModel = (reqBody.model as string) || 'auto'
+    const forcedModel = this._applyOverride(reqBody)
     const analysis = this.analyzer.analyze(reqBody, 'chat')
     const model = (reqBody.model as string) || 'auto'
-    logger.debug({ model, ...analysis }, 'Chat routing analysis')
-    return this._selectCandidates(model, analysis, reqBody)
+    logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Chat routing analysis')
+    let result: RoutingCandidate | RoutingCandidate[] | null
+    try {
+      result = this._selectCandidates(model, analysis, reqBody)
+    } catch (err: any) {
+      if (forcedModel && err?.code === 'MODEL_NOT_FOUND') return null
+      throw err
+    }
+    if (forcedModel) this._tagForced(result)
+    return result
   }
 
   async selectForEmbeddings(
     reqBody: Record<string, unknown>,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    const originalModel = (reqBody.model as string) || 'auto'
+    const forcedModel = this._applyOverride(reqBody)
     const model = (reqBody.model as string) || 'auto'
     const analysis = this.analyzer.analyze(reqBody, 'embeddings')
-    return this._selectCandidates(model, analysis, reqBody)
+    logger.debug({ model, originalModel, forced: !!forcedModel }, 'Embeddings routing analysis')
+    const result = this._selectCandidates(model, analysis, reqBody)
+    if (forcedModel) this._tagForced(result)
+    return result
   }
 
   async selectForResponses(
     reqBody: Record<string, unknown>,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    const originalModel = (reqBody.model as string) || 'auto'
+    const forcedModel = this._applyOverride(reqBody)
     const analysis = this.analyzer.analyze(reqBody, 'responses')
     const model = (reqBody.model as string) || 'auto'
-    logger.debug({ model, ...analysis }, 'Responses routing analysis')
-    return this._selectCandidates(model, analysis, reqBody)
+    logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Responses routing analysis')
+    const result = this._selectCandidates(model, analysis, reqBody)
+    if (forcedModel) this._tagForced(result)
+    return result
   }
 
   getModelCatalog(): ModelCatalogEntry[] {
@@ -150,6 +198,7 @@ export class RequestRouter {
     for (const node of this.discovery.getNodes().values()) {
       if (!node.reachable) continue
       for (const modelName of node.models.keys()) {
+        if (disabledModelsStore.isDisabled(node.host, modelName)) continue
         if (!seen.has(modelName)) {
           seen.add(modelName)
           models.push({
@@ -205,6 +254,7 @@ export class RequestRouter {
       if (!this.load.canAcceptRequest(nodeHost)) continue
 
       for (const [modelName, modelInfo] of node.models) {
+        if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
         const { profile } = modelInfo
         if (analysis.needsEmbeddings) {
           if (!profile.isEmbedding) continue
@@ -247,6 +297,7 @@ export class RequestRouter {
       if (!this.load.canAcceptRequest(nodeHost)) continue
       const modelInfo = node.models.get(model)
       if (!modelInfo) continue
+      if (disabledModelsStore.isDisabled(nodeHost, model)) continue
       const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
       const latencyScore = modelInfo.recentLatency
         ? Math.max(0, 20 - modelInfo.recentLatency / 500)
