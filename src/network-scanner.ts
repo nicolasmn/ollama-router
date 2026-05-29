@@ -58,7 +58,7 @@ export class NetworkScanner {
     const host = new URL(url).hostname
     const open = await this._tcpProbe(host)
     if (!open) return null
-    // TCP port is open — verify it is actually Ollama
+    // TCP port is open — verify it is actually Ollama (not another router instance)
     try {
       const resp = await request(`${url}/api/version`, {
         method: 'GET',
@@ -67,7 +67,12 @@ export class NetworkScanner {
         signal: AbortSignal.timeout(2000),
       })
       await resp.body.dump()
-      return resp.statusCode === 200 ? url : null
+      if (resp.statusCode !== 200) return null
+      if (resp.headers['x-ollama-router']) {
+        logger.debug({ url }, 'Skipping host — another ollama-router instance')
+        return null
+      }
+      return url
     } catch {
       return null
     }

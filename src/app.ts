@@ -107,6 +107,10 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     )
 
   const app = express()
+  app.use((_req, res, next) => {
+    res.setHeader('X-Ollama-Router', '1')
+    next()
+  })
   app.use(express.json({ limit: '10mb' }))
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
