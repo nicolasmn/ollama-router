@@ -129,13 +129,47 @@ function categorizeFailure(err: RouterError): { failureCategory: string; retryHi
   return { failureCategory: 'upstream_error', retryHint: 'retry_now' }
 }
 
-function sanitizeMessages(body: Record<string, unknown>): Record<string, unknown> {
+async function resolveImageUrls(content: unknown[]): Promise<unknown[]> {
+  return Promise.all(
+    content.map(async (part) => {
+      if (!part || typeof part !== 'object') return part
+      const p = part as Record<string, unknown>
+      if (p.type !== 'image_url') return part
+      const imageUrl = p.image_url as { url: string; detail?: string } | undefined
+      if (!imageUrl?.url) return part
+      const url = imageUrl.url
+      if (!url.startsWith('http://') && !url.startsWith('https://')) return part
+      try {
+        const { fetch } = await import('undici')
+        const resp = await fetch(url, { headers: { 'User-Agent': 'ollama-router/1.0' } })
+        if (!resp.ok) {
+          logger.warn({ url, status: resp.status }, 'Image URL fetch returned non-2xx, passing through')
+          return part
+        }
+        const contentType = resp.headers.get('content-type') ?? 'image/jpeg'
+        const mediaType = contentType.split(';')[0].trim()
+        const buffer = Buffer.from(await resp.arrayBuffer())
+        logger.debug({ url, bytes: buffer.length, mediaType }, 'Resolved image URL to base64')
+        return { ...p, image_url: { ...imageUrl, url: `data:${mediaType};base64,${buffer.toString('base64')}` } }
+      } catch (err) {
+        logger.warn({ url, err: (err as Error).message }, 'Failed to fetch image URL, passing through')
+        return part
+      }
+    }),
+  )
+}
+
+async function sanitizeMessages(body: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (!Array.isArray(body.messages)) return body
-  const messages = body.messages.map((msg: unknown) => {
-    if (msg && typeof msg === 'object' && (msg as Record<string, unknown>).content === null)
-      return { ...(msg as Record<string, unknown>), content: '' }
-    return msg
-  })
+  const messages = await Promise.all(
+    body.messages.map(async (msg: unknown) => {
+      if (!msg || typeof msg !== 'object') return msg
+      const m = msg as Record<string, unknown>
+      if (m.content === null) return { ...m, content: '' }
+      if (!Array.isArray(m.content)) return m
+      return { ...m, content: await resolveImageUrls(m.content) }
+    }),
+  )
   return { ...body, messages }
 }
 
@@ -152,7 +186,7 @@ export async function forwardRequest(
   endpoint: string,
   options: { signal?: AbortSignal; apiKey?: string } = {},
 ): Promise<unknown> {
-  const body = sanitizeMessages({ ...reqBody, model: modelName })
+  const body = await sanitizeMessages({ ...reqBody, model: modelName })
 
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
@@ -273,7 +307,7 @@ export async function handleStreamingRequest(
       }
 
       const apiKey = discoveryManager.getCloudApiKey(nodeHost)
-      const body = sanitizeMessages({ ...reqBody, model: modelName })
+      const body = await sanitizeMessages({ ...reqBody, model: modelName })
       const startTime = Date.now()
 
       try {

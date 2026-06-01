@@ -31,11 +31,13 @@ export interface LogContext {
 }
 
 const isTest = process.env.NODE_ENV === 'test'
+const isDev = process.env.NODE_ENV === 'development'
 const LOG_LEVEL = isTest ? 'silent' : (process.env.LOG_LEVEL || 'info')
 const isTTY = process.stdout.isTTY
 const prettyRequested = process.env.LOG_FORMAT === 'pretty'
 const jsonRequested = process.env.LOG_FORMAT === 'json'
-const usePretty = !isTest && (prettyRequested || (isTTY && !jsonRequested))
+const usePretty =
+  !isTest && (prettyRequested || isDev || (isTTY && !jsonRequested))
 
 let transport: pino.TransportSingleOptions | undefined
 if (usePretty) {

@@ -118,7 +118,7 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   // In dev (tsx), __dirname resolves to src/ which has no bundle; also serve dist/src/dashboard/
   app.use(
     '/dashboard-assets',
-    express.static(join(__dirname, '../../dist/src/dashboard')),
+    express.static(join(__dirname, '../dist/src/dashboard')),
   )
 
   createRoutes(

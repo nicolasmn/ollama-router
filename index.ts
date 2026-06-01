@@ -25,8 +25,31 @@ try {
   })
 
   server.listen(PORT, () => {
-    logger.info(`Router listening on port ${PORT}`)
-    logger.info('Discovery running in background — nodes will appear as they come online')
+    const url = `http://localhost:${PORT}`
+    const isDev = process.env.NODE_ENV === 'development'
+
+    if (isDev) {
+      const nodes = OLLAMA_NODES.length > 0 ? OLLAMA_NODES.join(', ') : null
+      console.log('')
+      console.log('  \x1b[32m✓\x1b[0m  \x1b[1mollama-router\x1b[0m ready')
+      console.log('')
+      console.log(`  \x1b[2mDashboard:\x1b[0m  \x1b[36m\x1b[4m${url}\x1b[0m`)
+      console.log(`  \x1b[2mAPI:\x1b[0m        \x1b[36m\x1b[4m${url}/v1\x1b[0m`)
+      console.log('')
+      if (nodes) {
+        console.log(`  \x1b[2mNodes:\x1b[0m      ${nodes}`)
+      } else {
+        console.log(
+          '  \x1b[2mDiscovery:\x1b[0m  auto — nodes appear as they come online',
+        )
+      }
+      console.log('')
+    } else {
+      logger.info({ url }, `Router listening on ${url}`)
+      logger.info(
+        'Discovery running in background — nodes will appear as they come online',
+      )
+    }
   })
 
   let shuttingDown = false

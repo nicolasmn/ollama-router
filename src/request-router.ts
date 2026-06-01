@@ -92,6 +92,7 @@ export interface ModelCatalogEntry {
   id: string
   object: string
   owned_by: string
+  capabilities: string[] | null
 }
 
 /** Error shape used at both throw and catch sites. Fields optional for safe narrowing. */
@@ -193,24 +194,38 @@ export class RequestRouter {
   }
 
   getModelCatalog(): ModelCatalogEntry[] {
-    const seen = new Set<string>()
-    const models: ModelCatalogEntry[] = []
+    const seen = new Map<string, ModelCatalogEntry>()
     for (const node of this.discovery.getNodes().values()) {
       if (!node.reachable) continue
-      for (const modelName of node.models.keys()) {
+      for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(node.host, modelName)) continue
         if (!seen.has(modelName)) {
-          seen.add(modelName)
-          models.push({
+          const caps: string[] = [...modelInfo.profile.capabilities]
+          if (modelInfo.profile.supportsVision && !caps.includes('vision'))
+            caps.push('vision')
+          if (modelInfo.profile.supportsTools && !caps.includes('tools'))
+            caps.push('tools')
+          if (modelInfo.profile.supportsThinking && !caps.includes('thinking'))
+            caps.push('thinking')
+          if (modelInfo.profile.isEmbedding && !caps.includes('embedding'))
+            caps.push('embedding')
+          seen.set(modelName, {
             id: modelName,
             object: 'model',
             owned_by: node.cloud ? 'ollama-cloud' : 'ollama',
+            capabilities: caps.length > 0 ? caps : null,
           })
         }
       }
     }
+    const models = [...seen.values()]
     for (const alias of VIRTUAL_MODELS) {
-      models.push({ id: alias, object: 'model', owned_by: 'ollama-router' })
+      models.push({
+        id: alias,
+        object: 'model',
+        owned_by: 'ollama-router',
+        capabilities: null,
+      })
     }
     return models
   }
