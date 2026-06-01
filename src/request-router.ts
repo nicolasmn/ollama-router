@@ -156,8 +156,8 @@ export class RequestRouter {
     let result: RoutingCandidate | RoutingCandidate[] | null
     try {
       result = this._selectCandidates(model, analysis, reqBody)
-    } catch (err: any) {
-      if (forcedModel && err?.code === 'MODEL_NOT_FOUND') return null
+    } catch (err: unknown) {
+      if (forcedModel && (err as { code?: string })?.code === 'MODEL_NOT_FOUND') return null
       throw err
     }
     if (forcedModel) this._tagForced(result)

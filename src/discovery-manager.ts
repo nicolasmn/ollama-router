@@ -1,6 +1,5 @@
 // discovery-manager.ts - Discovers, probes, and tracks Ollama nodes
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
-import type { ModelProfileData } from './models.js'
 import { createLogger } from './logger.js'
 import { MetricsStore } from './metrics-store.js'
 import type { PersistedModelMetrics } from './metrics-store.js'

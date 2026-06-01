@@ -114,7 +114,7 @@ export function setupOllamaRoutes(
       return res.status(404).json({ error: `model '${name}' not found` })
     }
 
-    const { profile, family, size } = entry.modelInfo
+    const { profile, family } = entry.modelInfo
 
     // Build capabilities: Ollama convention is "completion" for all non-embedding models
     const capSet = new Set(profile.capabilities)
