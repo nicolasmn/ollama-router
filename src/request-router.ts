@@ -7,6 +7,7 @@ import type { LoadManager } from './load-manager.js'
 import type { ModelInfo } from './models.js'
 import { forceModelStore } from './force-model-store.js'
 import { disabledModelsStore } from './disabled-models-store.js'
+import { ROUTER_FALLBACK_TO_AUTO } from './config.js'
 
 const logger = createLogger('router')
 
@@ -146,8 +147,10 @@ export class RequestRouter {
 
   async selectForChat(
     reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    if (signal?.aborted) return null
     // Capture original model BEFORE override mutates reqBody, so history reflects client intent
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
@@ -167,8 +170,10 @@ export class RequestRouter {
 
   async selectForEmbeddings(
     reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
     const model = (reqBody.model as string) || 'auto'
@@ -181,8 +186,10 @@ export class RequestRouter {
 
   async selectForResponses(
     reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
     await this._performOnRequestScan()
+    if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
     const analysis = this.analyzer.analyze(reqBody, 'responses')
@@ -249,7 +256,19 @@ export class RequestRouter {
     const isVirtual = VIRTUAL_MODELS.has(model)
     const isStreaming = Boolean(reqBody?.stream)
     if (isVirtual) return this._selectVirtual(model, analysis, isStreaming)
-    return this._selectConcrete(model, isStreaming)
+    try {
+      return this._selectConcrete(model, isStreaming)
+    } catch (err) {
+      const routerErr = err as RouterError
+      if (routerErr.code === 'MODEL_NOT_FOUND' && ROUTER_FALLBACK_TO_AUTO) {
+        logger.warn(
+          { model },
+          'Model not found — falling back to auto routing',
+        )
+        return this._selectVirtual('auto', analysis, isStreaming)
+      }
+      throw err
+    }
   }
 
   private _selectVirtual(

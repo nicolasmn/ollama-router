@@ -37,7 +37,7 @@ export function setupEmbeddingsRoutes(
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'embeddings', res,
-      selectFn: (body) => requestRouter.selectForEmbeddings(body),
+      selectFn: (body) => requestRouter.selectForEmbeddings(body, abortController.signal),
       selectionErrorMessage: 'Embeddings model selection error', logger,
     })
     if (!candidates) return

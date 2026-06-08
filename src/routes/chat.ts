@@ -39,7 +39,7 @@ export function setupChatRoutes(
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'chat', res,
-      selectFn: (body) => requestRouter.selectForChat(body),
+      selectFn: (body) => requestRouter.selectForChat(body, abortController.signal),
       selectionErrorMessage: 'Chat model selection error', logger,
     })
     if (!candidates) return

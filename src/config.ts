@@ -13,6 +13,11 @@ export interface Config {
   INFERENCE_TIMEOUT: number
   OLLAMA_CLOUD_URL: string
   OLLAMA_CLOUD_API_KEY: string
+  /**
+   * When true, requests for unknown models fall back to `auto` routing
+   * instead of returning 404. Set ROUTER_FALLBACK_TO_AUTO=true to enable.
+   */
+  ROUTER_FALLBACK_TO_AUTO: boolean
 }
 
 export const OLLAMA_NODES: string[] =
@@ -56,3 +61,11 @@ export const OLLAMA_CLOUD_URL: string =
 /** API key for ollama.com cloud inference. If set, cloud node is registered. */
 export const OLLAMA_CLOUD_API_KEY: string =
   process.env.OLLAMA_CLOUD_API_KEY || ''
+
+/**
+ * When true, requests for unknown models fall back to `auto` routing
+ * (best available model) instead of returning 404.
+ * Default: false — preserve existing 404 behaviour unless opted in.
+ */
+export const ROUTER_FALLBACK_TO_AUTO: boolean =
+  process.env.ROUTER_FALLBACK_TO_AUTO === 'true'

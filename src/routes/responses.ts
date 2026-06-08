@@ -48,7 +48,7 @@ export function setupResponsesRoutes(
 
     const candidates = await selectCandidatesOrHandleError({
       requestId, reqBody, taskType: 'responses', res,
-      selectFn: (body) => requestRouter.selectForResponses(body),
+      selectFn: (body) => requestRouter.selectForResponses(body, abortController.signal),
       selectionErrorMessage: 'Responses model selection error', logger,
     })
     if (!candidates) return

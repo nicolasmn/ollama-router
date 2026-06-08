@@ -9,9 +9,10 @@ import { pipeline } from 'node:stream/promises'
 import pino from 'pino'
 import type { Application, Request, Response } from 'express'
 import { VIRTUAL_MODELS } from '../request-router.js'
-import { INFERENCE_TIMEOUT } from '../config.js'
+import { INFERENCE_TIMEOUT, ROUTER_FALLBACK_TO_AUTO } from '../config.js'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { ModelInfo } from '../models.js'
+import type { RequestRouter } from '../request-router.js'
 
 const logger = pino()
 
@@ -34,6 +35,7 @@ function aggregateModels(
 export function setupOllamaRoutes(
   app: Application,
   discoveryManager: DiscoveryManager,
+  requestRouter?: RequestRouter,
 ): void {
   app.get('/api/tags', (_req, res) => {
     const models: unknown[] = []
@@ -225,25 +227,57 @@ export function setupOllamaRoutes(
       return res.status(400).json({ error: 'model is required' })
     }
 
-    const nodeHost = findNodeForModel(discoveryManager, modelName)
-    if (!nodeHost) {
-      return res.status(404).json({ error: `model '${modelName}' not found` })
-    }
+    const abortController = new AbortController()
+    const onClientClose = () => abortController.abort()
+    res.once('close', onClientClose)
 
     try {
+      let nodeHost = findNodeForModel(discoveryManager, modelName)
+
+      if (!nodeHost) {
+        if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
+          // Ask router for best embedding candidate
+          const candidate = await requestRouter.selectForEmbeddings(
+            body,
+            abortController.signal,
+          )
+          if (candidate && !Array.isArray(candidate)) {
+            nodeHost = candidate.nodeHost
+            body.model = candidate.modelName
+            logger.warn(
+              { requestedModel: modelName, fallbackModel: candidate.modelName, nodeHost },
+              '/api/embed model not found — using fallback',
+            )
+          }
+        }
+        if (!nodeHost) {
+          return res.status(404).json({ error: `model '${modelName}' not found` })
+        }
+      }
+
+      if (abortController.signal.aborted) {
+        return res.status(499).json({ error: 'Request cancelled' })
+      }
+
       const resp = await request(`${nodeHost}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         headersTimeout: 60_000,
         bodyTimeout: 60_000,
+        signal: abortController.signal,
       })
       res.status(resp.statusCode)
       const data = await resp.body.json()
       return res.json(data)
     } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.name === 'AbortError' || abortController.signal.aborted) {
+        return res.headersSent ? undefined : res.status(499).json({ error: 'Request cancelled' })
+      }
       logger.error({ err }, 'POST /api/embed upstream error')
-      return res.status(503).json({ error: 'Upstream error' })
+      return res.headersSent ? undefined : res.status(503).json({ error: 'Upstream error' })
+    } finally {
+      res.off('close', onClientClose)
     }
   })
 
@@ -255,25 +289,56 @@ export function setupOllamaRoutes(
       return res.status(400).json({ error: 'model is required' })
     }
 
-    const nodeHost = findNodeForModel(discoveryManager, modelName)
-    if (!nodeHost) {
-      return res.status(404).json({ error: `model '${modelName}' not found` })
-    }
+    const abortController = new AbortController()
+    const onClientClose = () => abortController.abort()
+    res.once('close', onClientClose)
 
     try {
+      let nodeHost = findNodeForModel(discoveryManager, modelName)
+
+      if (!nodeHost) {
+        if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
+          const candidate = await requestRouter.selectForEmbeddings(
+            body,
+            abortController.signal,
+          )
+          if (candidate && !Array.isArray(candidate)) {
+            nodeHost = candidate.nodeHost
+            body.model = candidate.modelName
+            logger.warn(
+              { requestedModel: modelName, fallbackModel: candidate.modelName, nodeHost },
+              '/api/embeddings model not found — using fallback',
+            )
+          }
+        }
+        if (!nodeHost) {
+          return res.status(404).json({ error: `model '${modelName}' not found` })
+        }
+      }
+
+      if (abortController.signal.aborted) {
+        return res.status(499).json({ error: 'Request cancelled' })
+      }
+
       const resp = await request(`${nodeHost}/api/embeddings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         headersTimeout: 60_000,
         bodyTimeout: 60_000,
+        signal: abortController.signal,
       })
       res.status(resp.statusCode)
       const data = await resp.body.json()
       return res.json(data)
     } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.name === 'AbortError' || abortController.signal.aborted) {
+        return res.headersSent ? undefined : res.status(499).json({ error: 'Request cancelled' })
+      }
       logger.error({ err }, 'POST /api/embeddings upstream error')
-      return res.status(503).json({ error: 'Upstream error' })
+      return res.headersSent ? undefined : res.status(503).json({ error: 'Upstream error' })
+    } finally {
+      res.off('close', onClientClose)
     }
   })
 
