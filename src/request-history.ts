@@ -5,6 +5,19 @@ const MAX_ATTEMPTS = 8
 const MAX_CANDIDATES = 3
 const ACTIVE_ATTEMPT_STATUSES = new Set(['waiting', 'running'])
 
+export interface CandidateRationale {
+  latencyScore: number
+  tpsScore: number
+  sizeFit: number
+  warmBonus: number
+  loadPenalty: number
+  cloudPenalty: number
+  thinkingBonus: number
+  contextMargin: number
+  totalScore: number
+  sizeReason: string
+}
+
 export interface AttemptRecord {
   nodeHost: string
   modelName: string
@@ -19,6 +32,7 @@ export interface CandidateSummary {
   nodeHost: string
   modelName: string
   score: number | null
+  rationale?: CandidateRationale | null
 }
 
 export interface AnalysisSummary {
@@ -390,14 +404,31 @@ function summariseCandidate(candidate: {
   nodeHost: string
   modelName: string
   score?: number
+  rationale?: CandidateRationale | null
 }): CandidateSummary {
+  const scoreValue =
+    typeof candidate.score === 'number'
+      ? Math.round(candidate.score * 100) / 100
+      : null
+  const rationale = candidate.rationale
+    ? {
+        latencyScore: candidate.rationale.latencyScore,
+        tpsScore: candidate.rationale.tpsScore,
+        sizeFit: candidate.rationale.sizeFit,
+        warmBonus: candidate.rationale.warmBonus,
+        loadPenalty: candidate.rationale.loadPenalty,
+        cloudPenalty: candidate.rationale.cloudPenalty,
+        thinkingBonus: candidate.rationale.thinkingBonus,
+        contextMargin: candidate.rationale.contextMargin,
+        totalScore: candidate.rationale.totalScore,
+        sizeReason: candidate.rationale.sizeReason,
+      }
+    : null
   return {
     nodeHost: candidate.nodeHost,
     modelName: candidate.modelName,
-    score:
-      typeof candidate.score === 'number'
-        ? Math.round(candidate.score * 100) / 100
-        : null,
+    score: scoreValue,
+    rationale,
   }
 }
 
@@ -479,7 +510,12 @@ export class RequestHistoryManager {
 
   recordSelection(
     requestId: string,
-    candidates: Array<{ nodeHost: string; modelName: string; score?: number }>,
+    candidates: Array<{
+      nodeHost: string
+      modelName: string
+      score?: number
+      rationale?: CandidateRationale | null
+    }>,
   ): void {
     const entry = this.#findRequest(requestId)
     if (!entry) return
@@ -560,7 +596,6 @@ export class RequestHistoryManager {
       entry.messageList = []
     }
 
-    // Support plain string (e.g. test helpers) or choices[0] object
     let content: string
     let thinking: string | undefined
     let toolCalls: ToolCall[] | undefined
@@ -568,7 +603,6 @@ export class RequestHistoryManager {
     if (typeof responseContent === 'string') {
       content = responseContent.trim()
     } else {
-      // responseContent is choices[0] from OpenAI response — unwrap .message
       const choice = responseContent as Record<string, unknown> | null | undefined
       const message = (choice?.message ?? choice) as Record<string, unknown> | null | undefined
 
@@ -719,7 +753,6 @@ export class RequestHistoryManager {
   #parseSSEChunks(rawSSE: string): { content: string; thinking: string; toolCalls: ToolCall[] } {
     let content = ''
     let thinking = ''
-    // Sparse map of tool_call delta assembly by index
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
 
     for (const line of rawSSE.split('\n')) {

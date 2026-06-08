@@ -10,7 +10,6 @@ header {
   z-index: 10;
   gap: 0.75rem;
   min-height: 48px;
-  /* Prevent logo from shrinking — controls side stays fixed */
   overflow: hidden;
 }
 
@@ -29,7 +28,6 @@ header {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  /* Never wrap — status badge must stay on one line regardless of label length */
   flex-wrap: nowrap;
   flex-shrink: 0;
 }
@@ -140,7 +138,6 @@ header {
   flex-shrink: 0;
 }
 
-/* On narrow screens hide the ws text label — dot color communicates state */
 .ws-status-label {
   display: none;
 }
@@ -208,7 +205,9 @@ header {
 main {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: clamp(0.75rem, 3vw, 2rem);
   display: grid;
   grid-template-columns: minmax(0, 1440px);
@@ -311,7 +310,6 @@ main {
   }
 }
 
-/* ── Mobile header: collapse scan-text on very narrow screens ── */
 @media (max-width: 480px) {
   .scan-text {
     display: none;

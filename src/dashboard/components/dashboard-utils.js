@@ -86,6 +86,9 @@ export function statusClass(status) {
 
 export function isCloudRequest(request) {
   if (request.selectedNode && request.selectedNode.includes('ollama.com')) return true
+  if (request.selectedModel && request.selectedModel.includes('ollama.com')) return true
+  if (request.selectedModel && request.selectedModel.includes('(cloud)')) return true
+  if (request.candidates?.some((c) => c.nodeHost?.includes('ollama.com'))) return true
   return request.attempts?.some((a) => a.nodeHost?.includes('ollama.com')) ?? false
 }
 
@@ -99,7 +102,6 @@ export function routeTarget(request) {
 
 export function requestInlineError(request) {
   if (request.status !== 'failed' && request.status !== 'rejected') return null
-  // Prefer top-level error, fall back to last attempt error
   if (request.error) return request.error
   const lastAttempt = request.attempts?.[request.attempts.length - 1]
   return lastAttempt?.error || null
@@ -218,7 +220,68 @@ export function renderFlagBadges(analysis = {}) {
 
   return badges.length
     ? badges
-    : html`<span class="muted">No special routing flags</span>`
+    : html`<span class="muted">—</span>`
+}
+
+// Renders a score breakdown table for a candidate's rationale.
+// Used inside cand-detail in the request drawer.
+export function renderRoutingRationale(candidate) {
+  if (!candidate?.rationale) return ''
+  const r = candidate.rationale
+  return html`
+    <div class="routing-rationale">
+      <div class="rationale-row">
+        <span class="rationale-label">Size fit</span>
+        <span class="rationale-note muted">${r.sizeReason ?? ''}</span>
+        <span class="rationale-value ${r.sizeFit > 0 ? 'good' : r.sizeFit < 0 ? 'bad' : ''}">
+          ${r.sizeFit > 0 ? `+${r.sizeFit}` : r.sizeFit}
+        </span>
+      </div>
+      <div class="rationale-row">
+        <span class="rationale-label">Latency</span>
+        <span class="rationale-note"></span>
+        <span class="rationale-value">${r.latencyScore.toFixed(1)}</span>
+      </div>
+      <div class="rationale-row">
+        <span class="rationale-label">Throughput</span>
+        <span class="rationale-note"></span>
+        <span class="rationale-value">${r.tpsScore.toFixed(1)}</span>
+      </div>
+      ${r.warmBonus
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Warm model</span>
+            <span class="rationale-note"></span>
+            <span class="rationale-value good">+${r.warmBonus}</span>
+          </div>`
+        : ''}
+      ${r.loadPenalty
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Load penalty</span>
+            <span class="rationale-note"></span>
+            <span class="rationale-value bad">−${r.loadPenalty.toFixed(1)}</span>
+          </div>`
+        : ''}
+      ${r.cloudPenalty
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Cloud cost</span>
+            <span class="rationale-note"></span>
+            <span class="rationale-value muted">${r.cloudPenalty}</span>
+          </div>`
+        : ''}
+      ${r.thinkingBonus
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Thinking bonus</span>
+            <span class="rationale-note"></span>
+            <span class="rationale-value good">+${r.thinkingBonus}</span>
+          </div>`
+        : ''}
+      <div class="rationale-row rationale-row--total">
+        <span class="rationale-label">Total score</span>
+        <span class="rationale-note"></span>
+        <span class="rationale-value">${r.totalScore.toFixed(1)}</span>
+      </div>
+    </div>
+  `
 }
 
 export function renderMessageThread(request) {
@@ -244,7 +307,6 @@ function renderContentWithCodeBlocks(content, options = {}) {
       : html`<span class="muted">(empty)</span>`
   }
 
-  // Split on fenced code blocks (```lang\n...\n```)
   const parts = []
   const fencedRegex = /```(\w*)\n?([\s\S]*?)```/g
   let lastIndex = 0
@@ -269,7 +331,6 @@ function renderContentWithCodeBlocks(content, options = {}) {
 }
 
 function renderInlineText(text) {
-  // Wrap `inline code` with <code> tags — split on backtick pairs
   const inlineParts = []
   const inlineRegex = /`([^`]+)`/g
   let lastIdx = 0
@@ -325,7 +386,6 @@ function renderToolCallBlocks(toolCalls) {
 }
 
 function renderToolResultBlock(msg, allMessages) {
-  // Find the matching tool_call to show its function name
   let fnName = msg.name || ''
   if (!fnName && msg.toolCallId && allMessages) {
     for (const m of allMessages) {

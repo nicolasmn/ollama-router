@@ -81,12 +81,26 @@ function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>):
   return 0
 }
 
+export interface RoutingRationale {
+  latencyScore: number
+  tpsScore: number
+  sizeFit: number
+  warmBonus: number
+  loadPenalty: number
+  cloudPenalty: number
+  thinkingBonus: number
+  contextMargin: number
+  totalScore: number
+  sizeReason: string
+}
+
 export interface RoutingCandidate {
   nodeHost: string
   modelName: string
   modelInfo: ModelInfo
   score: number
   forcedModel?: boolean
+  rationale?: RoutingRationale
 }
 
 export interface ModelCatalogEntry {
@@ -298,11 +312,23 @@ export class RequestRouter {
         if (analysis.needsTools && !profile.supportsTools) continue
         if (analysis.needsVision && !profile.supportsVision) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
-        const baseScore = this._scoreModel(modelInfo, analysis, alias, nodeHost)
+        const scored = this._scoreModel(modelInfo, analysis, alias, nodeHost)
         const warmBonus = computeWarmBonus(modelInfo, node.models)
         const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-        const score = baseScore + warmBonus + cloudAdjustment
-        candidates.push({ nodeHost, modelName, modelInfo, score })
+        const score = scored.baseScore + warmBonus + cloudAdjustment
+        const rationale: RoutingRationale = {
+          latencyScore: scored.latencyScore,
+          tpsScore: scored.tpsScore,
+          sizeFit: scored.sizeFit,
+          warmBonus,
+          loadPenalty: scored.loadPenalty,
+          cloudPenalty: cloudAdjustment,
+          thinkingBonus: scored.thinkingBonus,
+          contextMargin: scored.contextMargin,
+          totalScore: score,
+          sizeReason: scored.sizeReason,
+        }
+        candidates.push({ nodeHost, modelName, modelInfo, score, rationale })
       }
     }
 
@@ -332,14 +358,23 @@ export class RequestRouter {
       const modelInfo = node.models.get(model)
       if (!modelInfo) continue
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
-      const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
-      const latencyScore = modelInfo.recentLatency
-        ? Math.max(0, 20 - modelInfo.recentLatency / 500)
-        : 10
+      const scored = this._scoreModel(modelInfo, { preferFast: false } as AnalysisResult, 'auto', nodeHost)
       const warmBonus = computeWarmBonus(modelInfo, node.models)
       const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-      const score = latencyScore - loadPenalty + warmBonus + cloudAdjustment
-      candidates.push({ nodeHost, modelName: model, modelInfo, score })
+      const score = scored.baseScore + warmBonus + cloudAdjustment
+      const rationale: RoutingRationale = {
+        latencyScore: scored.latencyScore,
+        tpsScore: scored.tpsScore,
+        sizeFit: scored.sizeFit,
+        warmBonus,
+        loadPenalty: scored.loadPenalty,
+        cloudPenalty: cloudAdjustment,
+        thinkingBonus: scored.thinkingBonus,
+        contextMargin: scored.contextMargin,
+        totalScore: score,
+        sizeReason: scored.sizeReason,
+      }
+      candidates.push({ nodeHost, modelName: model, modelInfo, score, rationale })
     }
 
     if (candidates.length === 0) {
@@ -377,7 +412,16 @@ export class RequestRouter {
     requirements: AnalysisResult,
     alias: string,
     nodeHost: string,
-  ): number {
+  ): {
+    baseScore: number
+    latencyScore: number
+    tpsScore: number
+    contextMargin: number
+    loadPenalty: number
+    sizeFit: number
+    thinkingBonus: number
+    sizeReason: string
+  } {
     const { profile } = modelInfo
     const params = profile.parameters || 0
     const contextLength = profile.contextLength || 4096
@@ -402,23 +446,54 @@ export class RequestRouter {
     const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
 
     let sizeFit = 0
+    let sizeReason: string
     if (alias === 'auto-fast' || requirements.preferFast) {
-      if (params >= 3 && params <= 9) sizeFit += 14
-      else if (params > 0 && params < 3) sizeFit += 12
-      else sizeFit += 1
+      if (params >= 3 && params <= 9) {
+        sizeFit += 14
+        sizeReason = 'fast path: medium model (3–9B)'
+      } else if (params > 0 && params < 3) {
+        sizeFit += 12
+        sizeReason = 'fast path: tiny model (<3B)'
+      } else {
+        sizeFit += 1
+        sizeReason = 'fast path: large model (fallback)'
+      }
     } else if (requirements.preferReasoning) {
-      if (params >= 20) sizeFit += 14
-      else if (params >= 10) sizeFit += 6
-      else sizeFit += 1
+      if (params >= 20) {
+        sizeFit += 14
+        sizeReason = 'reasoning: very large model (≥20B)'
+      } else if (params >= 10) {
+        sizeFit += 6
+        sizeReason = 'reasoning: large model (10–20B)'
+      } else {
+        sizeFit += 1
+        sizeReason = 'reasoning: small model (fallback)'
+      }
     } else if (requirements.hasCodeSignals || messageCount > 10) {
-      if (params >= 20 && params <= 35) sizeFit += 14
-      else if (params >= 10) sizeFit += 6
-      else sizeFit += 1
+      if (params >= 20 && params <= 35) {
+        sizeFit += 14
+        sizeReason = 'code / long chat: 20–35B model'
+      } else if (params >= 10) {
+        sizeFit += 6
+        sizeReason = 'code / long chat: ≥10B model'
+      } else {
+        sizeFit += 1
+        sizeReason = 'code / long chat: small model (fallback)'
+      }
     } else {
-      if (params >= 3 && params <= 8) sizeFit += 12
-      else if (params > 0 && params < 3) sizeFit += 7
-      else if (params <= 15) sizeFit += 6
-      else sizeFit += 2
+      if (params >= 3 && params <= 8) {
+        sizeFit += 12
+        sizeReason = 'general chat: 3–8B model'
+      } else if (params > 0 && params < 3) {
+        sizeFit += 7
+        sizeReason = 'general chat: tiny model (<3B)'
+      } else if (params <= 15) {
+        sizeFit += 6
+        sizeReason = 'general chat: mid model (<=15B)'
+      } else {
+        sizeFit += 2
+        sizeReason = 'general chat: large model (fallback)'
+      }
     }
 
     const thinkingBonus = profile.supportsThinking
@@ -429,6 +504,15 @@ export class RequestRouter {
           : 0
       : 0
 
-    return baseScore + contextMargin + sizeFit + thinkingBonus - loadPenalty
+    return {
+      baseScore: baseScore + contextMargin + sizeFit + thinkingBonus - loadPenalty,
+      latencyScore,
+      tpsScore,
+      contextMargin,
+      loadPenalty,
+      sizeFit,
+      thinkingBonus,
+      sizeReason,
+    }
   }
 }
