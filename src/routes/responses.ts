@@ -47,7 +47,7 @@ export function setupResponsesRoutes(
     requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'responses', res,
+      requestId, reqBody, taskType: 'responses', res, requestHistoryManager,
       selectFn: (body) => requestRouter.selectForResponses(body, abortController.signal),
       selectionErrorMessage: 'Responses model selection error', logger,
     })

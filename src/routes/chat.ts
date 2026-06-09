@@ -38,7 +38,7 @@ export function setupChatRoutes(
     requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'chat', res,
+      requestId, reqBody, taskType: 'chat', res, requestHistoryManager,
       selectFn: (body) => requestRouter.selectForChat(body, abortController.signal),
       selectionErrorMessage: 'Chat model selection error', logger,
     })

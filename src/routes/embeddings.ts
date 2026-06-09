@@ -36,7 +36,7 @@ export function setupEmbeddingsRoutes(
     requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'embeddings', res,
+      requestId, reqBody, taskType: 'embeddings', res, requestHistoryManager,
       selectFn: (body) => requestRouter.selectForEmbeddings(body, abortController.signal),
       selectionErrorMessage: 'Embeddings model selection error', logger,
     })

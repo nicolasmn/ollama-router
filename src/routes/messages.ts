@@ -44,8 +44,8 @@ export function setupMessagesRoutes(
     requestHistoryManager.registerAbortController(requestId, abortController)
 
     const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'messages', res,
-      selectFn: (body) => requestRouter.selectForChat(body),
+      requestId, reqBody, taskType: 'messages', res, requestHistoryManager,
+      selectFn: (body) => requestRouter.selectForChat(body, abortController.signal),
       selectionErrorMessage: 'Messages model selection error', logger,
     })
     if (!candidates) return

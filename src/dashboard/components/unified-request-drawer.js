@@ -23,7 +23,6 @@ export class UnifiedRequestDrawer extends LitElement {
     super()
     this.open = false
     this.request = null
-    // Set of candidate keys (modelName@nodeHost) that are expanded
     this.expandedCandidates = new Set()
   }
 
@@ -69,7 +68,6 @@ export class UnifiedRequestDrawer extends LitElement {
     )
   }
 
-  // Merge candidates (router's scored plan) with attempts (actual execution).
   buildRoutingPath(candidates, attempts) {
     const usedAttempts = new Set()
     const rows = candidates.map((candidate) => {
@@ -104,7 +102,7 @@ export class UnifiedRequestDrawer extends LitElement {
     )
   }
 
-  // ─── Candidate card ───────────────────────────────────────────────
+  // ─── Candidate card ──────────────────────────────────────────────
 
   renderCandidateCard({ candidate, attempt }, isWinner) {
     const modelName = candidate?.modelName ?? attempt?.modelName ?? '—'
@@ -113,7 +111,6 @@ export class UnifiedRequestDrawer extends LitElement {
     const status    = attempt?.status ?? null
     const key       = this.candidateKey(modelName, nodeHost)
 
-    // Winner card is open by default (first render only — user can collapse)
     const isOpen = this.expandedCandidates.has(key) ||
       (isWinner && !this.expandedCandidates.has(`__collapsed_${key}`))
 
@@ -142,7 +139,6 @@ export class UnifiedRequestDrawer extends LitElement {
         <div class="cand-header"
           @click=${() => {
             if (isWinner && !this.expandedCandidates.has(key)) {
-              // First click on winner: mark it manually collapsed
               this.expandedCandidates = new Set([...this.expandedCandidates, `__collapsed_${key}`])
             }
             this.toggleCandidate(key)
@@ -170,6 +166,24 @@ export class UnifiedRequestDrawer extends LitElement {
     `
   }
 
+  // A non-interactive card shown at the end of the list when the originally
+  // requested model was not found and the request was rerouted.
+  renderMissingModelCard(modelName) {
+    return html`
+      <div class="cand-card" style="opacity:0.6">
+        <div class="cand-header" style="cursor:default">
+          <div class="cand-line1">
+            <span class="cand-model mono">${modelName}</span>
+            <span class="badge b-red">Not found</span>
+          </div>
+          <div class="cand-line2">
+            <span class="cand-ip muted">originally requested — rerouted to auto</span>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
   // ─── Routing section ──────────────────────────────────────────────
 
   renderRoutingSection() {
@@ -179,8 +193,10 @@ export class UnifiedRequestDrawer extends LitElement {
     if (!candidates.length && !attempts.length) return ''
 
     const rows = this.buildRoutingPath(candidates, attempts)
-    const selectedModel = this.request.selectedModel
-    const selectedNode  = this.request.selectedNode
+    const selectedModel  = this.request.selectedModel
+    const selectedNode   = this.request.selectedNode
+    const requestedModel = this.request.requestedModel
+    const wasRerouted    = selectedModel && requestedModel && selectedModel !== requestedModel
 
     return html`
       <div class="detail-section">
@@ -198,6 +214,7 @@ export class UnifiedRequestDrawer extends LitElement {
               (!selectedNode || nodeHost === selectedNode)
             return this.renderCandidateCard({ candidate, attempt }, isWinner)
           })}
+          ${wasRerouted ? this.renderMissingModelCard(requestedModel) : ''}
         </div>
       </div>
     `

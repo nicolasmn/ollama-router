@@ -91,7 +91,8 @@ You can set the `model` field in requests to either a concrete model name or a r
 
 Notes:
 
-- Unknown model names return `404`.
+- Unknown model names return `404` by default.
+- Set `ROUTER_FALLBACK_TO_AUTO=true` to silently reroute unknown model names to `auto` selection instead of returning `404`. The `model` field in the response will reflect the actual model that served the request.
 - Alias names are reserved and also listed in `/v1/models`.
 
 ## Force-Model Override
@@ -138,8 +139,9 @@ curl -X DELETE http://localhost:8000/admin/force-model
 
 Environment variables:
 
-- OLLAMA_NODES: comma-separated node list. Example: localhost:11434,10.0.0.12:11434
-- PORT: router listen port (default: 8000)
+- `OLLAMA_NODES`: comma-separated node list. Example: `localhost:11434,10.0.0.12:11434`
+- `PORT`: router listen port (default: `8000`)
+- `ROUTER_FALLBACK_TO_AUTO`: set to `true` to reroute requests for unknown model names to `auto` selection instead of returning `404` (default: `false`)
 
 Current defaults in code:
 

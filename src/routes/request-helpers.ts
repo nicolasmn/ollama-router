@@ -69,6 +69,7 @@ export interface SelectCandidatesOptions {
   reqBody: Record<string, unknown>
   taskType: string
   res: Response
+  requestHistoryManager: RequestHistoryManager
   selectFn: (reqBody: Record<string, unknown>) => Promise<RoutingCandidate | RoutingCandidate[] | null>
   selectionErrorMessage: string
   logger: ReturnType<typeof createLogger>
@@ -77,17 +78,32 @@ export interface SelectCandidatesOptions {
 export async function selectCandidatesOrHandleError(
   opts: SelectCandidatesOptions,
 ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
-  const { requestId, reqBody, taskType, res, selectFn, selectionErrorMessage, logger: routeLogger } = opts
+  const { requestId, reqBody, taskType, res, requestHistoryManager, selectFn, selectionErrorMessage, logger: routeLogger } = opts
   try {
     const candidates = await selectFn(reqBody)
     if (hasNoCandidates(candidates)) {
+      requestHistoryManager.finishRequest(requestId, {
+        status: 'failed',
+        responseStatus: 503,
+        error: 'No suitable models available',
+      })
       respondNoCandidates(requestId, taskType, res, routeLogger)
       return null
     }
     return candidates
   } catch (err) {
-    const handled = handleSelectionError(err as RouterError, res, requestId, selectionErrorMessage, routeLogger)
-    if (handled) return null
+    const routerErr = err as RouterError
+    const handled = handleSelectionError(routerErr, res, requestId, selectionErrorMessage, routeLogger)
+    if (handled) {
+      requestHistoryManager.finishRequest(requestId, {
+        status: 'failed',
+        responseStatus: 404,
+        error: routerErr.message,
+        failureCategory: 'model_not_found',
+        retryHint: 'no_retry',
+      })
+      return null
+    }
     throw err
   }
 }
@@ -236,10 +252,9 @@ export async function handleStreamingRequest(
     signal,
   } = opts
 
-  // Normalise to array — enables pre-header fallback across candidates
   const candidateList = Array.isArray(candidate) ? candidate : [candidate]
-  const requestedModel =
-    (reqBody.model as string | undefined) ?? candidateList[0]?.modelName
+  // Use the actual routed model name; fall back to requested model only if candidate has none
+  const requestedModel = candidateList[0]?.modelName ?? (reqBody.model as string | undefined)
 
   if (!candidateList[0]?.nodeHost || !candidateList[0]?.modelName) {
     logger.error({ requestId, endpoint }, 'Missing streaming candidate')
@@ -341,7 +356,6 @@ export async function handleStreamingRequest(
           )
         }
 
-        // ── Streaming begins — no fallback to another candidate after this point ──
         if (forwardContentType) {
           const ct = resp.headers['content-type']
           if (ct) res.setHeader('Content-Type', ct as string)
@@ -398,31 +412,11 @@ export async function handleStreamingRequest(
         await pipeline(resp.body, captureTransform, res)
 
         const latency = Date.now() - startTime
-        discoveryManager.updateModelMetrics(
-          nodeHost,
-          modelName,
-          latency,
-          0,
-          endpoint,
-        )
-        requestHistoryManager.recordAttempt(requestId, {
-          nodeHost,
-          modelName,
-          status: 'success',
-          latency,
-        })
-        requestHistoryManager.finishRequest(requestId, {
-          status: 'success',
-          responseStatus: 200,
-          latency,
-          nodeHost,
-          modelName,
-        })
+        discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0, endpoint)
+        requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
+        requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName })
         requestHistoryManager.finalizeStreamingResponse(requestId)
-        logger.info(
-          { requestId, nodeHost, modelName, endpoint, latency },
-          'Streaming request successful',
-        )
+        logger.info({ requestId, nodeHost, modelName, endpoint, latency }, 'Streaming request successful')
         return
       } catch (err) {
         const typedErr = err as RouterError
@@ -433,70 +427,25 @@ export async function handleStreamingRequest(
         const latency = Date.now() - startTime
 
         if (clientDisconnected) {
-          const abortReason =
-            signal?.aborted || res.destroyed
-              ? 'client_disconnect'
-              : 'upstream_abort'
-          logger.info(
-            { requestId, nodeHost, modelName, latency },
-            'Client disconnected during streaming',
-          )
-          requestHistoryManager.recordAttempt(requestId, {
-            nodeHost,
-            modelName,
-            status: 'aborted',
-            latency,
-          })
-          requestHistoryManager.finishRequest(requestId, {
-            status: 'aborted',
-            responseStatus: 0,
-            latency,
-            abortReason,
-            failureCategory: 'client_abort',
-            retryHint: 'no_retry',
-            nodeHost,
-            modelName,
-          })
+          const abortReason = signal?.aborted || res.destroyed ? 'client_disconnect' : 'upstream_abort'
+          logger.info({ requestId, nodeHost, modelName, latency }, 'Client disconnected during streaming')
+          requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'aborted', latency })
+          requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, latency, abortReason, failureCategory: 'client_abort', retryHint: 'no_retry', nodeHost, modelName })
           return
         }
 
-        discoveryManager.recordModelFailure(
-          nodeHost,
-          modelName,
-          typedErr as NodeJS.ErrnoException,
-        )
-        requestHistoryManager.recordAttempt(requestId, {
-          nodeHost,
-          modelName,
-          status: 'failed',
-          latency,
-          error: typedErr.message,
-        })
+        discoveryManager.recordModelFailure(nodeHost, modelName, typedErr as NodeJS.ErrnoException)
+        requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'failed', latency, error: typedErr.message })
 
         if (!res.headersSent && index < candidateList.length - 1) {
-          logger.warn(
-            { requestId, nodeHost, modelName, endpoint, err: typedErr.message },
-            'Streaming attempt failed, trying next candidate',
-          )
+          logger.warn({ requestId, nodeHost, modelName, endpoint, err: typedErr.message }, 'Streaming attempt failed, trying next candidate')
           continue
         }
 
         const { failureCategory, retryHint } = categorizeFailure(typedErr)
         const responseStatus = res.headersSent ? res.statusCode : 503
-        logger.error(
-          { requestId, nodeHost, modelName, endpoint, err: typedErr.message },
-          'Streaming request failed',
-        )
-        requestHistoryManager.finishRequest(requestId, {
-          status: 'failed',
-          responseStatus,
-          latency,
-          failureCategory,
-          retryHint,
-          nodeHost,
-          modelName,
-          error: typedErr.message,
-        })
+        logger.error({ requestId, nodeHost, modelName, endpoint, err: typedErr.message }, 'Streaming request failed')
+        requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus, latency, failureCategory, retryHint, nodeHost, modelName, error: typedErr.message })
         if (!res.headersSent) {
           res.status(503).json({ error: typedErr.message })
         } else if (!res.writableEnded) {
@@ -509,13 +458,8 @@ export async function handleStreamingRequest(
       }
     }
 
-    // All candidates were at capacity or exhausted without a successful response
     if (!res.headersSent) {
-      requestHistoryManager.finishRequest(requestId, {
-        status: 'failed',
-        responseStatus: 503,
-        error: 'No suitable models available',
-      })
+      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 503, error: 'No suitable models available' })
       res.status(503).json({ error: 'No suitable models available' })
     }
   } finally {
@@ -547,8 +491,6 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
     successLog, failureLog,
     res, discoveryManager, loadManager, requestHistoryManager, signal,
   } = opts
-
-  const requestedModel = reqBody.model as string | undefined
 
   let lastFailure: {
     responseStatus: number; error: string; failureCategory: string
@@ -590,7 +532,8 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
         result = await forwardRequest(nodeHost, modelName, reqBody, endpoint, { signal, apiKey })
       }
 
-      result = rewriteModelField(result, requestedModel ?? modelName)
+      // Always rewrite to the actual routed model name, not the originally requested model
+      result = rewriteModelField(result, modelName)
 
       const latency = Date.now() - startTime
       if (responseContentFrom) requestHistoryManager.updateResponseContent(requestId, responseContentFrom(result))

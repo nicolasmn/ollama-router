@@ -49,21 +49,12 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body as Record<string, unknown>,
         taskType: 'generate',
         res,
+        requestHistoryManager,
         selectFn: (reqBody) => requestRouter.selectForChat(reqBody, abortController.signal),
         selectionErrorMessage: '/api/generate model selection failed',
         logger,
       })
-      if (!candidates) {
-        requestHistoryManager.finishRequest(requestId, {
-          status: res.statusCode === 404 ? 'rejected' : 'failed',
-          responseStatus: res.statusCode || 503,
-          error:
-            res.statusCode === 404
-              ? 'Requested model not found'
-              : 'No suitable models available',
-        })
-        return
-      }
+      if (!candidates) return
 
       requestHistoryManager.recordSelection(
         requestId,
@@ -185,21 +176,12 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body as Record<string, unknown>,
         taskType: 'chat',
         res,
+        requestHistoryManager,
         selectFn: (reqBody) => requestRouter.selectForChat(reqBody, abortController.signal),
         selectionErrorMessage: '/api/chat model selection failed',
         logger,
       })
-      if (!candidates) {
-        requestHistoryManager.finishRequest(requestId, {
-          status: res.statusCode === 404 ? 'rejected' : 'failed',
-          responseStatus: res.statusCode || 503,
-          error:
-            res.statusCode === 404
-              ? 'Requested model not found'
-              : 'No suitable models available',
-        })
-        return
-      }
+      if (!candidates) return
 
       requestHistoryManager.recordSelection(
         requestId,

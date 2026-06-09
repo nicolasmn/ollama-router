@@ -84,12 +84,18 @@ export function statusClass(status) {
   return 'failed'
 }
 
+// A request is considered a cloud request only if the *winning* node/model is
+// cloud-hosted. Skipped candidates that happen to be cloud nodes should not
+// cause a local-routed request to be labelled as cloud.
 export function isCloudRequest(request) {
   if (request.selectedNode && request.selectedNode.includes('ollama.com')) return true
   if (request.selectedModel && request.selectedModel.includes('ollama.com')) return true
   if (request.selectedModel && request.selectedModel.includes('(cloud)')) return true
-  if (request.candidates?.some((c) => c.nodeHost?.includes('ollama.com'))) return true
-  return request.attempts?.some((a) => a.nodeHost?.includes('ollama.com')) ?? false
+  // Fall back to the successful attempt when selectedNode is not yet set
+  // (e.g. while the request is still in-flight).
+  const successAttempt = request.attempts?.find((a) => a.status === 'success' || a.status === 'running')
+  if (successAttempt) return successAttempt.nodeHost?.includes('ollama.com') ?? false
+  return false
 }
 
 export function routeTarget(request) {
