@@ -56,16 +56,13 @@ export function setupOllamaInferenceRoutes(
       })
       if (!candidates) return
 
-      requestHistoryManager.recordSelection(
-        requestId,
-        Array.isArray(candidates) ? candidates : [candidates],
-      )
+      requestHistoryManager.recordSelection(requestId, candidates)
 
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
           reqBody: req.body as Record<string, unknown>,
-          candidate: candidates,
+          candidate: candidates[0],
           endpoint: '/api/generate',
           forwardContentType: true,
           res,
@@ -78,7 +75,7 @@ export function setupOllamaInferenceRoutes(
 
       const success = await tryCandidatesWithRetry({
         requestId,
-        candidates: Array.isArray(candidates) ? candidates : [candidates],
+        candidates,
         reqBody: req.body as Record<string, unknown>,
         endpoint: '/api/generate',
         tokensFromResult: (result) =>
@@ -183,16 +180,13 @@ export function setupOllamaInferenceRoutes(
       })
       if (!candidates) return
 
-      requestHistoryManager.recordSelection(
-        requestId,
-        Array.isArray(candidates) ? candidates : [candidates],
-      )
+      requestHistoryManager.recordSelection(requestId, candidates)
 
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
           reqBody: req.body as Record<string, unknown>,
-          candidate: candidates,
+          candidate: candidates[0],
           endpoint: '/api/chat',
           forwardContentType: true,
           res,
@@ -205,7 +199,7 @@ export function setupOllamaInferenceRoutes(
 
       const success = await tryCandidatesWithRetry({
         requestId,
-        candidates: Array.isArray(candidates) ? candidates : [candidates],
+        candidates,
         reqBody: req.body as Record<string, unknown>,
         endpoint: '/api/chat',
         tokensFromResult: (result) =>

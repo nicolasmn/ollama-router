@@ -44,18 +44,18 @@ export function setupChatRoutes(
     })
     if (!candidates) return
 
-    requestHistoryManager.recordSelection(requestId, Array.isArray(candidates) ? candidates : [candidates])
+    // Always record the full ranked list so the dashboard shows all candidates
+    requestHistoryManager.recordSelection(requestId, candidates)
 
     if (isStreaming) {
       await handleStreamingRequest({
-        requestId, reqBody, candidate: candidates, endpoint: '/v1/chat/completions',
+        requestId, reqBody, candidate: candidates[0], endpoint: '/v1/chat/completions',
         sseTerminator: true, res, discoveryManager, loadManager, requestHistoryManager,
         signal: abortController.signal,
       })
     } else {
-      const candidateList: RoutingCandidate[] = Array.isArray(candidates) ? candidates : [candidates]
       const succeeded = await tryCandidatesWithRetry({
-        requestId, candidates: candidateList, reqBody, endpoint: '/v1/chat/completions',
+        requestId, candidates, reqBody, endpoint: '/v1/chat/completions',
         tokensFromResult: (r) => ((r as Record<string, Record<string, number>>).usage?.completion_tokens) ?? 0,
         responseContentFrom: (r) => (r as Record<string, unknown[]>)?.choices?.[0],
         successLog: 'Chat completion successful', failureLog: 'Chat failed, trying next',

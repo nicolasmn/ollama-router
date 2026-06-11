@@ -236,16 +236,16 @@ export function setupOllamaRoutes(
 
       if (!nodeHost) {
         if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
-          // Ask router for best embedding candidate
-          const candidate = await requestRouter.selectForEmbeddings(
+          const candidates = await requestRouter.selectForEmbeddings(
             body,
             abortController.signal,
           )
-          if (candidate && !Array.isArray(candidate)) {
-            nodeHost = candidate.nodeHost
-            body.model = candidate.modelName
+          const best = candidates?.[0]
+          if (best) {
+            nodeHost = best.nodeHost
+            body.model = best.modelName
             logger.warn(
-              { requestedModel: modelName, fallbackModel: candidate.modelName, nodeHost },
+              { requestedModel: modelName, fallbackModel: best.modelName, nodeHost },
               '/api/embed model not found — using fallback',
             )
           }
@@ -298,15 +298,16 @@ export function setupOllamaRoutes(
 
       if (!nodeHost) {
         if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
-          const candidate = await requestRouter.selectForEmbeddings(
+          const candidates = await requestRouter.selectForEmbeddings(
             body,
             abortController.signal,
           )
-          if (candidate && !Array.isArray(candidate)) {
-            nodeHost = candidate.nodeHost
-            body.model = candidate.modelName
+          const best = candidates?.[0]
+          if (best) {
+            nodeHost = best.nodeHost
+            body.model = best.modelName
             logger.warn(
-              { requestedModel: modelName, fallbackModel: candidate.modelName, nodeHost },
+              { requestedModel: modelName, fallbackModel: best.modelName, nodeHost },
               '/api/embeddings model not found — using fallback',
             )
           }

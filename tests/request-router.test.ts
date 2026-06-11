@@ -87,15 +87,15 @@ describe('RequestRouter', () => {
       expect((result as any)[0]).toMatchObject({ nodeHost: expect.any(String), modelName: 'gemma4:e4b' })
     })
 
-    it('returns single candidate for streaming request', async () => {
+    it('returns array even for streaming request', async () => {
       const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
       })
       expect(result).not.toBeNull()
-      expect(Array.isArray(result)).toBe(false)
-      expect(result).toMatchObject({ nodeHost: expect.any(String), modelName: expect.any(String) })
+      expect(Array.isArray(result)).toBe(true)
+      expect((result as any)[0]).toMatchObject({ nodeHost: expect.any(String), modelName: expect.any(String) })
     })
 
     it('filters to tool-capable models when tools present', async () => {
@@ -190,7 +190,7 @@ describe('RequestRouter', () => {
       const result = await router.selectForChat({
         model: 'auto-fast',
         messages: [{ role: 'user', content: 'hi' }],
-      }) as any
+      }) as any[]
       expect(result).not.toBeNull()
       expect(result[0].modelName).toBe('gemma4:e4b')
     })
@@ -353,8 +353,8 @@ describe('RequestRouter', () => {
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-      })) as any
-      expect(result.nodeHost).toBe('http://cloud:11434')
+      })) as any[]
+      expect(result[0].nodeHost).toBe('http://cloud:11434')
     })
 
     it('local wins in near-tie due to cloud cost preference', async () => {
@@ -392,8 +392,8 @@ describe('RequestRouter', () => {
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-      })) as any
-      expect(result.nodeHost).toBe('http://local:11434')
+      })) as any[]
+      expect(result[0].nodeHost).toBe('http://local:11434')
     })
 
     it('auto-think includes cloud thinking-capable models', async () => {
@@ -458,8 +458,8 @@ describe('RequestRouter', () => {
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-      })) as any
-      expect(result.nodeHost).toBe('http://node-idle:11434')
+      })) as any[]
+      expect(result[0].nodeHost).toBe('http://node-idle:11434')
     })
 
     it('saturated node is excluded entirely regardless of model quality', async () => {
@@ -525,8 +525,8 @@ describe('RequestRouter', () => {
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-      })) as any
-      expect(result.modelName).toBe('model-warm')
+      })) as any[]
+      expect(result[0].modelName).toBe('model-warm')
     })
 
     it('warm model on one node beats same model on cold node', async () => {
@@ -562,8 +562,8 @@ describe('RequestRouter', () => {
         model: 'auto',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-      })) as any
-      expect(result.nodeHost).toBe('http://node-warm:11434')
+      })) as any[]
+      expect(result[0].nodeHost).toBe('http://node-warm:11434')
     })
 
     it('switch penalty applies when a different model is warm on the same node', async () => {

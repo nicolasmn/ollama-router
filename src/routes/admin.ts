@@ -7,6 +7,7 @@ import type { LoadManager } from '../load-manager.js'
 import type { RequestHistoryManager } from '../request-history.js'
 import { forceModelStore } from '../force-model-store.js'
 import { disabledModelsStore } from '../disabled-models-store.js'
+import { cloudUsageStore } from '../cloud-usage.js'
 import { createLogger } from '../logger.js'
 
 const logger = createLogger('admin')
@@ -352,6 +353,42 @@ export function createAdminRouter({
     }
     logger.info({ name }, 'Cloud model removed via admin API')
     res.json({ ok: true, active: discoveryManager.cloudModels })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Cloud usage
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /admin/cloud/usage
+   * Returns cached cloud usage (session %, weekly %, plan, reset times).
+   * Data refreshes every 5 min in the background.
+   * Returns 503 when no cookie is available and no data has been fetched yet.
+   */
+  r.get('/cloud/usage', async (_req, res) => {
+    const info = discoveryManager.getCloudInfo()
+    if (!info.configured) {
+      res.status(503).json({ error: 'Cloud not configured' })
+      return
+    }
+    const usage = cloudUsageStore.get()
+    if (usage.fetchedAt === 0) {
+      // No data yet — trigger immediate fetch and wait
+      try {
+        const fresh = await cloudUsageStore.refresh()
+        if (fresh.fetchedAt === 0) {
+          res.status(503).json({
+            error: 'No cloud usage cookie available. Set OLLAMA_CLOUD_SESSION_COOKIE or ensure Chrome is logged in to ollama.com.',
+          })
+          return
+        }
+        res.json(fresh)
+      } catch (err) {
+        res.status(502).json({ error: (err as Error).message })
+      }
+      return
+    }
+    res.json(usage)
   })
 
   return r

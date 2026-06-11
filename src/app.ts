@@ -16,6 +16,7 @@ import {
   DISABLED_MODELS_FILE,
 } from './config.js'
 import { disabledModelsStore } from './disabled-models-store.js'
+import { cloudUsageStore } from './cloud-usage.js'
 
 const logger = createLogger('app')
 
@@ -76,6 +77,9 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   // Cloud node has no concurrency cap — register it as unlimited.
   if (OLLAMA_CLOUD_URL && OLLAMA_CLOUD_API_KEY) {
     loadManager.setUnlimited(OLLAMA_CLOUD_URL)
+    // Start background usage polling so router scoring has fresh quota data
+    cloudUsageStore.start()
+    logger.info('Cloud usage polling started')
   }
 
   discoveryManager.setInventoryUpdateHandler((inventory) => {

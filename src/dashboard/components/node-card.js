@@ -6,6 +6,7 @@ export class NodeCard extends LitElement {
   static properties = {
     node: { attribute: false },
     forcedModel: { attribute: false },
+    cloudUsage: { attribute: false },
     _removing: { state: true },
     _removeError: { state: true },
     _cloudAvailable: { state: true },
@@ -22,6 +23,7 @@ export class NodeCard extends LitElement {
     super()
     this.node = null
     this.forcedModel = null
+    this.cloudUsage = null
     this._removing = false
     this._removeError = ''
     this._cloudAvailable = []
@@ -45,8 +47,6 @@ export class NodeCard extends LitElement {
   }
 
   updated(changedProps) {
-    // Set initial collapsed state based on reachability — only once on first
-    // node assignment. After that the user's manual toggle takes precedence.
     if (changedProps.has('node') && this.node && !this._collapseInitialized) {
       this._collapseInitialized = true
       this._collapsed = !this.node.reachable
@@ -55,7 +55,9 @@ export class NodeCard extends LitElement {
 
   connectedCallback() {
     super.connectedCallback()
-    if (this.node?.cloud) this._fetchCloudAvailable()
+    if (this.node?.cloud) {
+      this._fetchCloudAvailable()
+    }
   }
 
   async _onRemove() {
@@ -160,10 +162,6 @@ export class NodeCard extends LitElement {
     this._addModel(name)
   }
 
-  /**
-   * Toggle the disabled state of a model on this node.
-   * Disabled models stay visible but are skipped by the router.
-   */
   async _toggleDisabled(name, currentlyDisabled) {
     if (this._togglingModel || !this.node) return
     this._togglingModel = name
@@ -197,11 +195,6 @@ export class NodeCard extends LitElement {
     }
   }
 
-  /**
-   * Force the given model name for the next routed request.
-   * POSTs to /admin/force-model and fires a bubbling 'force-model-set' event
-   * so router-dashboard can update the override banner immediately.
-   */
   async _forceModel(name) {
     if (this._forcingModel) return
     this._forcingModel = name
@@ -253,46 +246,79 @@ export class NodeCard extends LitElement {
     }
   }
 
-  _renderAddRow(activeNames) {
+  /**
+   * Footer row: usage bars on the left + model-add selector on the right.
+   */
+  _renderCloudFooter(activeNames) {
+    const u = this.cloudUsage
+    const barCls = (pct) => (pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '')
+
     const inactive = this._cloudAvailable
       .filter((m) => !activeNames.has(m.name))
       .sort((a, b) => a.name.localeCompare(b.name))
-    let addPlaceholder
-    if (this._cloudLoading) {
-      addPlaceholder = 'Loading models…'
-    } else if (inactive.length === 0) {
-      addPlaceholder = 'No more models available'
-    } else {
-      addPlaceholder = '+ Add cloud model…'
-    }
+    const addPlaceholder = this._cloudLoading
+      ? 'Loading models…'
+      : inactive.length === 0
+        ? 'No more models available'
+        : '+ Add cloud model…'
+
     return html`
-      <tr class="cloud-add-row">
-        <td colspan="10">
-          <div class="cloud-add-wrap">
-            ${this._cloudError
-              ? html`<span class="cloud-add-error">${this._cloudError}</span>`
-              : ''}
-            <select
-              class="cloud-add-select"
-              ?disabled=${this._cloudMutating || this._cloudLoading}
-              @change=${this._onDropdownChange}
-            >
-              <option value="">${addPlaceholder}</option>
-              ${inactive.map(
-                (m) => html`<option value=${m.name}>${m.name}</option>`,
-              )}
-            </select>
-          </div>
-        </td>
-      </tr>
+      <div class="cloud-usage-footer">
+        <div class="cloud-add-wrap">
+          ${this._cloudError
+            ? html`<span class="cloud-add-error">${this._cloudError}</span>`
+            : ''}
+          <select
+            class="cloud-add-select"
+            ?disabled=${this._cloudMutating || this._cloudLoading}
+            @change=${this._onDropdownChange}
+          >
+            <option value="">${addPlaceholder}</option>
+            ${inactive.map(
+              (m) => html`<option value=${m.name}>${m.name}</option>`,
+            )}
+          </select>
+        </div>
+        ${u
+          ? html`
+              <div class="cloud-usage-bars">
+                <div class="usage-bar-row">
+                  <span class="usage-label">Session</span>
+                  <div class="usage-track">
+                    <div
+                      class="usage-fill ${barCls(u.sessionPct)}"
+                      style="width:${u.sessionPct}%"
+                    ></div>
+                  </div>
+                  <span class="usage-pct ${barCls(u.sessionPct)}"
+                    >${u.sessionPct}%</span
+                  >
+                  <span class="usage-reset muted"
+                    >↺ ${fmt.countdown(u.sessionResetMs)}</span
+                  >
+                </div>
+                <div class="usage-bar-row">
+                  <span class="usage-label">Weekly</span>
+                  <div class="usage-track">
+                    <div
+                      class="usage-fill ${barCls(u.weeklyPct)}"
+                      style="width:${u.weeklyPct}%"
+                    ></div>
+                  </div>
+                  <span class="usage-pct ${barCls(u.weeklyPct)}"
+                    >${u.weeklyPct}%</span
+                  >
+                  <span class="usage-reset muted"
+                    >↺ ${fmt.countdown(u.weeklyResetMs)}</span
+                  >
+                </div>
+              </div>
+            `
+          : ''}
+      </div>
     `
   }
 
-  /**
-   * Render one models table — used twice per node (chat + embeddings).
-   * Embedding tables replace the TPS column with the embedding dimension
-   * and hide the ▶ force-model button (forcing makes no sense for embeddings).
-   */
   _renderModelTable(models, { isCloud, isEmbedding, activeNames }) {
     if (models.length === 0) return ''
     const tpsHeader = isEmbedding ? 'Dim' : 'TPS'
@@ -333,7 +359,6 @@ export class NodeCard extends LitElement {
             ${models.map((model) =>
               this._renderModelRow(model, { isCloud, isEmbedding }),
             )}
-            ${isCloud && !isEmbedding ? this._renderAddRow(activeNames) : ''}
           </tbody>
         </table>
       </div>
@@ -460,8 +485,7 @@ export class NodeCard extends LitElement {
               >
                 ${model.disabled
                   ? svg`<polygon points="7 4 20 12 7 20 7 4" />`
-                  : svg`<rect x="6" y="5" width="4" height="14" rx="1" />
-                      <rect x="14" y="5" width="4" height="14" rx="1" />`}
+                  : svg`<rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />`}
               </svg>
             </button>
             ${isCloud
@@ -498,12 +522,15 @@ export class NodeCard extends LitElement {
     const isCloud = !!this.node.cloud
     const activeNames = new Set(models.map((m) => m.name))
     const cardStateClass = this.node.reachable ? 'ok' : 'err'
+    const plan = this.cloudUsage?.plan ?? null
+
+    const cloudBadgeLabel = plan ? `☁️  Cloud ・${plan}` : '☁️  Cloud'
+    const cloudBadgeCls =
+      plan === 'Max' ? 'b-purple' : plan === 'Pro' ? 'b-green' : 'b-blue'
 
     return html`
       <div class="node-card ${cardStateClass}">
-        <!-- ── Header: split into summary (collapse trigger) + action buttons ── -->
         <div class="node-header">
-          <!-- Left: clickable summary area -->
           <button
             class="node-summary"
             type="button"
@@ -515,7 +542,11 @@ export class NodeCard extends LitElement {
               <span class="node-host">${hostShort}</span>
             </div>
             <div class="node-badges">
-              ${isCloud ? html`<span class="badge b-blue">☁ Cloud</span>` : ''}
+              ${isCloud
+                ? html`<span class="badge ${cloudBadgeCls}"
+                    >${cloudBadgeLabel}</span
+                  >`
+                : ''}
               <span class="badge ${this.node.reachable ? 'b-green' : 'b-red'}">
                 ${this.node.reachable ? 'Online' : 'Offline'}
               </span>
@@ -538,7 +569,6 @@ export class NodeCard extends LitElement {
             </div>
           </button>
 
-          <!-- Right: fixed action buttons -->
           <div class="node-actions">
             ${!isCloud
               ? html`
@@ -571,9 +601,9 @@ export class NodeCard extends LitElement {
                         </svg>`}
                   </button>
                   ${this._removeError
-                    ? html`<span class="remove-error">
-                        ${this._removeError}</span
-                      > `
+                    ? html`<span class="remove-error"
+                        >${this._removeError}</span
+                      >`
                     : ''}
                 `
               : ''}
@@ -615,7 +645,7 @@ export class NodeCard extends LitElement {
               ${models.length === 0 && !isCloud
                 ? html`
                     <div class="node-empty-state">
-                      <span class="node-empty-icon">📭</span>
+                      <span class="node-empty-icon">📢</span>
                       <span class="node-empty-text">No models discovered</span>
                       <span class="node-empty-sub">
                         ${this.node.reachable
@@ -644,18 +674,8 @@ export class NodeCard extends LitElement {
                           })}
                         `
                       : ''}
-                    ${isCloud && chatModels.length === 0
-                      ? html`
-                          <div class="models-wrap">
-                            <table class="cloud-table">
-                              <tbody>
-                                ${this._renderAddRow(activeNames)}
-                              </tbody>
-                            </table>
-                          </div>
-                        `
-                      : ''}
                   `}
+              ${isCloud ? this._renderCloudFooter(activeNames) : ''}
             `}
       </div>
     `

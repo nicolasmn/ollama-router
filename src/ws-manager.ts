@@ -7,6 +7,7 @@ import type { LoadManager } from './load-manager.js'
 import type { RequestHistoryManager, RequestEntry } from './request-history.js'
 import { forceModelStore } from './force-model-store.js'
 import { disabledModelsStore } from './disabled-models-store.js'
+import { cloudUsageStore } from './cloud-usage.js'
 
 const BROADCAST_INTERVAL_MS = 2000
 const ACTIVE_STATUSES = new Set(['waiting', 'running'])
@@ -142,6 +143,7 @@ export class WsManager {
         nodes,
         requests: recentRequests,
         forceOverride,
+        cloudUsage: cloudUsageStore.get(),
         scan: {
           inProgress: scanStatus.inProgress,
           lastScanMs: scanStatus.lastScanMs,

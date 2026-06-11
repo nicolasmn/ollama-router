@@ -10,6 +10,7 @@ import {
 } from './src/config.js'
 import { createApp } from './src/app.js'
 import { createLogger } from './src/logger.js'
+import { cloudUsageStore } from './src/cloud-usage.js'
 
 const logger = createLogger('index')
 
@@ -57,6 +58,7 @@ try {
     if (shuttingDown) return
     shuttingDown = true
     logger.info(`${signal} received, shutting down gracefully`)
+    cloudUsageStore.stop()
     managers.discovery.stopPeriodicProbe()
     managers.discovery.persistMetrics()
     managers.ws.stop()

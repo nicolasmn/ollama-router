@@ -21,7 +21,7 @@ export class RouterDashboard extends LitElement {
   constructor() {
     super()
     this.wsState = 'connecting'
-    this.payload = { timestamp: 0, nodes: {}, requests: [], scan: {} }
+    this.payload = { timestamp: 0, nodes: {}, requests: [], scan: {}, cloudUsage: null }
     this.selectedRequestId = null
     this.drawerOpen = false
     this.scanInProgress = false
@@ -197,6 +197,7 @@ export class RouterDashboard extends LitElement {
 
   render() {
     const summary = this.summary
+    const cloudUsage = this.payload.cloudUsage ?? null
 
     return html`
       <header>
@@ -262,6 +263,7 @@ export class RouterDashboard extends LitElement {
                   html`<node-card
                     .node=${node}
                     .forcedModel=${this._forceOverride?.model ?? null}
+                    .cloudUsage=${node.cloud ? cloudUsage : null}
                   ></node-card>`,
               )
             : html`<div class="empty">No nodes configured.</div>`}

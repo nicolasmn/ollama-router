@@ -14,6 +14,11 @@ export interface Config {
   OLLAMA_CLOUD_URL: string
   OLLAMA_CLOUD_API_KEY: string
   /**
+   * Session cookie for ollama.com/settings usage scraping.
+   * Falls back to Chrome cookie store via @steipete/sweet-cookie when unset.
+   */
+  OLLAMA_CLOUD_SESSION_COOKIE: string
+  /**
    * When true, requests for unknown models fall back to `auto` routing
    * instead of returning 404. Set ROUTER_FALLBACK_TO_AUTO=true to enable.
    */
@@ -61,6 +66,14 @@ export const OLLAMA_CLOUD_URL: string =
 /** API key for ollama.com cloud inference. If set, cloud node is registered. */
 export const OLLAMA_CLOUD_API_KEY: string =
   process.env.OLLAMA_CLOUD_API_KEY || ''
+
+/**
+ * Session cookie for scraping cloud usage from ollama.com/settings.
+ * Optional — falls back to Chrome cookie store via @steipete/sweet-cookie.
+ * Format: full Cookie header value, e.g. "__Secure-next-auth.session-token=abc..."
+ */
+export const OLLAMA_CLOUD_SESSION_COOKIE: string =
+  process.env.OLLAMA_CLOUD_SESSION_COOKIE || ''
 
 /**
  * When true, requests for unknown models fall back to `auto` routing

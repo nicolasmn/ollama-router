@@ -317,15 +317,15 @@ tbody tr.model-active td:first-child {
 .cap-fallback { font-size: 0.75rem; }
 
 .cap.vision    { background: rgba(167,139,250,0.15); color: var(--purple); }
-.cap.vision::before    { content: '👁️'; }
+.cap.vision::before    { content: '\1F441\FE0F'; }
 .cap.tools     { background: rgba(96,165,250,0.15);  color: var(--blue);   }
-.cap.tools::before     { content: '🛠️'; }
+.cap.tools::before     { content: '\1F6E0\FE0F'; }
 .cap.thinking  { background: rgba(251,191,36,0.15);  color: var(--yellow); }
-.cap.thinking::before  { content: '🧠'; }
+.cap.thinking::before  { content: '\1F9E0'; }
 .cap.audio     { background: rgba(103,232,249,0.15); color: var(--cyan);   }
-.cap.audio::before     { content: '🔊'; }
+.cap.audio::before     { content: '\1F50A'; }
 .cap.embedding { background: rgba(74,222,128,0.15);  color: var(--green);  }
-.cap.embedding::before { content: '🧬'; }
+.cap.embedding::before { content: '\1F9EC'; }
 
 /* ── Cloud node ── */
 
@@ -596,6 +596,110 @@ tr.cloud-add-row td {
   background: var(--surface1, #1a1b26);
   color: var(--fg);
   font-size: 0.8125rem;
+}
+
+/* ── Cloud usage footer ── */
+
+.cloud-usage-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* usage bars first (left), then add-model selector (right) */
+  flex-direction: row;
+  gap: 1rem;
+  padding: 0.6rem 1.25rem;
+  border-top: 1px solid rgba(96, 165, 250, 0.12);
+  background: rgba(96, 165, 250, 0.03);
+  flex-wrap: wrap;
+}
+
+.cloud-usage-plan {
+  flex-shrink: 0;
+}
+
+.badge.b-purple {
+  background: rgba(167, 139, 250, 0.1);
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+/* Usage bars — capped width so they don't swallow the whole footer */
+.cloud-usage-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1 1 160px;
+  max-width: 340px;
+  min-width: 0;
+}
+
+.usage-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.usage-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  width: 3.5rem;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.usage-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--blue);
+  transition: width 0.4s ease;
+}
+
+.usage-fill.warn {
+  background: var(--yellow);
+}
+
+.usage-fill.danger {
+  background: var(--red);
+}
+
+.usage-pct {
+  font-size: 0.6875rem;
+  font-family: 'JetBrains Mono', monospace;
+  width: 2.75rem;
+  text-align: right;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.usage-pct.warn   { color: var(--yellow); }
+.usage-pct.danger { color: var(--red); }
+
+.usage-reset {
+  font-size: 0.6875rem;
+  width: 3.5rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.cloud-usage-error {
+  justify-content: flex-start;
+}
+
+.cloud-usage-error-msg {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* ── Force-model override ── */

@@ -11,7 +11,10 @@ export interface CandidateRationale {
   sizeFit: number
   warmBonus: number
   loadPenalty: number
-  cloudPenalty: number
+  /** Fixed local-preference penalty, always −CLOUD_COST_PREFERENCE for cloud candidates (0 for local). */
+  cloudCostPenalty: number
+  /** Dynamic usage penalty, ramps 0 → 20 as cloud usage crosses 70 % → 100 %. */
+  cloudUsagePenalty: number
   thinkingBonus: number
   contextMargin: number
   totalScore: number
@@ -417,7 +420,8 @@ function summariseCandidate(candidate: {
         sizeFit: candidate.rationale.sizeFit,
         warmBonus: candidate.rationale.warmBonus,
         loadPenalty: candidate.rationale.loadPenalty,
-        cloudPenalty: candidate.rationale.cloudPenalty,
+        cloudCostPenalty: candidate.rationale.cloudCostPenalty,
+        cloudUsagePenalty: candidate.rationale.cloudUsagePenalty,
         thinkingBonus: candidate.rationale.thinkingBonus,
         contextMargin: candidate.rationale.contextMargin,
         totalScore: candidate.rationale.totalScore,

@@ -11,7 +11,6 @@ import {
   handleStreamingRequest,
   tryCandidatesWithRetry,
 } from './request-helpers.js'
-import type { RoutingCandidate } from '../request-router.js'
 
 const logger = createLogger('messages')
 
@@ -50,18 +49,17 @@ export function setupMessagesRoutes(
     })
     if (!candidates) return
 
-    requestHistoryManager.recordSelection(requestId, Array.isArray(candidates) ? candidates : [candidates])
+    requestHistoryManager.recordSelection(requestId, candidates)
 
     if (isStreaming) {
       await handleStreamingRequest({
-        requestId, reqBody, candidate: candidates, endpoint: '/v1/messages',
+        requestId, reqBody, candidate: candidates[0], endpoint: '/v1/messages',
         forwardContentType: true, sseTerminator: false, res, discoveryManager, loadManager, requestHistoryManager,
         signal: abortController.signal,
       })
     } else {
-      const candidateList: RoutingCandidate[] = Array.isArray(candidates) ? candidates : [candidates]
       const succeeded = await tryCandidatesWithRetry({
-        requestId, candidates: candidateList, reqBody, endpoint: '/v1/messages',
+        requestId, candidates, reqBody, endpoint: '/v1/messages',
         tokensFromResult: (r) => ((r as Record<string, Record<string, number>>).usage?.output_tokens) ?? 0,
         successLog: 'Messages request successful', failureLog: 'Messages failed, trying next',
         res, discoveryManager, loadManager, requestHistoryManager,

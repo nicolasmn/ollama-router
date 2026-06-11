@@ -10,7 +10,6 @@ import {
   selectCandidatesOrHandleError,
   tryCandidatesWithRetry,
 } from './request-helpers.js'
-import type { RoutingCandidate } from '../request-router.js'
 
 const logger = createLogger('embeddings')
 
@@ -42,11 +41,10 @@ export function setupEmbeddingsRoutes(
     })
     if (!candidates) return
 
-    requestHistoryManager.recordSelection(requestId, Array.isArray(candidates) ? candidates : [candidates])
+    requestHistoryManager.recordSelection(requestId, candidates)
 
-    const candidateList: RoutingCandidate[] = Array.isArray(candidates) ? candidates : [candidates]
     const succeeded = await tryCandidatesWithRetry({
-      requestId, candidates: candidateList, reqBody, endpoint: '/v1/embeddings',
+      requestId, candidates, reqBody, endpoint: '/v1/embeddings',
       tokensFromResult: (r) => ((r as Record<string, Record<string, number>>).usage?.prompt_tokens) ?? 0,
       successLog: 'Embeddings successful', failureLog: 'Embeddings failed, trying next',
       res, discoveryManager, loadManager, requestHistoryManager,

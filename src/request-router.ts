@@ -8,6 +8,8 @@ import type { ModelInfo } from './models.js'
 import { forceModelStore } from './force-model-store.js'
 import { disabledModelsStore } from './disabled-models-store.js'
 import { ROUTER_FALLBACK_TO_AUTO } from './config.js'
+import { cloudUsageStore } from './cloud-usage.js'
+import type { CloudUsage } from './cloud-usage.js'
 
 const logger = createLogger('router')
 
@@ -81,13 +83,29 @@ function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>):
   return 0
 }
 
+/**
+ * Dynamic cloud penalty based on current usage percentage.
+ * Ramps from 0 → 20 as usage crosses 70 % → 100 %.
+ * Comparable to LOAD_PENALTY_MAX so usage pressure competes fairly with load pressure.
+ * Returns 0 when usage data is unavailable or stale (fail-open — no artificial bias).
+ */
+export function computeCloudUsagePenalty(usage: CloudUsage | null): number {
+  if (!usage || usage.stale || usage.fetchedAt === 0) return 0
+  const pct = Math.max(usage.sessionPct, usage.weeklyPct)
+  if (pct < 70) return 0
+  return Math.round(((pct - 70) / 30) * 20)
+}
+
 export interface RoutingRationale {
   latencyScore: number
   tpsScore: number
   sizeFit: number
   warmBonus: number
   loadPenalty: number
-  cloudPenalty: number
+  /** Fixed local-preference penalty, always −CLOUD_COST_PREFERENCE for cloud candidates (0 for local). */
+  cloudCostPenalty: number
+  /** Dynamic usage penalty, ramps 0 → 20 as cloud usage crosses 70 % → 100 %. */
+  cloudUsagePenalty: number
   thinkingBonus: number
   contextMargin: number
   totalScore: number
@@ -152,17 +170,16 @@ export class RequestRouter {
   }
 
   private _tagForced(
-    result: RoutingCandidate | RoutingCandidate[] | null,
+    result: RoutingCandidate[] | null,
   ): void {
     if (!result) return
-    if (Array.isArray(result)) result.forEach((c) => (c.forcedModel = true))
-    else result.forcedModel = true
+    result.forEach((c) => (c.forcedModel = true))
   }
 
   async selectForChat(
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
+  ): Promise<RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     // Capture original model BEFORE override mutates reqBody, so history reflects client intent
@@ -171,7 +188,7 @@ export class RequestRouter {
     const analysis = this.analyzer.analyze(reqBody, 'chat')
     const model = (reqBody.model as string) || 'auto'
     logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Chat routing analysis')
-    let result: RoutingCandidate | RoutingCandidate[] | null
+    let result: RoutingCandidate[] | null
     try {
       result = this._selectCandidates(model, analysis, reqBody)
     } catch (err: unknown) {
@@ -185,7 +202,7 @@ export class RequestRouter {
   async selectForEmbeddings(
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
+  ): Promise<RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
@@ -201,7 +218,7 @@ export class RequestRouter {
   async selectForResponses(
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<RoutingCandidate | RoutingCandidate[] | null> {
+  ): Promise<RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
@@ -266,12 +283,11 @@ export class RequestRouter {
     model: string,
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
-  ): RoutingCandidate | RoutingCandidate[] | null {
+  ): RoutingCandidate[] | null {
     const isVirtual = VIRTUAL_MODELS.has(model)
-    const isStreaming = Boolean(reqBody?.stream)
-    if (isVirtual) return this._selectVirtual(model, analysis, isStreaming)
+    if (isVirtual) return this._selectVirtual(model, analysis)
     try {
-      return this._selectConcrete(model, isStreaming)
+      return this._selectConcrete(model)
     } catch (err) {
       const routerErr = err as RouterError
       if (routerErr.code === 'MODEL_NOT_FOUND' && ROUTER_FALLBACK_TO_AUTO) {
@@ -279,7 +295,7 @@ export class RequestRouter {
           { model },
           'Model not found — falling back to auto routing',
         )
-        return this._selectVirtual('auto', analysis, isStreaming)
+        return this._selectVirtual('auto', analysis)
       }
       throw err
     }
@@ -288,10 +304,10 @@ export class RequestRouter {
   private _selectVirtual(
     alias: string,
     analysis: AnalysisResult,
-    isStreaming: boolean,
-  ): RoutingCandidate | RoutingCandidate[] | null {
+  ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
+    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -314,15 +330,17 @@ export class RequestRouter {
         if (alias === 'auto-think' && !profile.supportsThinking) continue
         const scored = this._scoreModel(modelInfo, analysis, alias, nodeHost)
         const warmBonus = computeWarmBonus(modelInfo, node.models)
-        const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-        const score = scored.baseScore + warmBonus + cloudAdjustment
+        const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+        const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
+        const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
         const rationale: RoutingRationale = {
           latencyScore: scored.latencyScore,
           tpsScore: scored.tpsScore,
           sizeFit: scored.sizeFit,
           warmBonus,
           loadPenalty: scored.loadPenalty,
-          cloudPenalty: cloudAdjustment,
+          cloudCostPenalty,
+          cloudUsagePenalty,
           thinkingBonus: scored.thinkingBonus,
           contextMargin: scored.contextMargin,
           totalScore: score,
@@ -342,15 +360,15 @@ export class RequestRouter {
       })),
       'Top routing candidates',
     )
-    return isStreaming ? candidates[0] : candidates
+    return candidates
   }
 
   private _selectConcrete(
     model: string,
-    isStreaming: boolean,
-  ): RoutingCandidate | RoutingCandidate[] | null {
+  ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
+    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -360,15 +378,17 @@ export class RequestRouter {
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
       const scored = this._scoreModel(modelInfo, { preferFast: false } as AnalysisResult, 'auto', nodeHost)
       const warmBonus = computeWarmBonus(modelInfo, node.models)
-      const cloudAdjustment = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-      const score = scored.baseScore + warmBonus + cloudAdjustment
+      const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+      const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
+      const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
       const rationale: RoutingRationale = {
         latencyScore: scored.latencyScore,
         tpsScore: scored.tpsScore,
         sizeFit: scored.sizeFit,
         warmBonus,
         loadPenalty: scored.loadPenalty,
-        cloudPenalty: cloudAdjustment,
+        cloudCostPenalty,
+        cloudUsagePenalty,
         thinkingBonus: scored.thinkingBonus,
         contextMargin: scored.contextMargin,
         totalScore: score,
@@ -404,7 +424,7 @@ export class RequestRouter {
       })),
       'Top routing candidates (_selectConcrete)',
     )
-    return isStreaming ? candidates[0] : candidates
+    return candidates
   }
 
   private _scoreModel(
@@ -460,14 +480,18 @@ export class RequestRouter {
       }
     } else if (requirements.preferReasoning) {
       if (params >= 20) {
-        sizeFit += 14
+        sizeFit += 10
         sizeReason = 'reasoning: very large model (≥20B)'
       } else if (params >= 10) {
-        sizeFit += 6
+        sizeFit += 5
         sizeReason = 'reasoning: large model (10–20B)'
       } else {
         sizeFit += 1
         sizeReason = 'reasoning: small model (fallback)'
+      }
+      if (profile.supportsThinking) {
+        sizeFit += 6
+        sizeReason += ' · thinking'
       }
     } else if (requirements.hasCodeSignals || messageCount > 10) {
       if (params >= 20 && params <= 35) {
@@ -498,7 +522,7 @@ export class RequestRouter {
 
     const thinkingBonus = profile.supportsThinking
       ? requirements.preferReasoning
-        ? 8
+        ? 0  // already counted in sizeFit for reasoning path
         : requirements.preferFast || alias === 'auto-fast'
           ? 6
           : 0

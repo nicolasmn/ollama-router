@@ -17,6 +17,27 @@ export const fmt = {
     if (value < 60000) return `${Math.floor(value / 1000)}s`
     return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(0)}s`
   },
+  /**
+   * Human-readable countdown to an absolute Unix-ms timestamp.
+   * >24 h  → "2d" / "3d 4h"
+   * ≤24 h  → "1h 30m" / "45m" / "< 1m"
+   * past   → "now"
+   * empty  → "—"
+   */
+  countdown: (epochMs) => {
+    if (!epochMs || epochMs <= 0) return '—'
+    const remaining = epochMs - Date.now()
+    if (remaining <= 0) return 'now'
+    const totalMinutes = Math.ceil(remaining / 60000)
+    const totalHours   = Math.floor(totalMinutes / 60)
+    const days         = Math.floor(totalHours / 24)
+    const hours        = totalHours % 24
+    const minutes      = totalMinutes % 60
+    if (days > 0)         return hours > 0 ? `${days}d ${hours}h` : `${days}d`
+    if (totalHours > 0)   return minutes > 0 ? `${totalHours}h ${minutes}m` : `${totalHours}h`
+    if (totalMinutes < 1) return '< 1m'
+    return `${totalMinutes}m`
+  },
   tps: (value) => (value > 0 ? value.toFixed(1) : '—'),
   params: (value) => (value > 0 ? `${value.toFixed(1)}B` : '—'),
   ago: (timestamp) => {
@@ -234,6 +255,15 @@ export function renderFlagBadges(analysis = {}) {
 export function renderRoutingRationale(candidate) {
   if (!candidate?.rationale) return ''
   const r = candidate.rationale
+
+  // Support both old single cloudPenalty field and new split fields
+  const cloudCostPenalty  = r.cloudCostPenalty  ?? (r.cloudPenalty ? r.cloudPenalty : 0)
+  const cloudUsagePenalty = r.cloudUsagePenalty ?? 0
+
+  // Determine usage severity for colouring the usage row
+  const usageAbsVal = Math.abs(cloudUsagePenalty)
+  const usageCls = usageAbsVal >= 14 ? 'bad' : usageAbsVal >= 7 ? 'warn' : 'muted'
+
   return html`
     <div class="routing-rationale">
       <div class="rationale-row">
@@ -267,11 +297,18 @@ export function renderRoutingRationale(candidate) {
             <span class="rationale-value bad">−${r.loadPenalty.toFixed(1)}</span>
           </div>`
         : ''}
-      ${r.cloudPenalty
+      ${cloudCostPenalty
         ? html`<div class="rationale-row">
             <span class="rationale-label">Cloud cost</span>
-            <span class="rationale-note"></span>
-            <span class="rationale-value muted">${r.cloudPenalty}</span>
+            <span class="rationale-note muted">local-first preference</span>
+            <span class="rationale-value muted">${cloudCostPenalty}</span>
+          </div>`
+        : ''}
+      ${cloudUsagePenalty
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Cloud usage</span>
+            <span class="rationale-note muted">usage near cap</span>
+            <span class="rationale-value ${usageCls}">${cloudUsagePenalty}</span>
           </div>`
         : ''}
       ${r.thinkingBonus
