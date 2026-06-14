@@ -17,13 +17,6 @@ export const fmt = {
     if (value < 60000) return `${Math.floor(value / 1000)}s`
     return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(0)}s`
   },
-  /**
-   * Human-readable countdown to an absolute Unix-ms timestamp.
-   * >24 h  → "2d" / "3d 4h"
-   * ≤24 h  → "1h 30m" / "45m" / "< 1m"
-   * past   → "now"
-   * empty  → "—"
-   */
   countdown: (epochMs) => {
     if (!epochMs || epochMs <= 0) return '—'
     const remaining = epochMs - Date.now()
@@ -105,26 +98,19 @@ export function statusClass(status) {
   return 'failed'
 }
 
-// A request is considered a cloud request only if the *winning* node/model is
-// cloud-hosted. Skipped candidates that happen to be cloud nodes should not
-// cause a local-routed request to be labelled as cloud.
 export function isCloudRequest(request) {
   if (request.selectedNode && request.selectedNode.includes('ollama.com')) return true
   if (request.selectedModel && request.selectedModel.includes('ollama.com')) return true
   if (request.selectedModel && request.selectedModel.includes('(cloud)')) return true
-  // Fall back to the successful attempt when selectedNode is not yet set
-  // (e.g. while the request is still in-flight).
-  const successAttempt = request.attempts?.find((a) => a.status === 'success' || a.status === 'running')
-  if (successAttempt) return successAttempt.nodeHost?.includes('ollama.com') ?? false
+  const activeAttempt = request.attempts?.find(
+    (a) => a.status === 'success' || a.status === 'running' || a.status === 'waiting',
+  )
+  if (activeAttempt) return activeAttempt.nodeHost?.includes('ollama.com') ?? false
   return false
 }
 
 export function routeTarget(request) {
-  const model = request.selectedModel || request.candidates?.[0]?.modelName || '—'
-  if (isCloudRequest(request)) {
-    return `${model} (cloud)`
-  }
-  return model
+  return request.selectedModel || request.candidates?.[0]?.modelName || '—'
 }
 
 export function requestInlineError(request) {
@@ -250,19 +236,18 @@ export function renderFlagBadges(analysis = {}) {
     : html`<span class="muted">—</span>`
 }
 
-// Renders a score breakdown table for a candidate's rationale.
-// Used inside cand-detail in the request drawer.
 export function renderRoutingRationale(candidate) {
   if (!candidate?.rationale) return ''
   const r = candidate.rationale
 
-  // Support both old single cloudPenalty field and new split fields
   const cloudCostPenalty  = r.cloudCostPenalty  ?? (r.cloudPenalty ? r.cloudPenalty : 0)
   const cloudUsagePenalty = r.cloudUsagePenalty ?? 0
 
-  // Determine usage severity for colouring the usage row
-  const usageAbsVal = Math.abs(cloudUsagePenalty)
-  const usageCls = usageAbsVal >= 14 ? 'bad' : usageAbsVal >= 7 ? 'warn' : 'muted'
+  // Both values are stored as negative numbers in the rationale.
+  // Render them as absolute values with an explicit − sign.
+  const cloudCostAbs  = Math.abs(cloudCostPenalty)
+  const cloudUsageAbs = Math.abs(cloudUsagePenalty)
+  const usageCls = cloudUsageAbs >= 14 ? 'bad' : cloudUsageAbs >= 7 ? 'warn' : 'muted'
 
   return html`
     <div class="routing-rationale">
@@ -275,19 +260,33 @@ export function renderRoutingRationale(candidate) {
       </div>
       <div class="rationale-row">
         <span class="rationale-label">Latency</span>
-        <span class="rationale-note"></span>
-        <span class="rationale-value">${r.latencyScore.toFixed(1)}</span>
+        <span class="rationale-note muted">response speed score</span>
+        <span class="rationale-value">+${r.latencyScore.toFixed(1)}</span>
       </div>
       <div class="rationale-row">
         <span class="rationale-label">Throughput</span>
-        <span class="rationale-note"></span>
-        <span class="rationale-value">${r.tpsScore.toFixed(1)}</span>
+        <span class="rationale-note muted">tokens/s score</span>
+        <span class="rationale-value">+${r.tpsScore.toFixed(1)}</span>
       </div>
+      ${r.contextMargin
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Context margin</span>
+            <span class="rationale-note muted">fits prompt comfortably</span>
+            <span class="rationale-value good">+${r.contextMargin}</span>
+          </div>`
+        : ''}
       ${r.warmBonus
         ? html`<div class="rationale-row">
             <span class="rationale-label">Warm model</span>
             <span class="rationale-note"></span>
             <span class="rationale-value good">+${r.warmBonus}</span>
+          </div>`
+        : ''}
+      ${r.thinkingBonus
+        ? html`<div class="rationale-row">
+            <span class="rationale-label">Thinking bonus</span>
+            <span class="rationale-note"></span>
+            <span class="rationale-value good">+${r.thinkingBonus}</span>
           </div>`
         : ''}
       ${r.loadPenalty
@@ -297,25 +296,18 @@ export function renderRoutingRationale(candidate) {
             <span class="rationale-value bad">−${r.loadPenalty.toFixed(1)}</span>
           </div>`
         : ''}
-      ${cloudCostPenalty
+      ${cloudCostAbs
         ? html`<div class="rationale-row">
             <span class="rationale-label">Cloud cost</span>
             <span class="rationale-note muted">local-first preference</span>
-            <span class="rationale-value muted">${cloudCostPenalty}</span>
+            <span class="rationale-value bad">−${cloudCostAbs}</span>
           </div>`
         : ''}
-      ${cloudUsagePenalty
+      ${cloudUsageAbs
         ? html`<div class="rationale-row">
             <span class="rationale-label">Cloud usage</span>
             <span class="rationale-note muted">usage near cap</span>
-            <span class="rationale-value ${usageCls}">${cloudUsagePenalty}</span>
-          </div>`
-        : ''}
-      ${r.thinkingBonus
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Thinking bonus</span>
-            <span class="rationale-note"></span>
-            <span class="rationale-value good">+${r.thinkingBonus}</span>
+            <span class="rationale-value ${usageCls}">−${cloudUsageAbs}</span>
           </div>`
         : ''}
       <div class="rationale-row rationale-row--total">

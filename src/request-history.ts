@@ -579,6 +579,17 @@ export class RequestHistoryManager {
       : [candidates].filter(Boolean)
     entry.candidateCount = normalised.length
     entry.candidates = normalised.slice(0, MAX_CANDIDATES).map(summariseCandidate)
+
+    // Pre-fill selectedNode/selectedModel from the top candidate so that
+    // isCloudRequest() returns the correct value immediately — during both the
+    // `waiting` and `running` phases — without waiting for finishRequest().
+    // finishRequest() will overwrite these with the confirmed values once the
+    // request completes, so there is no risk of stale data after completion.
+    const top = normalised[0]
+    if (top && !entry.selectedNode) {
+      entry.selectedNode = top.nodeHost
+      entry.selectedModel = top.modelName
+    }
   }
 
   recordAttempt(requestId: string, attempt: RecordAttemptOptions): void {

@@ -12,6 +12,11 @@ import {
   routeTarget,
 } from './dashboard-utils.js'
 
+/** Virtual model aliases that are never real model names and should not be
+ * shown as "not found" in the routing section even when the selected model
+ * differs from the requested one. */
+const VIRTUAL_MODEL_ALIASES = new Set(['auto', 'auto-fast', 'auto-think', 'auto-local'])
+
 export class UnifiedRequestDrawer extends LitElement {
   static properties = {
     open: { type: Boolean },
@@ -105,11 +110,23 @@ export class UnifiedRequestDrawer extends LitElement {
   // ─── Candidate card ──────────────────────────────────────────────
 
   renderCandidateCard({ candidate, attempt }, isWinner) {
-    const modelName = candidate?.modelName ?? attempt?.modelName ?? '—'
-    const nodeHost  = candidate?.nodeHost  ?? attempt?.nodeHost  ?? ''
-    const score     = candidate?.score ?? null
-    const status    = attempt?.status ?? null
-    const key       = this.candidateKey(modelName, nodeHost)
+    const modelName     = candidate?.modelName ?? attempt?.modelName ?? '—'
+    const nodeHost      = candidate?.nodeHost  ?? attempt?.nodeHost  ?? ''
+    const score         = candidate?.score ?? null
+    const requestStatus = this.request?.status
+    const inProgress    = requestStatus === 'waiting' || requestStatus === 'running'
+
+    // For the winner card while the request is still in-progress, always use
+    // request.status so the badge stays in sync with the panel list. The
+    // attempt status can lag behind (e.g. still 'waiting' when the request is
+    // already 'running') because attempts are only updated on discrete events.
+    // Once the request reaches a terminal state, fall back to attempt.status
+    // for the precise per-attempt outcome.
+    const status = isWinner && inProgress
+      ? requestStatus
+      : attempt?.status ?? (isWinner ? requestStatus ?? null : null)
+
+    const key = this.candidateKey(modelName, nodeHost)
 
     const isOpen = this.expandedCandidates.has(key) ||
       (isWinner && !this.expandedCandidates.has(`__collapsed_${key}`))
@@ -117,15 +134,15 @@ export class UnifiedRequestDrawer extends LitElement {
     let badgeClass = 'b-muted'
     let badgeLabel = 'Skipped'
     if (isWinner) {
-      if (status === 'success')        { badgeClass = 'b-green'; badgeLabel = 'Success' }
-      else if (status === 'running')   { badgeClass = 'b-blue';  badgeLabel = 'Running' }
-      else if (status === 'waiting')   { badgeClass = 'b-blue';  badgeLabel = 'Waiting' }
-      else if (status)                 { badgeClass = 'b-red';   badgeLabel = fmt.status(status) }
-      else                             { badgeClass = 'b-blue';  badgeLabel = 'Selected' }
+      if (status === 'success')        { badgeClass = 'b-green';  badgeLabel = 'Success' }
+      else if (status === 'running')   { badgeClass = 'b-blue';   badgeLabel = 'Running' }
+      else if (status === 'waiting')   { badgeClass = 'b-yellow'; badgeLabel = 'Waiting' }
+      else if (status)                 { badgeClass = 'b-red';    badgeLabel = fmt.status(status) }
+      else                             { badgeClass = 'b-blue';   badgeLabel = 'Selected' }
     } else if (status) {
-      if (status === 'success')        { badgeClass = 'b-green'; badgeLabel = 'Success' }
+      if (status === 'success')        { badgeClass = 'b-green';  badgeLabel = 'Success' }
       else if (status === 'capacity')  { badgeClass = 'b-yellow'; badgeLabel = 'Capacity' }
-      else                             { badgeClass = 'b-red';   badgeLabel = fmt.status(status) }
+      else                             { badgeClass = 'b-red';    badgeLabel = fmt.status(status) }
     }
 
     const scoreDetail = candidate?.rationale
@@ -196,7 +213,12 @@ export class UnifiedRequestDrawer extends LitElement {
     const selectedModel  = this.request.selectedModel
     const selectedNode   = this.request.selectedNode
     const requestedModel = this.request.requestedModel
-    const wasRerouted    = selectedModel && requestedModel && selectedModel !== requestedModel
+    const inProgress     = this.request.status === 'waiting' || this.request.status === 'running'
+    // Only show the "not found" card for concrete model names, not virtual
+    // aliases like "auto" which are expected to resolve to a different model.
+    const wasRerouted = selectedModel && requestedModel &&
+      selectedModel !== requestedModel &&
+      !VIRTUAL_MODEL_ALIASES.has(requestedModel)
 
     return html`
       <div class="detail-section">
@@ -207,11 +229,16 @@ export class UnifiedRequestDrawer extends LitElement {
             : ''}
         </div>
         <div class="candidate-list">
-          ${rows.map(({ candidate, attempt }) => {
+          ${rows.map(({ candidate, attempt }, rowIndex) => {
             const modelName = candidate?.modelName ?? attempt?.modelName
             const nodeHost  = candidate?.nodeHost  ?? attempt?.nodeHost
-            const isWinner  = modelName === selectedModel &&
-              (!selectedNode || nodeHost === selectedNode)
+            // A candidate is the winner when its model+node matches selectedModel/selectedNode.
+            // When selectedModel is not yet set (request still in-progress before
+            // recordSelection fires), treat the first candidate as winner so the badge
+            // correctly reflects the in-progress status instead of showing "Skipped".
+            const isWinner = selectedModel
+              ? modelName === selectedModel && (!selectedNode || nodeHost === selectedNode)
+              : inProgress && rowIndex === 0
             return this.renderCandidateCard({ candidate, attempt }, isWinner)
           })}
           ${wasRerouted ? this.renderMissingModelCard(requestedModel) : ''}

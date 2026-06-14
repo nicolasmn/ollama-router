@@ -51,8 +51,14 @@ const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
  * Returns a positive bonus when this model is likely warm in VRAM, or a negative
  * penalty when a different model was more recently active and the node probably
  * needs to evict the old one before loading this one.
+ *
+ * Cloud nodes are stateless from the router's perspective — they handle model
+ * loading internally — so warm/cold VRAM state does not apply.
  */
-function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>): number {
+function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, isCloud: boolean): number {
+  // Cloud nodes manage their own model loading; warm bonus is not meaningful.
+  if (isCloud) return 0
+
   const now = Date.now()
 
   // Find the most recently routed model on this node
@@ -126,6 +132,10 @@ export interface ModelCatalogEntry {
   object: string
   owned_by: string
   capabilities: string[] | null
+  /** Advertised context window length. For virtual aliases this is the minimum
+   *  across all currently-eligible real models so callers can rely on it being
+   *  achievable regardless of which candidate the router ultimately picks. */
+  context_length: number
 }
 
 /** Error shape used at both throw and catch sites. Fields optional for safe narrowing. */
@@ -231,6 +241,33 @@ export class RequestRouter {
     return result
   }
 
+  /**
+   * Returns the minimum context_length across all models that are eligible
+   * candidates for the given virtual alias. This is the safe advertised window
+   * — every candidate the router might pick can handle at least this many tokens.
+   *
+   * Mirrors the same capability filters used in _selectVirtual so that
+   * e.g. `auto-think` only considers thinking-capable models.
+   */
+  private _minContextForAlias(alias: string): number {
+    const nodes = this.discovery.getNodes()
+    let min = Infinity
+    for (const [, node] of nodes) {
+      if (!node.reachable) continue
+      if (alias === 'auto-local' && node.cloud) continue
+      for (const [, modelInfo] of node.models) {
+        const { profile } = modelInfo
+        // Same eligibility filters as _selectVirtual (sans analysis-driven ones
+        // like needsTools/needsVision which vary per-request).
+        if (profile.isEmbedding) continue
+        if (alias === 'auto-think' && !profile.supportsThinking) continue
+        const ctx = profile.contextLength || 0
+        if (ctx > 0 && ctx < min) min = ctx
+      }
+    }
+    return min === Infinity ? 0 : min
+  }
+
   getModelCatalog(): ModelCatalogEntry[] {
     const seen = new Map<string, ModelCatalogEntry>()
     for (const node of this.discovery.getNodes().values()) {
@@ -252,6 +289,7 @@ export class RequestRouter {
             object: 'model',
             owned_by: node.cloud ? 'ollama-cloud' : 'ollama',
             capabilities: caps.length > 0 ? caps : null,
+            context_length: modelInfo.profile.contextLength || 0,
           })
         }
       }
@@ -263,6 +301,7 @@ export class RequestRouter {
         object: 'model',
         owned_by: 'ollama-router',
         capabilities: null,
+        context_length: this._minContextForAlias(alias),
       })
     }
     return models
@@ -329,7 +368,7 @@ export class RequestRouter {
         if (analysis.needsVision && !profile.supportsVision) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
         const scored = this._scoreModel(modelInfo, analysis, alias, nodeHost)
-        const warmBonus = computeWarmBonus(modelInfo, node.models)
+        const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
         const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
         const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
         const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
@@ -377,7 +416,7 @@ export class RequestRouter {
       if (!modelInfo) continue
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
       const scored = this._scoreModel(modelInfo, { preferFast: false } as AnalysisResult, 'auto', nodeHost)
-      const warmBonus = computeWarmBonus(modelInfo, node.models)
+      const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
       const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
       const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
       const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
