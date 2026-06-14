@@ -294,4 +294,112 @@ describe('RequestHistoryManager', () => {
       thinking: 'thinking...',
     })
   })
+
+  it('accumulates Ollama /api/generate streaming chunks into messageList', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-ollama-generate',
+      endpointType: 'generate',
+      reqBody: { model: 'llama3.2', prompt: 'Why is the sky blue?' },
+      analysis: {},
+    })
+
+    const first = history.applyStreamingEvent('req-ollama-generate', {
+      model: 'llama3.2',
+      response: 'The sky',
+      done: false,
+    })
+    expect(first).toBe(true)
+
+    const second = history.applyStreamingEvent('req-ollama-generate', {
+      model: 'llama3.2',
+      response: ' is blue.',
+      done: false,
+    })
+    expect(second).toBe(true)
+
+    // Final done chunk carries no text — should be a no-op
+    const done = history.applyStreamingEvent('req-ollama-generate', {
+      model: 'llama3.2',
+      response: '',
+      done: true,
+    })
+    expect(done).toBe(false)
+
+    history.finalizeStreamingResponse('req-ollama-generate')
+
+    const [entry] = history.getRecentRequests()
+    expect(entry.messageList.at(-1)).toEqual({
+      role: 'assistant',
+      content: 'The sky is blue.',
+    })
+  })
+
+  it('accumulates Ollama /api/chat streaming chunks into messageList', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-ollama-chat',
+      endpointType: 'chat',
+      reqBody: {
+        model: 'llama3.2',
+        messages: [{ role: 'user', content: 'Count to three.' }],
+      },
+      analysis: {},
+    })
+
+    history.applyStreamingEvent('req-ollama-chat', {
+      model: 'llama3.2',
+      message: { role: 'assistant', content: 'One' },
+      done: false,
+    })
+
+    history.applyStreamingEvent('req-ollama-chat', {
+      model: 'llama3.2',
+      message: { role: 'assistant', content: ', two' },
+      done: false,
+    })
+
+    history.applyStreamingEvent('req-ollama-chat', {
+      model: 'llama3.2',
+      message: { role: 'assistant', content: ', three.' },
+      done: false,
+    })
+
+    // done sentinel with empty content
+    const doneSentinel = history.applyStreamingEvent('req-ollama-chat', {
+      model: 'llama3.2',
+      message: { role: 'assistant', content: '' },
+      done: true,
+    })
+    expect(doneSentinel).toBe(false)
+
+    history.finalizeStreamingResponse('req-ollama-chat')
+
+    const [entry] = history.getRecentRequests()
+    expect(entry.messageList.at(-1)).toEqual({
+      role: 'assistant',
+      content: 'One, two, three.',
+    })
+  })
+
+  it('returns false for unrecognised streaming payloads (heartbeats)', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-heartbeat',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'hello' }] },
+      analysis: {},
+    })
+
+    // Empty object — no delta, no response, no message
+    expect(history.applyStreamingEvent('req-heartbeat', {})).toBe(false)
+    // Unknown top-level shape
+    expect(history.applyStreamingEvent('req-heartbeat', { type: 'ping' })).toBe(false)
+
+    const [entry] = history.getRecentRequests()
+    expect(entry.messageList).toHaveLength(0)
+  })
 })
