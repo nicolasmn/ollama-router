@@ -436,6 +436,57 @@ function summariseCandidate(candidate: {
   }
 }
 
+/**
+ * Extracts content/thinking parts from a single streaming chunk, regardless of
+ * whether it comes from an OpenAI-compatible stream (choices[0].delta) or from
+ * a native Ollama endpoint (/api/generate → response field, /api/chat →
+ * message.content field).
+ *
+ * Returns null when the chunk carries no text (e.g. a heartbeat / done:true
+ * finalizer with no text payload).
+ */
+function decodeStreamingChunk(
+  payload: Record<string, unknown>,
+): { contentPart: string; thinkingPart: string; toolCalls: Array<Record<string, unknown>> } | null {
+  // ── OpenAI-compatible: choices[0].delta ────────────────────────────────────
+  const delta = (
+    (payload?.choices as Array<Record<string, unknown>>)?.[0]?.delta
+  ) as Record<string, unknown> | undefined
+
+  if (delta) {
+    const contentPart = normalizeResponseFragment(delta.content)
+    const thinkingPart = [
+      normalizeResponseFragment(delta.thinking),
+      normalizeResponseFragment(delta.reasoning_content),
+      normalizeResponseFragment(delta.reasoning),
+    ]
+      .filter(Boolean)
+      .join('')
+    const toolCalls = Array.isArray(delta.tool_calls)
+      ? (delta.tool_calls as Array<Record<string, unknown>>)
+      : []
+    if (!contentPart && !thinkingPart && toolCalls.length === 0) return null
+    return { contentPart, thinkingPart, toolCalls }
+  }
+
+  // ── Ollama-native /api/generate: { response: string, done: bool } ──────────
+  if (typeof payload.response === 'string') {
+    const contentPart = payload.response
+    if (!contentPart) return null
+    return { contentPart, thinkingPart: '', toolCalls: [] }
+  }
+
+  // ── Ollama-native /api/chat: { message: { role, content }, done: bool } ────
+  if (payload.message && typeof payload.message === 'object') {
+    const msg = payload.message as Record<string, unknown>
+    const contentPart = normalizeResponseFragment(msg.content)
+    if (!contentPart) return null
+    return { contentPart, thinkingPart: '', toolCalls: [] }
+  }
+
+  return null
+}
+
 export class RequestHistoryManager {
   limit: number
   requests: RequestEntry[]
@@ -668,29 +719,12 @@ export class RequestHistoryManager {
       entry.messageList = []
     }
 
-    const delta = (
-      (payload?.choices as Array<Record<string, unknown>>)?.[0]?.delta
-    ) as Record<string, unknown> | undefined
-    if (!delta) return false
+    const decoded = decodeStreamingChunk(payload)
+    if (!decoded) return false
 
-    const contentPart = normalizeResponseFragment(delta.content)
-    const thinkingPart = [
-      normalizeResponseFragment(delta.thinking),
-      normalizeResponseFragment(delta.reasoning_content),
-      normalizeResponseFragment(delta.reasoning),
-    ]
-      .filter(Boolean)
-      .join('')
-
-    const toolCalls = Array.isArray(delta.tool_calls)
-      ? (delta.tool_calls as Array<Record<string, unknown>>)
-      : []
-
-    if (!contentPart && !thinkingPart && toolCalls.length === 0) {
-      return false
-    }
-
+    const { contentPart, thinkingPart, toolCalls } = decoded
     const message = this.#getOrCreateStreamingAssistantMessage(entry)
+
     if (contentPart) {
       message.content = `${message.content || ''}${contentPart}`
     }
