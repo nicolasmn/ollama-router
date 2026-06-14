@@ -399,7 +399,9 @@ describe('RequestHistoryManager', () => {
     // Unknown top-level shape
     expect(history.applyStreamingEvent('req-heartbeat', { type: 'ping' })).toBe(false)
 
+    // messageList is pre-populated with the user message from reqBody;
+    // assert no assistant message was appended by the no-op events
     const [entry] = history.getRecentRequests()
-    expect(entry.messageList).toHaveLength(0)
+    expect(entry.messageList.every((m) => m.role !== 'assistant')).toBe(true)
   })
 })
