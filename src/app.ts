@@ -43,6 +43,28 @@ export interface AppResult {
   managers: AppManagers
 }
 
+// Endpoints that are JSON-only in native Ollama and OpenAI-compatible APIs.
+// For these, we normalize any non-JSON Content-Type to application/json so
+// that curl -d '{...}' (which defaults to x-www-form-urlencoded or text/plain)
+// is parsed correctly by express.json() without requiring an explicit header.
+export const JSON_ONLY_PREFIXES = ['/api/', '/v1/']
+
+export function isJsonOnlyEndpoint(path: string, method: string): boolean {
+  if (path.startsWith('/api/blobs/')) return false
+
+  if (JSON_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+    if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
+      return true
+    }
+  }
+
+  return false
+}
+
+function isJsonContentType(ct: string): boolean {
+  return ct.startsWith('application/json') || ct.startsWith('application/ld+json')
+}
+
 export async function createApp(config: AppConfig): Promise<AppResult> {
   logger.info(
     {
@@ -115,7 +137,23 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     res.setHeader('X-Ollama-Router', '1')
     next()
   })
+
+  // Normalize Content-Type for JSON-only endpoints.
+  // Rewrites any non-JSON Content-Type (missing, text/plain, x-www-form-urlencoded, etc.)
+  // to application/json so express.json() can parse the body.
+  // This allows curl -d '{...}' to work without -H 'Content-Type: application/json'.
+  app.use((req, _res, next) => {
+    if (!isJsonOnlyEndpoint(req.path, req.method)) return next()
+
+    const ct = req.headers['content-type'] ?? ''
+    if (!isJsonContentType(ct)) {
+      req.headers['content-type'] = 'application/json'
+    }
+    next()
+  })
+
   app.use(express.json({ limit: '10mb' }))
+
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
   app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))
