@@ -93,6 +93,7 @@ export interface NodeInfoJSON {
   activeRequests: number
   models: Record<string, ModelInfoJSON>
   cloud?: boolean
+  mac: string | null
 }
 
 export class NodeInfo {
@@ -105,6 +106,8 @@ export class NodeInfo {
   models: Map<string, ModelInfo>
   /** True when this node is the ollama.com cloud endpoint. Requires auth header. */
   cloud: boolean
+  /** Learned MAC address via ARP — null until node has been seen at least once. */
+  mac: string | null
 
   constructor(host: string, cloud = false) {
     this.host = host
@@ -115,5 +118,6 @@ export class NodeInfo {
     this.activeRequests = 0
     this.models = new Map()
     this.cloud = cloud
+    this.mac = null
   }
 }

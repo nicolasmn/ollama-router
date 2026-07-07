@@ -50,6 +50,7 @@ export function createAdminRouter({
               cloud: isCloud,
               lastSeen: node.lastSeen,
               failures: node.failures,
+              mac: node.mac,
               activeRequests: loadManager.getCurrentLoad(host),
               // Cloud nodes have no concurrency cap — return null so UI hides the capacity bar
               maxConcurrentRequests: isCloud
@@ -110,6 +111,39 @@ export function createAdminRouter({
     res.json({ ok: true, host })
   })
 
+  /**
+   * POST /admin/inventory/nodes/:host/wake
+   * Sends a Wake-on-LAN magic packet to an offline node.
+   * Requires the node to have a learned MAC address (comes online at least once).
+   */
+  r.post('/inventory/nodes/:host/wake', async (req, res) => {
+    const host = decodeURIComponent(req.params.host)
+    const node = discoveryManager.getNodes().get(host)
+    if (!node) {
+      res.status(404).json({ error: 'Node not found' })
+      return
+    }
+    if (node.reachable) {
+      res.status(409).json({ error: 'Node is already online' })
+      return
+    }
+    if (!node.mac) {
+      res.status(422).json({
+        error: 'No MAC address known for this node — wait for it to come online at least once',
+      })
+      return
+    }
+    try {
+      const { sendWakeOnLan } = await import('../wol.js')
+      await sendWakeOnLan(node.mac)
+      logger.info({ host, mac: node.mac }, 'Wake-on-LAN sent via admin API')
+      res.json({ ok: true, host, mac: node.mac })
+    } catch (err) {
+      logger.error({ host, err: (err as Error).message }, 'Wake-on-LAN failed via admin API')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
   r.post('/discovery/scan-now', async (_req, res) => {
     const scanStatus = discoveryManager.getScanStatus()
     if (scanStatus.inProgress) {
@@ -162,11 +196,6 @@ export function createAdminRouter({
   // Per-node model disable/enable
   // ---------------------------------------------------------------------------
 
-  /**
-   * PUT /admin/inventory/nodes/:host/models/:name
-   * Body: { disabled: boolean }
-   * Disabled models stay visible in the dashboard but are skipped by the router.
-   */
   r.put('/inventory/nodes/:host/models/:name', (req, res) => {
     const host = decodeURIComponent(req.params.host)
     const name = decodeURIComponent(req.params.name)
@@ -197,13 +226,9 @@ export function createAdminRouter({
   })
 
   // ---------------------------------------------------------------------------
-  // Force-model override — one-shot model pin for the next routed request
+  // Force-model override
   // ---------------------------------------------------------------------------
 
-  /**
-   * GET /admin/force-model
-   * Returns current override state.
-   */
   r.get('/force-model', (_req, res) => {
     const entry = forceModelStore.get()
     res.json(
@@ -213,13 +238,6 @@ export function createAdminRouter({
     )
   })
 
-  /**
-   * POST /admin/force-model
-   * Body: { model: string }
-   * Sets override for next routed request. Validates model exists on any reachable node.
-   * Accepts both exact names ("llama3.2:latest") and tag-less names ("llama3.2") — the
-   * stored value is normalised to the exact key found in node.models so routing works.
-   */
   r.post('/force-model', (req, res) => {
     const model = (req.body as Record<string, unknown>)?.model
     if (!model || typeof model !== 'string') {
@@ -227,9 +245,6 @@ export function createAdminRouter({
       return
     }
 
-    // Resolve exact model key from node.models — handles tag-less lookups e.g. "llama3.2"
-    // matching "llama3.2:latest". Returns the stored key so downstream routing uses the
-    // canonical name.
     let resolvedModel: string | null = null
     outer: for (const node of discoveryManager.getNodes().values()) {
       if (!node.reachable) continue
@@ -252,10 +267,6 @@ export function createAdminRouter({
     res.json({ ok: true, model: entry.model, expiresAt: entry.expiresAt })
   })
 
-  /**
-   * DELETE /admin/force-model
-   * Clears active override.
-   */
   r.delete('/force-model', (_req, res) => {
     const had = forceModelStore.get() !== null
     forceModelStore.clear()
@@ -267,12 +278,6 @@ export function createAdminRouter({
   // Cloud model management
   // ---------------------------------------------------------------------------
 
-  /**
-   * GET /admin/cloud/models
-   * Returns models currently active on the cloud node (from discoveryManager)
-   * plus all models available on ollama.com (/api/tags) for the "add" UI.
-   * Falls back gracefully if the ollama.com request fails.
-   */
   r.get('/cloud/models', async (_req, res) => {
     const info = discoveryManager.getCloudInfo()
 
@@ -309,11 +314,6 @@ export function createAdminRouter({
     })
   })
 
-  /**
-   * POST /admin/cloud/models
-   * Body: { name: string }
-   * Adds a model to the active cloud node model list.
-   */
   r.post('/cloud/models', (req, res) => {
     const info = discoveryManager.getCloudInfo()
     if (!info.configured) {
@@ -335,10 +335,6 @@ export function createAdminRouter({
     res.json({ ok: true, active: discoveryManager.cloudModels })
   })
 
-  /**
-   * DELETE /admin/cloud/models/:name
-   * Removes a model from the active cloud node model list.
-   */
   r.delete('/cloud/models/:name', (req, res) => {
     const info = discoveryManager.getCloudInfo()
     if (!info.configured) {
@@ -359,12 +355,6 @@ export function createAdminRouter({
   // Cloud usage
   // ---------------------------------------------------------------------------
 
-  /**
-   * GET /admin/cloud/usage
-   * Returns cached cloud usage (session %, weekly %, plan, reset times).
-   * Data refreshes every 5 min in the background.
-   * Returns 503 when no cookie is available and no data has been fetched yet.
-   */
   r.get('/cloud/usage', async (_req, res) => {
     const info = discoveryManager.getCloudInfo()
     if (!info.configured) {
@@ -373,7 +363,6 @@ export function createAdminRouter({
     }
     const usage = cloudUsageStore.get()
     if (usage.fetchedAt === 0) {
-      // No data yet — trigger immediate fetch and wait
       try {
         const fresh = await cloudUsageStore.refresh()
         if (fresh.fetchedAt === 0) {

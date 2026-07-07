@@ -93,6 +93,7 @@ export class WsManager {
             reachable: node.reachable,
             cloud: isCloud,
             lastSeen: node.lastSeen,
+            mac: node.mac,
             activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
             // Cloud nodes have no concurrency cap — null hides the capacity bar in the UI
             maxConcurrentRequests: isCloud
@@ -130,7 +131,6 @@ export class WsManager {
       }),
     )
 
-    // Include force-model override state so dashboard reflects live without polling
     const forceOverrideEntry = forceModelStore.get()
     const forceOverride = forceOverrideEntry
       ? { model: forceOverrideEntry.model, expiresAt: forceOverrideEntry.expiresAt }
