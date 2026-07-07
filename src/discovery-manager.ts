@@ -576,7 +576,7 @@ export class DiscoveryManager {
     const INTERVAL_MS = 3_000
     const timer = setInterval(async () => {
       if (Date.now() - started > MAX_PROBE_MS) {
-        clearInterval(this._wakeProbes.get(nodeHost))
+        clearInterval(timer)
         this._wakeProbes.delete(nodeHost)
         logger.warn({ nodeHost }, 'Wake probe timed out — node did not respond')
         return
@@ -585,7 +585,7 @@ export class DiscoveryManager {
         await this._probeNode(nodeHost)
         const node = this.inventory.get(nodeHost)
         if (node?.reachable) {
-          clearInterval(this._wakeProbes.get(nodeHost))
+          clearInterval(timer)
           this._wakeProbes.delete(nodeHost)
           logger.info({ nodeHost }, 'Node came back online after WoL')
           this.inventoryUpdateHandler?.(this.inventory)
