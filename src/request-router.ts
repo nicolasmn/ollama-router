@@ -37,7 +37,7 @@ const LOAD_PENALTY_MAX = 15
 /** Bonus when a model is the most recently active on its node (likely warm in VRAM). */
 const WARM_MODEL_BONUS = 8
 
-/** Penalty when a different model was more recently active on the same node (likely needs eviction). */
+/** Penalty when a different model was more recently active on the same node (likely needs loading). */
 const MODEL_SWITCH_PENALTY = 5
 
 const WARM_RECENT_MS = 2 * 60 * 1000    // < 2 min → full warm bonus
@@ -45,6 +45,11 @@ const WARM_ACTIVE_MS = 5 * 60 * 1000    // < 5 min → half warm bonus
 const WARM_INACTIVE_MS = 10 * 60 * 1000 // < 10 min → small warm signal
 
 const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
+
+/** How long to wait (ms) for a WoL-triggered node to come back online. */
+const WOL_WAIT_TIMEOUT_MS = 30_000
+/** Polling interval (ms) while waiting for a WoL-triggered node. */
+const WOL_POLL_INTERVAL_MS = 1_000
 
 /**
  * Computes a warm-model bias for a candidate on a given node.
@@ -56,12 +61,10 @@ const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
  * loading internally — so warm/cold VRAM state does not apply.
  */
 function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, isCloud: boolean): number {
-  // Cloud nodes manage their own model loading; warm bonus is not meaningful.
   if (isCloud) return 0
 
   const now = Date.now()
 
-  // Find the most recently routed model on this node
   let mostRecentlyRouted: ModelInfo | null = null
   let maxRoutedAt = 0
   for (const m of nodeModels.values()) {
@@ -76,7 +79,6 @@ function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, 
   const recentModelAge = now - maxRoutedAt
 
   if (mostRecentlyRouted === model) {
-    // This model is the most recently used on this node → likely warm in VRAM
     const age = now - model.lastRoutedAt
     if (age < WARM_RECENT_MS) return WARM_MODEL_BONUS
     if (age < WARM_ACTIVE_MS) return Math.round(WARM_MODEL_BONUS / 2)
@@ -84,7 +86,6 @@ function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, 
     return 0
   }
 
-  // A different model is more recently active → this model likely needs loading (eviction penalty)
   if (recentModelAge < WARM_ACTIVE_MS) return -MODEL_SWITCH_PENALTY
   return 0
 }
@@ -92,8 +93,6 @@ function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, 
 /**
  * Dynamic cloud penalty based on current usage percentage.
  * Ramps from 0 → 20 as usage crosses 70 % → 100 %.
- * Comparable to LOAD_PENALTY_MAX so usage pressure competes fairly with load pressure.
- * Returns 0 when usage data is unavailable or stale (fail-open — no artificial bias).
  */
 export function computeCloudUsagePenalty(usage: CloudUsage | null): number {
   if (!usage || usage.stale || usage.fetchedAt === 0) return 0
@@ -165,7 +164,6 @@ export class RequestRouter {
   /**
    * Applies a pending force-model override to the request body.
    * Mutates reqBody.model so downstream candidate selection uses the forced model.
-   * Must be called AFTER capturing the original model name for history/logging.
    * Returns the forced model name, or null if no override was active.
    */
   private _applyOverride(reqBody: Record<string, unknown>): string | null {
@@ -186,13 +184,57 @@ export class RequestRouter {
     result.forEach((c) => (c.forcedModel = true))
   }
 
+  /**
+   * Polls for up to WOL_WAIT_TIMEOUT_MS for live candidates to appear.
+   * Returns the first non-null candidate list, or null if timed out.
+   */
+  private async _waitForWol(
+    model: string,
+    analysis: AnalysisResult,
+    reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<RoutingCandidate[] | null> {
+    const deadline = Date.now() + WOL_WAIT_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (signal?.aborted) return null
+      await new Promise<void>((r) => setTimeout(r, WOL_POLL_INTERVAL_MS))
+      if (signal?.aborted) return null
+      const candidates = this._selectCandidates(model, analysis, reqBody)
+      if (candidates) {
+        logger.info({ model }, 'Node came online after WoL — routing request')
+        return candidates
+      }
+    }
+    logger.warn({ model }, 'WoL wait timed out — no candidate came online within 30 s')
+    return null
+  }
+
+  /**
+   * Selects candidates, and if none are available triggers WoL for matching
+   * offline nodes before polling up to 30 s for them to come back.
+   */
+  private async _selectWithWolFallback(
+    model: string,
+    analysis: AnalysisResult,
+    reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<RoutingCandidate[] | null> {
+    const candidates = this._selectCandidates(model, analysis, reqBody)
+    if (candidates) return candidates
+
+    const woken = this.discovery.tryWakeNodesForRequest(model, analysis)
+    if (!woken) return null
+
+    logger.info({ model }, 'No live candidates — WoL triggered, waiting for node to wake')
+    return this._waitForWol(model, analysis, reqBody, signal)
+  }
+
   async selectForChat(
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
-    // Capture original model BEFORE override mutates reqBody, so history reflects client intent
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
     const analysis = this.analyzer.analyze(reqBody, 'chat')
@@ -200,7 +242,7 @@ export class RequestRouter {
     logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Chat routing analysis')
     let result: RoutingCandidate[] | null
     try {
-      result = this._selectCandidates(model, analysis, reqBody)
+      result = await this._selectWithWolFallback(model, analysis, reqBody, signal)
     } catch (err: unknown) {
       if (forcedModel && (err as { code?: string })?.code === 'MODEL_NOT_FOUND') return null
       throw err
@@ -220,7 +262,7 @@ export class RequestRouter {
     const model = (reqBody.model as string) || 'auto'
     const analysis = this.analyzer.analyze(reqBody, 'embeddings')
     logger.debug({ model, originalModel, forced: !!forcedModel }, 'Embeddings routing analysis')
-    const result = this._selectCandidates(model, analysis, reqBody)
+    const result = await this._selectWithWolFallback(model, analysis, reqBody, signal)
     if (forcedModel) this._tagForced(result)
     return result
   }
@@ -236,18 +278,14 @@ export class RequestRouter {
     const analysis = this.analyzer.analyze(reqBody, 'responses')
     const model = (reqBody.model as string) || 'auto'
     logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Responses routing analysis')
-    const result = this._selectCandidates(model, analysis, reqBody)
+    const result = await this._selectWithWolFallback(model, analysis, reqBody, signal)
     if (forcedModel) this._tagForced(result)
     return result
   }
 
   /**
    * Returns the minimum context_length across all models that are eligible
-   * candidates for the given virtual alias. This is the safe advertised window
-   * — every candidate the router might pick can handle at least this many tokens.
-   *
-   * Mirrors the same capability filters used in _selectVirtual so that
-   * e.g. `auto-think` only considers thinking-capable models.
+   * candidates for the given virtual alias.
    */
   private _minContextForAlias(alias: string): number {
     const nodes = this.discovery.getNodes()
@@ -257,8 +295,6 @@ export class RequestRouter {
       if (alias === 'auto-local' && node.cloud) continue
       for (const [, modelInfo] of node.models) {
         const { profile } = modelInfo
-        // Same eligibility filters as _selectVirtual (sans analysis-driven ones
-        // like needsTools/needsVision which vary per-request).
         if (profile.isEmbedding) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
         const ctx = profile.contextLength || 0
@@ -350,10 +386,7 @@ export class RequestRouter {
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
-
-      // auto-local: local-only routing. All other virtual aliases (auto, auto-fast, auto-think) include cloud.
       if (alias === 'auto-local' && node.cloud) continue
-
       if (!this.load.canAcceptRequest(nodeHost)) continue
 
       for (const [modelName, modelInfo] of node.models) {
@@ -561,7 +594,7 @@ export class RequestRouter {
 
     const thinkingBonus = profile.supportsThinking
       ? requirements.preferReasoning
-        ? 0  // already counted in sizeFit for reasoning path
+        ? 0
         : requirements.preferFast || alias === 'auto-fast'
           ? 6
           : 0
