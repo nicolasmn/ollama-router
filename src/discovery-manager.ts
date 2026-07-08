@@ -75,6 +75,8 @@ export class DiscoveryManager {
   private _wolCooldowns: Map<string, number>
   /** Active wake-probe timers — cleared when node comes online or times out. */
   private _wakeProbes: Map<string, NodeJS.Timeout>
+  /** Active keep-alive timers — cleared on shutdown. */
+  private _keepAliveTimers: Map<string, NodeJS.Timeout>
   /** Consecutive probe failure counts — resets on success. */
   private _probeFailures: Map<string, number>
 
@@ -101,6 +103,7 @@ export class DiscoveryManager {
     this.selfAddresses = getSelfAddresses()
     this._wolCooldowns = new Map()
     this._wakeProbes = new Map()
+    this._keepAliveTimers = new Map()
     this._probeFailures = new Map()
     logger.debug({ selfAddresses: [...this.selfAddresses] }, 'Self-addresses resolved')
 
@@ -394,6 +397,8 @@ export class DiscoveryManager {
     if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null }
     for (const timer of this._wakeProbes.values()) clearInterval(timer)
     this._wakeProbes.clear()
+    for (const timer of this._keepAliveTimers.values()) clearInterval(timer)
+    this._keepAliveTimers.clear()
   }
 
   async discoverNetworkNodes(): Promise<void> {
@@ -604,17 +609,21 @@ export class DiscoveryManager {
    * Keeps a woken node from re-sleeping by sending an HTTP ping every
    * KEEP_ALIVE_INTERVAL_MS while the node is reachable and has active requests.
    * Self-terminates when the node goes idle or offline.
+   * Timer is tracked in _keepAliveTimers so stopPeriodicProbe() can clear it.
    */
   private _startKeepAlive(nodeHost: string): void {
+    if (this._keepAliveTimers.has(nodeHost)) return
     const timer = setInterval(async () => {
       const node = this.inventory.get(nodeHost)
       if (!node?.reachable || node.activeRequests === 0) {
         clearInterval(timer)
+        this._keepAliveTimers.delete(nodeHost)
         logger.debug({ nodeHost }, 'Keep-alive stopped — node idle or offline')
         return
       }
       await this._probeNode(nodeHost).catch(() => {})
     }, KEEP_ALIVE_INTERVAL_MS)
+    this._keepAliveTimers.set(nodeHost, timer)
   }
 
   mergeInventory(freshNodes: Map<string, NodeInfo>): void {
