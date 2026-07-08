@@ -15,6 +15,8 @@ const PROBE_FAILURE_THRESHOLD = 2
 const PROBE_HEADERS_TIMEOUT = 15_000
 const PROBE_BODY_TIMEOUT = 15_000
 const MODEL_SHOW_BODY_TIMEOUT = 20_000
+/** Interval (ms) to ping a woken node to prevent macOS from re-sleeping it. */
+const KEEP_ALIVE_INTERVAL_MS = 25_000
 
 /** Collect all non-loopback IPv4/IPv6 addresses assigned to this machine. */
 function getSelfAddresses(): Set<string> {
@@ -587,14 +589,32 @@ export class DiscoveryManager {
         if (node?.reachable) {
           clearInterval(timer)
           this._wakeProbes.delete(nodeHost)
-          logger.info({ nodeHost }, 'Node came back online after WoL')
+          logger.info({ nodeHost }, 'Node came back online after WoL — starting keep-alive')
           this.inventoryUpdateHandler?.(this.inventory)
+          this._startKeepAlive(nodeHost)
         }
       } catch {
         // keep polling
       }
     }, INTERVAL_MS)
     this._wakeProbes.set(nodeHost, timer)
+  }
+
+  /**
+   * Keeps a woken node from re-sleeping by sending an HTTP ping every
+   * KEEP_ALIVE_INTERVAL_MS while the node is reachable and has active requests.
+   * Self-terminates when the node goes idle or offline.
+   */
+  private _startKeepAlive(nodeHost: string): void {
+    const timer = setInterval(async () => {
+      const node = this.inventory.get(nodeHost)
+      if (!node?.reachable || node.activeRequests === 0) {
+        clearInterval(timer)
+        logger.debug({ nodeHost }, 'Keep-alive stopped — node idle or offline')
+        return
+      }
+      await this._probeNode(nodeHost).catch(() => {})
+    }, KEEP_ALIVE_INTERVAL_MS)
   }
 
   mergeInventory(freshNodes: Map<string, NodeInfo>): void {
