@@ -22,6 +22,7 @@ import { setupResponsesRoutes } from './responses.js'
 import { setupMessagesRoutes } from './messages.js'
 import { setupOllamaInferenceRoutes } from './ollama-inference.js'
 import { setupOllamaRoutes } from './ollama.js'
+import { setupSystemoneRoutes } from './systemone.js'
 
 export interface RouteDeps {
   discoveryManager: DiscoveryManager
@@ -56,6 +57,7 @@ export function createRoutes(
   setupMessagesRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaInferenceRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaRoutes(app, discoveryManager)
+  setupSystemoneRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   app.use(
     '/admin',
     createAdminRouter({ discoveryManager, loadManager, requestHistoryManager }),

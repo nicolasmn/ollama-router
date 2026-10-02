@@ -320,6 +320,8 @@ export class RequestRouter {
             caps.push('thinking')
           if (modelInfo.profile.isEmbedding && !caps.includes('embedding'))
             caps.push('embedding')
+          if (modelInfo.profile.supportsDecision && !caps.includes('decision'))
+            caps.push('decision')
           seen.set(modelName, {
             id: modelName,
             object: 'model',

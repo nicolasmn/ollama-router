@@ -1,4 +1,7 @@
 :root {
+  /* Dark-only dashboard; lets light-dark() (microlighter themes) resolve
+     to their dark values. */
+  color-scheme: dark;
   --bg: #0d0f1a;
   --surface: #131625;
   --surface2: #1b1f35;

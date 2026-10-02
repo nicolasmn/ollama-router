@@ -85,6 +85,7 @@ export function latCls(value) {
 export function endpointLabel(endpointType) {
   if (endpointType === 'embeddings') return 'Embeddings'
   if (endpointType === 'completions') return 'Completions'
+  if (endpointType === 'systemone') return 'SystemOne'
   return 'Chat'
 }
 
@@ -169,6 +170,9 @@ export function renderCaps(profile = {}) {
   }
   if (profile.supportsAudio) {
     caps.push(html`<span class="cap audio">Audio</span>`)
+  }
+  if (profile.supportsDecision) {
+    caps.push(html`<span class="cap decision" title="SystemOne decision model">Decision</span>`)
   }
   if (profile.isEmbedding) {
     caps.push(html`<span class="cap embedding">Embed</span>`)
@@ -350,12 +354,22 @@ function renderContentWithCodeBlocks(content, options = {}) {
   while ((match = fencedRegex.exec(content)) !== null) {
     const before = content.slice(lastIndex, match.index)
     if (before) parts.push(renderInlineText(before))
-    const lang = match[1] || ''
-    const code = match[2]
+    let lang = match[1] || ''
+    let code = match[2]
+    // Pretty-print minified JSON so code blocks are readable.
+    // Detect JSON heuristically: declared lang, or content that parses as JSON.
+    if ((lang === 'json' || lang === '') && code.trim().startsWith('{')) {
+      try {
+        code = JSON.stringify(JSON.parse(code), null, 2)
+        lang = 'json'
+      } catch {
+        /* not valid JSON — leave as-is */
+      }
+    }
     parts.push(
       html`<pre class="msg-code-block"><code class="msg-code-lang">${lang
         ? html`<span class="msg-code-label">${lang}</span>`
-        : ''}</code><code>${code}</code></pre>`,
+        : ''}</code><code class=${lang ? `language-${lang}` : ''}>${code}</code></pre>`,
     )
     lastIndex = match.index + match[0].length
   }
@@ -484,6 +498,134 @@ const ROLE_LABELS = {
   tool: 'Tool',
 }
 
+// ─── SystemOne Answer Visualizations ────────────────────────────────
+// SystemOne has three question modes, each with a compact visualization:
+//   choice → one bar row per option, winner emphasized
+//   noul   → false/true split bar (red/green)
+//   score  → scale track with the weighted score as a marker
+
+function pct(n) {
+  return `${Math.round(n * 100)}%`
+}
+
+function renderNoulAnswer(name, answer) {
+  const p = Math.min(1, Math.max(0, Number(answer.noul) || 0))
+  return html`
+    <div class="so-answer">
+      <div class="so-answer-title">${name}</div>
+      <div class="so-noul">
+        <span class="so-noul-label so-noul-label--false">false ${pct(1 - p)}</span>
+        <div class="so-noul-bar" title="${pct(p)} true">
+          <div class="so-noul-fill so-noul-fill--false" style="width: ${pct(1 - p)}"></div>
+          <div class="so-noul-fill so-noul-fill--true" style="width: ${pct(p)}"></div>
+        </div>
+        <span class="so-noul-label so-noul-label--true">${pct(p)} true</span>
+      </div>
+    </div>
+  `
+}
+
+function renderChoiceAnswer(name, answer) {
+  const probs = answer.probabilities || {}
+  const winner = answer.choice
+  const rows = Object.entries(probs).sort((a, b) => b[1] - a[1])
+  return html`
+    <div class="so-answer">
+      <div class="so-answer-title">${name} → <strong>${winner}</strong>
+        <span class="so-confidence" title="Distribution concentration (1 − H(p)/ln(N)); not calibrated correctness">conf ${pct(Number(answer.confidence) || 0)}</span>
+      </div>
+      <div class="so-choice">
+        ${rows.map(
+          ([opt, p]) => html`
+            <div class="so-choice-row${opt === winner ? ' so-choice-row--winner' : ''}">
+              <span class="so-choice-opt">${opt}</span>
+              <div class="so-choice-track">
+                <div class="so-choice-fill" style="width: ${pct(Number(p) || 0)}"></div>
+              </div>
+              <span class="so-choice-pct">${pct(Number(p) || 0)}</span>
+            </div>
+          `,
+        )}
+      </div>
+    </div>
+  `
+}
+
+function renderScoreAnswer(name, answer) {
+  const legend = answer.legend || {}
+  const probs = answer.probabilities || {}
+  const criteria = Object.keys(legend)
+  const n = criteria.length
+  const score = Number(answer.score) || 0
+  // score is 0..N-1 (probability-weighted criterion index); normalize for the marker
+  const pos = n > 1 ? Math.min(1, Math.max(0, score / (n - 1))) : 0
+  return html`
+    <div class="so-answer">
+      <div class="so-answer-title">${name} → <strong>score ${score.toFixed(2)}</strong>
+        <span class="so-confidence" title="Distribution concentration (1 − H(p)/ln(N)); not calibrated correctness">conf ${pct(Number(answer.confidence) || 0)}</span>
+      </div>
+      <div class="so-score">
+        <div class="so-score-track">
+          <div class="so-score-marker" style="left: ${pct(pos)}"></div>
+        </div>
+        <div class="so-score-legend">
+          ${criteria.map(
+            (idx) => html`
+              <span class="so-score-criterion">
+                <span class="so-score-idx">${idx}</span> ${legend[idx]}
+                <span class="so-choice-pct">${pct(Number(probs[idx]) || 0)}</span>
+              </span>
+            `,
+          )}
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderSystemoneAnswers(answers) {
+  const entries = Object.entries(answers || {})
+  if (!entries.length) return null
+  return html`
+    <div class="so-answers">
+      ${entries.map(([name, answer]) => {
+        if (!answer || typeof answer !== 'object') return null
+        if (answer.type === 'noul') return renderNoulAnswer(name, answer)
+        if (answer.type === 'choice') return renderChoiceAnswer(name, answer)
+        if (answer.type === 'score') return renderScoreAnswer(name, answer)
+        return null
+      })}
+    </div>
+  `
+}
+
+/**
+ * For systemone requests the assistant message is a single ```json block
+ * holding the answers object. Render it as visualizations instead of raw
+ * JSON, with the raw block kept in a collapsible <details>.
+ */
+function renderSystemoneAssistantBody(msg) {
+  const match = /```json\n?([\s\S]*?)```/.exec(msg.content || '')
+  if (!match) return null
+  let answers
+  try {
+    answers = JSON.parse(match[1])
+  } catch {
+    return null
+  }
+  const viz = renderSystemoneAnswers(answers)
+  if (!viz) return null
+  return html`
+    <div class="msg-body-inner msg-body-inner--dom">
+      ${viz}
+      <details class="msg-system-details so-raw-details">
+        <summary class="msg-system-summary">Raw JSON</summary>
+        <pre class="msg-code-block"><code class="language-json">${JSON.stringify(answers, null, 2)}</code></pre>
+      </details>
+    </div>
+  `
+}
+
 export function renderConversationThread(request) {
   if (!request) {
     return html`<div class="empty">No request selected.</div>`
@@ -495,6 +637,7 @@ export function renderConversationThread(request) {
     </div>`
   }
 
+  const isSystemone = request.endpointType === 'systemone'
   const messages = request.messageList
   const requestInProgress =
     request.status === 'waiting' || request.status === 'running'
@@ -522,7 +665,10 @@ export function renderConversationThread(request) {
               <span class="msg-index">#${i + 1}</span>
             </div>
             <div class="msg-body">
-              ${renderMessageBody(msg, messages, isLiveAssistant)}
+              ${isSystemone && msg.role === 'assistant'
+                ? renderSystemoneAssistantBody(msg) ??
+                  renderMessageBody(msg, messages, isLiveAssistant)
+                : renderMessageBody(msg, messages, isLiveAssistant)}
             </div>
           </div>
         `

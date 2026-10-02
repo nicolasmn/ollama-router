@@ -361,6 +361,8 @@ tbody tr.model-active td:first-child {
 .cap.audio::before     { content: '\1F50A'; }
 .cap.embedding { background: rgba(74,222,128,0.15);  color: var(--green);  }
 .cap.embedding::before { content: '\1F9EC'; }
+.cap.decision  { background: rgba(244,114,182,0.15); color: #f472b6; }
+.cap.decision::before  { content: '\2696\FE0F'; }
 
 /* ── Cloud node ── */
 

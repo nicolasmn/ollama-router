@@ -32,6 +32,14 @@ export class RouterDashboard extends LitElement {
     this.retryTimer = null
   }
 
+  // Re-run microlighter syntax highlighting after lit re-renders
+  // (CSS Custom Highlights don't survive DOM updates).
+  updated() {
+    this.dispatchEvent(
+      new Event('syntax-highlight', { bubbles: true, composed: true }),
+    )
+  }
+
   createRenderRoot() {
     return this
   }

@@ -270,6 +270,7 @@ export class DiscoveryManager {
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),
       supportsThinking: capabilities.has('thinking'),
+      supportsDecision: capabilities.has('decision'),
       isEmbedding: capabilities.has('embedding'),
     })
   }

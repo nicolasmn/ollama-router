@@ -22,4 +22,7 @@ for (const file of files) {
 // styles/ sub-directory
 cpSync(join(SRC, 'styles'), join(DEST, 'styles'), { recursive: true })
 
+// vendor/ sub-directory (microlighter: highlighter + themes + on-demand grammars)
+cpSync(join(SRC, 'vendor'), join(DEST, 'vendor'), { recursive: true })
+
 console.log('Dashboard assets copied to dist/src/dashboard/')

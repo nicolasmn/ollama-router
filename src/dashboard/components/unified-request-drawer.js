@@ -31,6 +31,16 @@ export class UnifiedRequestDrawer extends LitElement {
     this.expandedCandidates = new Set()
   }
 
+  // Re-run microlighter syntax highlighting after lit re-renders the
+  // conversation thread (CSS Custom Highlights don't survive DOM updates).
+  updated() {
+    if (this.open && this.request) {
+      this.dispatchEvent(
+        new Event('syntax-highlight', { bubbles: true, composed: true }),
+      )
+    }
+  }
+
   createRenderRoot() {
     return this
   }

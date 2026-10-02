@@ -8,6 +8,7 @@ export interface ModelProfileData {
   supportsVision?: boolean
   supportsAudio?: boolean
   supportsThinking?: boolean
+  supportsDecision?: boolean
   isEmbedding?: boolean
   architecture?: string
   embeddingDim?: number
@@ -21,6 +22,7 @@ export class ModelProfile {
   supportsVision: boolean
   supportsAudio: boolean
   supportsThinking: boolean
+  supportsDecision: boolean
   isEmbedding: boolean
   architecture: string
   embeddingDim: number
@@ -33,6 +35,7 @@ export class ModelProfile {
     this.supportsVision = data.supportsVision ?? false
     this.supportsAudio = data.supportsAudio ?? false
     this.supportsThinking = data.supportsThinking ?? false
+    this.supportsDecision = data.supportsDecision ?? false
     this.isEmbedding = data.isEmbedding ?? false
     this.architecture = data.architecture ?? ''
     this.embeddingDim = data.embeddingDim ?? 0

@@ -236,6 +236,14 @@ function buildPreview(
   if (endpointType === 'completions') {
     return typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
   }
+  if (endpointType === 'systemone') {
+    // Jev wire format has no `messages`; the `state` field is the input.
+    // Can be a string or a JSON-serializable object/array.
+    const state = reqBody?.state
+    if (typeof state === 'string') return state
+    if (state && typeof state === 'object') return JSON.stringify(state)
+    return ''
+  }
   const messages = Array.isArray(reqBody?.messages)
     ? (reqBody.messages as Array<Record<string, unknown>>)
     : []
@@ -311,6 +319,13 @@ function buildConversationInfo(
       }
     }
   }
+  if (endpointType === 'systemone' && preview) {
+    return {
+      id: `systemone:${hashString(preview.toLowerCase())}`,
+      label: normalizeInlineText(preview),
+      source: 'derived',
+    }
+  }
   return {
     id: `request:${hashString(`${endpointType}:${Date.now()}:${Math.random()}`)}`,
     label: `${endpointType} request`,
@@ -336,10 +351,60 @@ function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
   return calls.length > 0 ? calls : undefined
 }
 
+// Render a named Jev question with its type and criteria (the answer options)
+// so the conversation preview shows what the model was choosing between.
+function buildQuestionSummary(
+  name: string,
+  q: Record<string, unknown> | undefined,
+): string {
+  const parts: string[] = [`${name} (${String(q?.type ?? '?')})`]
+  if (typeof q?.instructions === 'string' && q.instructions) {
+    parts.push(q.instructions)
+  }
+  const criteria = q?.criteria
+  if (Array.isArray(criteria)) {
+    parts.push(`criteria: ${criteria.map(String).join(' | ')}`)
+  } else if (criteria && typeof criteria === 'object') {
+    const entries = Object.entries(
+      criteria as Record<string, unknown>,
+    ).map(([opt, desc]) =>
+      typeof desc === 'string' && desc && desc !== opt
+        ? `${opt} = ${desc}`
+        : String(opt),
+    )
+    parts.push(`criteria: ${entries.join(' | ')}`)
+  }
+  return parts.join('\n')
+}
+
 function buildMessageList(
   reqBody: Record<string, unknown>,
   endpointType: string,
 ): MessageRecord[] {
+  if (endpointType === 'systemone') {
+    // Jev wire format: show state + named questions as a readable exchange.
+    const list: MessageRecord[] = []
+    const state = reqBody?.state
+    if (state !== undefined) {
+      list.push({
+        role: 'state',
+        content:
+          typeof state === 'string' ? state : JSON.stringify(state),
+      })
+    }
+    const questions = reqBody?.questions
+    if (questions && typeof questions === 'object' && !Array.isArray(questions)) {
+      for (const [name, q] of Object.entries(
+        questions as Record<string, Record<string, unknown>>,
+      )) {
+        list.push({
+          role: 'question',
+          content: buildQuestionSummary(name, q),
+        })
+      }
+    }
+    return list
+  }
   if (endpointType !== 'chat') return []
   const messages = Array.isArray(reqBody?.messages)
     ? (reqBody.messages as Array<Record<string, unknown>>)
@@ -372,6 +437,14 @@ function buildInputSummary(
     return typeof reqBody?.prompt === 'string'
       ? `${Math.max(1, (reqBody.prompt as string).split(/\s+/u).filter(Boolean).length)} words`
       : 'completion prompt'
+  }
+  if (endpointType === 'systemone') {
+    const questions = reqBody?.questions
+    const count =
+      questions && typeof questions === 'object' && !Array.isArray(questions)
+        ? Object.keys(questions).length
+        : 0
+    return `${count} question${count === 1 ? '' : 's'}`
   }
   const messages = Array.isArray(reqBody?.messages)
     ? (reqBody.messages as Array<Record<string, unknown>>)

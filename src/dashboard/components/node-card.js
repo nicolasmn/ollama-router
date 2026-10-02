@@ -553,7 +553,12 @@ export class NodeCard extends LitElement {
     const effectiveModels =
       Object.keys(liveModels).length > 0 ? liveModels : this._lastKnownModels
     const models = Object.values(effectiveModels)
-    const chatModels = models.filter((m) => !m.profile?.isEmbedding)
+    const chatModels = models.filter(
+      (m) => !m.profile?.isEmbedding && !m.profile?.supportsDecision,
+    )
+    const decisionModels = models.filter(
+      (m) => m.profile?.supportsDecision && !m.profile?.isEmbedding,
+    )
     const embeddingModels = models.filter((m) => m.profile?.isEmbedding)
     const hostShort = this.node.host.replace(/^https?:\/\//, '')
     const isCloud = !!this.node.cloud
@@ -720,6 +725,18 @@ export class NodeCard extends LitElement {
                           isEmbedding: false,
                           activeNames,
                         })
+                      : ''}
+                    ${decisionModels.length > 0
+                      ? html`
+                          <div class="models-section-header">
+                            Decision models
+                          </div>
+                          ${this._renderModelTable(decisionModels, {
+                            isCloud,
+                            isEmbedding: false,
+                            activeNames,
+                          })}
+                        `
                       : ''}
                     ${embeddingModels.length > 0
                       ? html`
