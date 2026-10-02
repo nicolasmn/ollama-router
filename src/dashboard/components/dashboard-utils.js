@@ -350,12 +350,22 @@ function renderContentWithCodeBlocks(content, options = {}) {
   while ((match = fencedRegex.exec(content)) !== null) {
     const before = content.slice(lastIndex, match.index)
     if (before) parts.push(renderInlineText(before))
-    const lang = match[1] || ''
-    const code = match[2]
+    let lang = match[1] || ''
+    let code = match[2]
+    // Pretty-print minified JSON so code blocks are readable.
+    // Detect JSON heuristically: declared lang, or content that parses as JSON.
+    if ((lang === 'json' || lang === '') && code.trim().startsWith('{')) {
+      try {
+        code = JSON.stringify(JSON.parse(code), null, 2)
+        lang = 'json'
+      } catch {
+        /* not valid JSON — leave as-is */
+      }
+    }
     parts.push(
       html`<pre class="msg-code-block"><code class="msg-code-lang">${lang
         ? html`<span class="msg-code-label">${lang}</span>`
-        : ''}</code><code>${code}</code></pre>`,
+        : ''}</code><code class=${lang ? `language-${lang}` : ''}>${code}</code></pre>`,
     )
     lastIndex = match.index + match[0].length
   }
