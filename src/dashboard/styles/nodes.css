@@ -76,6 +76,41 @@
   cursor: not-allowed;
 }
 
+/* ── Wake-on-LAN action button ── */
+
+.node-action-wake {
+  color: var(--yellow);
+}
+
+.node-action-wake:hover:not(:disabled) {
+  color: var(--yellow);
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.node-action-wake.waking {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.node-action-wake.wake-ok {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.wake-error {
+  font-size: 0.7rem;
+  color: var(--red);
+  white-space: nowrap;
+}
+
+.wake-success {
+  font-size: 0.7rem;
+  color: var(--green);
+  white-space: nowrap;
+}
+
 /* Title row */
 .node-title {
   display: flex;
@@ -824,6 +859,13 @@ tbody tr.model-forced .model-name {
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+}
+
+/* Remove-node error text */
+.remove-error {
+  font-size: 0.7rem;
+  color: var(--red);
+  white-space: nowrap;
 }
 
 /* Active override banner — shown at top of <main> when override is set */

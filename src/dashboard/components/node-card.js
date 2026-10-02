@@ -9,6 +9,9 @@ export class NodeCard extends LitElement {
     cloudUsage: { attribute: false },
     _removing: { state: true },
     _removeError: { state: true },
+    _waking: { state: true },
+    _wakeError: { state: true },
+    _wakeSuccess: { state: true },
     _cloudAvailable: { state: true },
     _cloudLoading: { state: true },
     _cloudError: { state: true },
@@ -26,6 +29,9 @@ export class NodeCard extends LitElement {
     this.cloudUsage = null
     this._removing = false
     this._removeError = ''
+    this._waking = false
+    this._wakeError = ''
+    this._wakeSuccess = false
     this._cloudAvailable = []
     this._cloudLoading = false
     this._cloudError = ''
@@ -87,6 +93,37 @@ export class NodeCard extends LitElement {
       }, 4000)
     } finally {
       this._removing = false
+    }
+  }
+
+  async _onWake() {
+    if (this._waking || !this.node) return
+    this._waking = true
+    this._wakeError = ''
+    this._wakeSuccess = false
+    try {
+      const res = await fetch(
+        `/admin/inventory/nodes/${encodeURIComponent(this.node.host)}/wake`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error ?? res.statusText)
+      }
+      this._wakeSuccess = true
+      setTimeout(() => { this._wakeSuccess = false }, 5000)
+      this.dispatchEvent(
+        new CustomEvent('node-wake-triggered', {
+          bubbles: true,
+          composed: true,
+          detail: { host: this.node.host },
+        }),
+      )
+    } catch (err) {
+      this._wakeError = err.message
+      setTimeout(() => { this._wakeError = '' }, 5000)
+    } finally {
+      this._waking = false
     }
   }
 
@@ -523,6 +560,7 @@ export class NodeCard extends LitElement {
     const activeNames = new Set(models.map((m) => m.name))
     const cardStateClass = this.node.reachable ? 'ok' : 'err'
     const plan = this.cloudUsage?.plan ?? null
+    const canWake = !this.node.reachable && !!this.node.mac && !isCloud
 
     const cloudBadgeLabel = plan ? `☁️  Cloud ・${plan}` : '☁️  Cloud'
     const cloudBadgeCls =
@@ -570,6 +608,27 @@ export class NodeCard extends LitElement {
           </button>
 
           <div class="node-actions">
+            ${canWake
+              ? html`
+                  <button
+                    class="node-action-btn node-action-wake ${this._waking ? 'waking' : ''} ${this._wakeSuccess ? 'wake-ok' : ''}"
+                    title="Send Wake-on-LAN magic packet to ${this.node.mac}"
+                    aria-label="Wake node"
+                    ?disabled=${this._waking}
+                    @click=${this._onWake}
+                  >
+                    ${this._waking
+                      ? html`<span class="node-action-spinner"></span>`
+                      : html`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`}
+                  </button>
+                  ${this._wakeError
+                    ? html`<span class="wake-error">${this._wakeError}</span>`
+                    : ''}
+                  ${this._wakeSuccess
+                    ? html`<span class="wake-success">Packet sent!</span>`
+                    : ''}
+                `
+              : ''}
             ${!isCloud
               ? html`
                   <button

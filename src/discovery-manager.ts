@@ -5,10 +5,18 @@ import { MetricsStore } from './metrics-store.js'
 import type { PersistedModelMetrics } from './metrics-store.js'
 import { NetworkScanner } from './network-scanner.js'
 import { networkInterfaces } from 'node:os'
+import { arpLookup, sendWakeOnLan, extractIp } from './wol.js'
+import type { AnalysisResult } from './request-analyzer.js'
 
 const logger = createLogger('discovery')
 
 const EMA_ALPHA = 0.2
+const PROBE_FAILURE_THRESHOLD = 2
+const PROBE_HEADERS_TIMEOUT = 15_000
+const PROBE_BODY_TIMEOUT = 15_000
+const MODEL_SHOW_BODY_TIMEOUT = 20_000
+/** Interval (ms) to ping a woken node to prevent macOS from re-sleeping it. */
+const KEEP_ALIVE_INTERVAL_MS = 25_000
 
 /** Collect all non-loopback IPv4/IPv6 addresses assigned to this machine. */
 function getSelfAddresses(): Set<string> {
@@ -63,6 +71,14 @@ export class DiscoveryManager {
   autoDiscover: boolean
   /** LAN/WLAN addresses of this machine, resolved once at startup. */
   private readonly selfAddresses: Set<string>
+  /** Per-node WoL cooldown timestamps (ms). */
+  private _wolCooldowns: Map<string, number>
+  /** Active wake-probe timers — cleared when node comes online or times out. */
+  private _wakeProbes: Map<string, NodeJS.Timeout>
+  /** Active keep-alive timers — cleared on shutdown. */
+  private _keepAliveTimers: Map<string, NodeJS.Timeout>
+  /** Consecutive probe failure counts — resets on success. */
+  private _probeFailures: Map<string, number>
 
   constructor(config: DiscoveryConfig = {}) {
     this.inventory = new Map()
@@ -85,6 +101,10 @@ export class DiscoveryManager {
     this.cloudApiKey = config.cloudApiKey ?? ''
     this.cloudModels = []
     this.selfAddresses = getSelfAddresses()
+    this._wolCooldowns = new Map()
+    this._wakeProbes = new Map()
+    this._keepAliveTimers = new Map()
+    this._probeFailures = new Map()
     logger.debug({ selfAddresses: [...this.selfAddresses] }, 'Self-addresses resolved')
 
     for (const host of config.ollamaNodes ?? []) {
@@ -133,13 +153,11 @@ export class DiscoveryManager {
     node.reachable = true
     node.lastSeen = Date.now()
 
-    // Remove models no longer in the active list
     const seenNames = new Set(this.cloudModels)
     for (const name of node.models.keys()) {
       if (!seenNames.has(name)) node.models.delete(name)
     }
 
-    // Add new models — fetch real profile from /api/show for each
     const newModels = this.cloudModels.filter((name) => !node.models.has(name))
     await Promise.allSettled(
       newModels.map(async (modelName) => {
@@ -158,7 +176,6 @@ export class DiscoveryManager {
   addCloudModel(name: string): void {
     if (this.cloudModels.includes(name)) return
     ;(this.cloudModels as string[]).push(name)
-    // Fire-and-forget — profile fetch is async; inventory updates when done
     this.registerCloudNode()
       .then(() => this.persistMetrics())
       .catch((err: Error) => logger.warn({ err: err.message }, 'addCloudModel registerCloudNode failed'))
@@ -168,7 +185,6 @@ export class DiscoveryManager {
     const idx = this.cloudModels.indexOf(name)
     if (idx === -1) return false
     ;(this.cloudModels as string[]).splice(idx, 1)
-    // Sync removal — no network call needed
     const node = this.inventory.get(this.cloudUrl)
     if (node) node.models.delete(name)
     this.persistMetrics()
@@ -206,18 +222,6 @@ export class DiscoveryManager {
     return false
   }
 
-  /**
-   * Returns true when `host` resolves to this machine.
-   *
-   * Covers:
-   *   - Standard loopback aliases: localhost, 127.0.0.1, ::1
-   *   - Any LAN/WLAN IP currently assigned to a local network interface
-   *     (e.g. 192.168.178.23 when the router listens on port 11434)
-   *
-   * Note: URL.hostname returns '[fd00::1]' for IPv6 literals (RFC 3986
-   * bracket notation). networkInterfaces() stores addresses without brackets.
-   * We strip leading '[' and trailing ']' before the Set lookup.
-   */
   _isLocalhost(host: string): boolean {
     if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/.test(host)) return true
     try {
@@ -279,11 +283,44 @@ export class DiscoveryManager {
     logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
   }
 
+  private _recordProbeFailure(nodeHost: string, reason: string): void {
+    const node = this.inventory.get(nodeHost)
+    if (!node) return
+
+    // Don't mark a busy node unreachable mid-stream
+    if (node.activeRequests > 0) {
+      logger.warn(
+        { nodeHost, activeRequests: node.activeRequests, reason },
+        'Probe failed while node was busy; keeping node reachable until requests finish',
+      )
+      return
+    }
+
+    const failures = (this._probeFailures.get(nodeHost) ?? 0) + 1
+    this._probeFailures.set(nodeHost, failures)
+
+    logger.warn(
+      { nodeHost, failures, threshold: PROBE_FAILURE_THRESHOLD, reason },
+      'Node probe failed',
+    )
+
+    if (failures < PROBE_FAILURE_THRESHOLD) return
+    this._probeFailures.delete(nodeHost)
+    this.markNodeUnreachable(nodeHost)
+  }
+
+  private _applyLoadedMacs(macs: Map<string, string>): void {
+    for (const [host, mac] of macs) {
+      const node = this.inventory.get(host)
+      if (node) node.mac = mac
+    }
+  }
+
   async initialize(): Promise<number> {
     logger.info('Initializing DiscoveryManager')
 
     if (this.metricsStore) {
-      const { knownNodes, cloudModels, metrics } = this.metricsStore.load()
+      const { knownNodes, cloudModels, metrics, nodeMacs } = this.metricsStore.load()
       for (const host of knownNodes) {
         if (!this.inventory.has(host)) {
           logger.info({ host }, 'Restoring known node from persistence')
@@ -297,13 +334,10 @@ export class DiscoveryManager {
       }
       if (cloudModels.length > 0) logger.info({ cloudModels }, 'Restored cloud models from persistence')
       this._pendingMetrics = metrics.size > 0 ? metrics : null
+      this._applyLoadedMacs(nodeMacs)
     }
 
-    // Must run after metrics restore so model list is populated
     await this.registerCloudNode()
-
-    // Probe known/configured nodes first so they become available quickly,
-    // then run the slow network scan for new nodes in the background.
     await this.performProbe()
     if (this.autoDiscover) await this.discoverNetworkNodes()
 
@@ -361,6 +395,10 @@ export class DiscoveryManager {
   stopPeriodicProbe(): void {
     if (this.probeTimer) { clearInterval(this.probeTimer); this.probeTimer = null }
     if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null }
+    for (const timer of this._wakeProbes.values()) clearInterval(timer)
+    this._wakeProbes.clear()
+    for (const timer of this._keepAliveTimers.values()) clearInterval(timer)
+    this._keepAliveTimers.clear()
   }
 
   async discoverNetworkNodes(): Promise<void> {
@@ -403,14 +441,34 @@ export class DiscoveryManager {
     if (!node) return
     try {
       const { request } = await import('undici')
-      const tagsResp = await request(`${host}/api/tags`, { headersTimeout: 5000, bodyTimeout: 5000 })
-      if (tagsResp.statusCode !== 200) { this.markNodeUnreachable(host); return }
+      const tagsResp = await request(`${host}/api/tags`, {
+        headersTimeout: PROBE_HEADERS_TIMEOUT,
+        bodyTimeout: PROBE_BODY_TIMEOUT,
+      })
+      if (tagsResp.statusCode !== 200) {
+        this._recordProbeFailure(host, `HTTP ${tagsResp.statusCode}`)
+        await tagsResp.body.dump()
+        return
+      }
       const tagsData = (await tagsResp.body.json()) as { models?: Array<Record<string, unknown>> }
       const apiModels = tagsData.models ?? []
 
+      this._probeFailures.delete(host)
       node.reachable = true
       node.lastSeen = Date.now()
       node.failures = 0
+
+      // Learn MAC via ARP while the node is known to be up
+      try {
+        const ip = extractIp(host)
+        const mac = await arpLookup(ip)
+        if (mac && mac !== node.mac) {
+          node.mac = mac
+          logger.debug({ host, mac }, 'Learned MAC address via ARP')
+        }
+      } catch {
+        // ARP lookup failure is non-fatal
+      }
 
       const seenNames = new Set<string>()
       const newModelNames: string[] = []
@@ -436,8 +494,8 @@ export class DiscoveryManager {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name }),
-              headersTimeout: 5000,
-              bodyTimeout: 10000,
+              headersTimeout: PROBE_HEADERS_TIMEOUT,
+              bodyTimeout: MODEL_SHOW_BODY_TIMEOUT,
             })
             if (showResp.statusCode === 200) {
               const showData = await showResp.body.json()
@@ -456,9 +514,116 @@ export class DiscoveryManager {
       for (const name of node.models.keys()) {
         if (!seenNames.has(name)) node.models.delete(name)
       }
-    } catch {
-      this.markNodeUnreachable(host)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown probe failure'
+      this._recordProbeFailure(host, message)
     }
+  }
+
+  /**
+   * Check whether any offline node could serve the given model/analysis,
+   * and trigger WoL for matching nodes with a known MAC.
+   * Returns true if at least one WoL packet was sent.
+   */
+  tryWakeNodesForRequest(model: string, analysis: AnalysisResult): boolean {
+    const isVirtual = ['auto', 'auto-fast', 'auto-think', 'auto-local'].includes(model)
+    let triggered = false
+    for (const [host, node] of this.inventory) {
+      if (node.reachable) continue
+      if (node.cloud) continue
+      if (this._isLocalhost(host)) continue
+      if (!node.mac) continue
+      if (!this._offlineNodeCouldServe(node, model, analysis, isVirtual)) continue
+      this._triggerWol(host, node.mac)
+      triggered = true
+    }
+    return triggered
+  }
+
+  private _offlineNodeCouldServe(
+    node: NodeInfo,
+    model: string,
+    analysis: AnalysisResult,
+    isVirtual: boolean,
+  ): boolean {
+    if (node.models.size === 0) return false
+    if (!isVirtual) return node.models.has(model)
+
+    for (const modelInfo of node.models.values()) {
+      const { profile } = modelInfo
+      if (analysis.needsEmbeddings && !profile.isEmbedding) continue
+      if (!analysis.needsEmbeddings && profile.isEmbedding) continue
+      if (analysis.needsTools && !profile.supportsTools) continue
+      if (analysis.needsVision && !profile.supportsVision) continue
+      if (model === 'auto-think' && !profile.supportsThinking) continue
+      return true
+    }
+    return false
+  }
+
+  private _triggerWol(nodeHost: string, mac: string): void {
+    const COOLDOWN_MS = 60_000
+    const last = this._wolCooldowns.get(nodeHost) ?? 0
+    if (Date.now() - last < COOLDOWN_MS) {
+      logger.debug({ nodeHost }, 'WoL skipped — cooldown active')
+      return
+    }
+    this._wolCooldowns.set(nodeHost, Date.now())
+    logger.info({ nodeHost, mac }, 'Sending Wake-on-LAN packet')
+    sendWakeOnLan(mac).catch((err: Error) => {
+      logger.warn({ nodeHost, err: err.message }, 'WoL send failed')
+    })
+    this._startWakeProbe(nodeHost)
+  }
+
+  private _startWakeProbe(nodeHost: string): void {
+    if (this._wakeProbes.has(nodeHost)) return
+    const started = Date.now()
+    const MAX_PROBE_MS = 120_000
+    const INTERVAL_MS = 3_000
+    const timer = setInterval(async () => {
+      if (Date.now() - started > MAX_PROBE_MS) {
+        clearInterval(timer)
+        this._wakeProbes.delete(nodeHost)
+        logger.warn({ nodeHost }, 'Wake probe timed out — node did not respond')
+        return
+      }
+      try {
+        await this._probeNode(nodeHost)
+        const node = this.inventory.get(nodeHost)
+        if (node?.reachable) {
+          clearInterval(timer)
+          this._wakeProbes.delete(nodeHost)
+          logger.info({ nodeHost }, 'Node came back online after WoL — starting keep-alive')
+          this.inventoryUpdateHandler?.(this.inventory)
+          this._startKeepAlive(nodeHost)
+        }
+      } catch {
+        // keep polling
+      }
+    }, INTERVAL_MS)
+    this._wakeProbes.set(nodeHost, timer)
+  }
+
+  /**
+   * Keeps a woken node from re-sleeping by sending an HTTP ping every
+   * KEEP_ALIVE_INTERVAL_MS while the node is reachable and has active requests.
+   * Self-terminates when the node goes idle or offline.
+   * Timer is tracked in _keepAliveTimers so stopPeriodicProbe() can clear it.
+   */
+  private _startKeepAlive(nodeHost: string): void {
+    if (this._keepAliveTimers.has(nodeHost)) return
+    const timer = setInterval(async () => {
+      const node = this.inventory.get(nodeHost)
+      if (!node?.reachable || node.activeRequests === 0) {
+        clearInterval(timer)
+        this._keepAliveTimers.delete(nodeHost)
+        logger.debug({ nodeHost }, 'Keep-alive stopped — node idle or offline')
+        return
+      }
+      await this._probeNode(nodeHost).catch(() => {})
+    }, KEEP_ALIVE_INTERVAL_MS)
+    this._keepAliveTimers.set(nodeHost, timer)
   }
 
   mergeInventory(freshNodes: Map<string, NodeInfo>): void {
@@ -469,6 +634,8 @@ export class DiscoveryManager {
       const existing = this.inventory.get(host)
       if (!existing) { this.inventory.set(host, freshNode); continue }
       freshNode.activeRequests = existing.activeRequests
+      // Preserve learned MAC — freshNode from scanner won't have it
+      if (!freshNode.mac && existing.mac) freshNode.mac = existing.mac
       for (const [name, freshModel] of freshNode.models) {
         const existingModel = existing.models.get(name)
         if (existingModel) {
@@ -506,6 +673,12 @@ export class DiscoveryManager {
     const node = this.inventory.get(nodeHost)
     const model = node?.models.get(modelName)
     if (model) model.failures++
-    if (err?.code === 'ECONNREFUSED' || err?.code === 'ECONNRESET') this.markNodeUnreachable(nodeHost)
+    const isNetworkError =
+      err?.code === 'ECONNREFUSED' ||
+      err?.code === 'ECONNRESET' ||
+      err?.code === 'ETIMEDOUT' ||
+      err?.code === 'UND_ERR_BODY_TIMEOUT' ||
+      err?.code === 'UND_ERR_HEADERS_TIMEOUT'
+    if (isNetworkError) this.markNodeUnreachable(nodeHost)
   }
 }
