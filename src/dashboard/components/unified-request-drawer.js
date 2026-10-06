@@ -306,6 +306,17 @@ export class UnifiedRequestDrawer extends LitElement {
               <div class="metadata-value">${r.stream ? 'Yes' : 'No'}</div>
             </div>
           </div>
+          <div class="metadata-row span-all">
+            <div class="metadata-col">
+              <div class="metadata-label">Model load</div>
+              <div class="metadata-value">
+                ${r.modelLoadMs > 0 ? fmt.duration(r.modelLoadMs) : '—'}
+                ${r.modelLoadMs > 0
+                  ? html`<span class="muted">time to load model into memory</span>`
+                  : ''}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     `

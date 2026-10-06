@@ -701,6 +701,10 @@
   gap: 0.55rem;
 }
 
+.metadata-row.span-all {
+  grid-template-columns: 1fr;
+}
+
 .metadata-col {
   display: grid;
   gap: 0.25rem;

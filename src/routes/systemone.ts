@@ -49,7 +49,7 @@ export function setupSystemoneRoutes(
         taskType: 'systemone',
         res,
         requestHistoryManager,
-        selectFn: (body) => requestRouter.selectForChat(body, abortController.signal),
+        selectFn: (body) => requestRouter.selectForChat(body, abortController.signal, { allowDecisionModels: true }),
         selectionErrorMessage: 'Systemone model selection error',
         logger,
       })

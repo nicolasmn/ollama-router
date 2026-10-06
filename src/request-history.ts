@@ -100,6 +100,8 @@ export interface RequestEntry {
   selectedModel: string | null
   selectedNode: string | null
   tokensGenerated: number
+  /** Time Ollama spent loading the model into memory (ms). 0 = unknown/not reported. */
+  modelLoadMs: number
   inputSummary: string
   promptPreview: string
   messageList: MessageRecord[]
@@ -136,6 +138,7 @@ export interface FinishRequestOptions {
   failureCategory?: string | null
   retryHint?: string | null
   tokensGenerated?: number
+  modelLoadMs?: number
   modelName?: string | null
   nodeHost?: string | null
 }
@@ -619,6 +622,7 @@ export class RequestHistoryManager {
       selectedModel: null,
       selectedNode: null,
       tokensGenerated: 0,
+      modelLoadMs: 0,
       inputSummary: buildInputSummary(reqBody, endpointType),
       promptPreview: preview,
       messageList: buildMessageList(reqBody, endpointType),
@@ -723,6 +727,9 @@ export class RequestHistoryManager {
     entry.failureCategory = result.failureCategory || null
     entry.retryHint = result.retryHint || null
     entry.tokensGenerated = result.tokensGenerated || entry.tokensGenerated || 0
+    if (typeof result.modelLoadMs === 'number' && result.modelLoadMs > 0) {
+      entry.modelLoadMs = result.modelLoadMs
+    }
     entry.selectedModel = result.modelName || entry.selectedModel || null
     entry.selectedNode = result.nodeHost || entry.selectedNode || null
     return true

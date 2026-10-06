@@ -34,6 +34,14 @@ function rewriteModelField(result: unknown, requestedModel: string): unknown {
   return { ...(result as Record<string, unknown>), model: requestedModel }
 }
 
+/** Ollama reports load_duration in nanoseconds; returns milliseconds, or 0 when absent. */
+function extractLoadDurationMs(result: unknown): number {
+  if (!result || typeof result !== 'object') return 0
+  const ns = (result as Record<string, unknown>).load_duration
+  if (typeof ns !== 'number' || !Number.isFinite(ns) || ns <= 0) return 0
+  return Math.round(ns / 1e6)
+}
+
 /** Fire-and-forget cloud usage refresh; only triggers when the node is a cloud node. */
 function maybeRefreshCloudUsage(apiKey: string): void {
   if (!apiKey) return
@@ -321,6 +329,7 @@ export async function handleStreamingRequest(
     const apiKey = discoveryManager.getCloudApiKey(nodeHost)
     const body = await sanitizeMessages({ ...reqBody, model: modelName })
     const startTime = Date.now()
+    let modelLoadMs = 0
 
     try {
       requestHistoryManager.recordAttempt(requestId, {
@@ -375,6 +384,8 @@ export async function handleStreamingRequest(
             if (trimmed) {
               try {
                 let parsed = JSON.parse(trimmed) as Record<string, unknown>
+                const chunkLoadMs = extractLoadDurationMs(parsed)
+                if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
                 if (modelName && parsed.model !== modelName) {
                   parsed = { ...parsed, model: modelName }
                   line = JSON.stringify(parsed)
@@ -394,6 +405,8 @@ export async function handleStreamingRequest(
           if (trimmed) {
             try {
               let parsed = JSON.parse(trimmed) as Record<string, unknown>
+              const chunkLoadMs = extractLoadDurationMs(parsed)
+              if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
               if (modelName && parsed.model !== modelName) {
                 parsed = { ...parsed, model: modelName }
                 lineBuffer = JSON.stringify(parsed)
@@ -411,7 +424,7 @@ export async function handleStreamingRequest(
       const latency = Date.now() - startTime
       discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0, endpoint)
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
-      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName })
+      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, modelLoadMs })
       requestHistoryManager.finalizeStreamingResponse(requestId)
       maybeRefreshCloudUsage(apiKey)
       logger.info({ requestId, nodeHost, modelName, endpoint, latency }, 'Streaming request successful')
@@ -427,7 +440,7 @@ export async function handleStreamingRequest(
         const abortReason = signal?.aborted || res.destroyed ? 'client_disconnect' : 'upstream_abort'
         logger.info({ requestId, nodeHost, modelName, latency }, 'Client disconnected during streaming')
         requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'aborted', latency })
-        requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, latency, abortReason, failureCategory: 'client_abort', retryHint: 'no_retry', nodeHost, modelName })
+        requestHistoryManager.finishRequest(requestId, { status: 'aborted', responseStatus: 0, latency, abortReason, failureCategory: 'client_abort', retryHint: 'no_retry', nodeHost, modelName, modelLoadMs })
         return
       }
 
@@ -437,7 +450,7 @@ export async function handleStreamingRequest(
       const { failureCategory, retryHint } = categorizeFailure(typedErr)
       const responseStatus = res.headersSent ? res.statusCode : 503
       logger.error({ requestId, nodeHost, modelName, endpoint, err: typedErr.message }, 'Streaming request failed')
-      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus, latency, failureCategory, retryHint, nodeHost, modelName, error: typedErr.message })
+      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus, latency, failureCategory, retryHint, nodeHost, modelName, error: typedErr.message, modelLoadMs })
       if (!res.headersSent) {
         res.status(503).json({ error: typedErr.message })
       } else if (!res.writableEnded) {
@@ -510,11 +523,13 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'waiting', attemptReason: index === 0 ? 'first_try' : 'fallback_error' })
 
       let result = await forwardRequest(nodeHost, modelName, reqBody, endpoint, { signal, apiKey })
+      let modelLoadMs = extractLoadDurationMs(result)
 
       if (isLoadOnlyResponse(result)) {
         logger.info({ requestId, nodeHost, modelName }, 'Load-only response, retrying')
         requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'waiting', attemptReason: 'load_retry' })
         result = await forwardRequest(nodeHost, modelName, reqBody, endpoint, { signal, apiKey })
+        modelLoadMs = extractLoadDurationMs(result) || modelLoadMs
       }
 
       // Always rewrite to the actual routed model name, not the originally requested model
@@ -525,7 +540,7 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       const tokensGenerated = tokensFromResult(result)
       discoveryManager.updateModelMetrics(nodeHost, modelName, latency, tokensGenerated, endpoint)
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
-      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, tokensGenerated })
+      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, tokensGenerated, modelLoadMs })
       maybeRefreshCloudUsage(apiKey)
       logger.info({ requestId, nodeHost, modelName, latency }, successLog ?? `${endpoint} successful`)
       res.json(result)

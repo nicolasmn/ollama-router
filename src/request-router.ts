@@ -193,13 +193,14 @@ export class RequestRouter {
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
+    options: { allowDecisionModels?: boolean } = {},
   ): Promise<RoutingCandidate[] | null> {
     const deadline = Date.now() + WOL_WAIT_TIMEOUT_MS
     while (Date.now() < deadline) {
       if (signal?.aborted) return null
       await new Promise<void>((r) => setTimeout(r, WOL_POLL_INTERVAL_MS))
       if (signal?.aborted) return null
-      const candidates = this._selectCandidates(model, analysis, reqBody)
+      const candidates = this._selectCandidates(model, analysis, reqBody, options)
       if (candidates) {
         logger.info({ model }, 'Node came online after WoL — routing request')
         return candidates
@@ -218,20 +219,22 @@ export class RequestRouter {
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
+    options: { allowDecisionModels?: boolean } = {},
   ): Promise<RoutingCandidate[] | null> {
-    const candidates = this._selectCandidates(model, analysis, reqBody)
+    const candidates = this._selectCandidates(model, analysis, reqBody, options)
     if (candidates) return candidates
 
     const woken = this.discovery.tryWakeNodesForRequest(model, analysis)
     if (!woken) return null
 
     logger.info({ model }, 'No live candidates — WoL triggered, waiting for node to wake')
-    return this._waitForWol(model, analysis, reqBody, signal)
+    return this._waitForWol(model, analysis, reqBody, signal, options)
   }
 
   async selectForChat(
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
+    options: { allowDecisionModels?: boolean } = {},
   ): Promise<RoutingCandidate[] | null> {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
@@ -242,7 +245,7 @@ export class RequestRouter {
     logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'Chat routing analysis')
     let result: RoutingCandidate[] | null
     try {
-      result = await this._selectWithWolFallback(model, analysis, reqBody, signal)
+      result = await this._selectWithWolFallback(model, analysis, reqBody, signal, options)
     } catch (err: unknown) {
       if (forcedModel && (err as { code?: string })?.code === 'MODEL_NOT_FOUND') return null
       throw err
@@ -360,11 +363,12 @@ export class RequestRouter {
     model: string,
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
+    options: { allowDecisionModels?: boolean } = {},
   ): RoutingCandidate[] | null {
     const isVirtual = VIRTUAL_MODELS.has(model)
-    if (isVirtual) return this._selectVirtual(model, analysis)
+    if (isVirtual) return this._selectVirtual(model, analysis, options)
     try {
-      return this._selectConcrete(model)
+      return this._selectConcrete(model, options)
     } catch (err) {
       const routerErr = err as RouterError
       if (routerErr.code === 'MODEL_NOT_FOUND' && ROUTER_FALLBACK_TO_AUTO) {
@@ -372,7 +376,7 @@ export class RequestRouter {
           { model },
           'Model not found — falling back to auto routing',
         )
-        return this._selectVirtual('auto', analysis)
+        return this._selectVirtual('auto', analysis, options)
       }
       throw err
     }
@@ -381,10 +385,12 @@ export class RequestRouter {
   private _selectVirtual(
     alias: string,
     analysis: AnalysisResult,
+    options: { allowDecisionModels?: boolean } = {},
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
     const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    const { allowDecisionModels = false } = options
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -394,6 +400,7 @@ export class RequestRouter {
       for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
         const { profile } = modelInfo
+        if (!allowDecisionModels && profile.supportsDecision) continue
         if (analysis.needsEmbeddings) {
           if (!profile.isEmbedding) continue
         } else {
@@ -439,10 +446,12 @@ export class RequestRouter {
 
   private _selectConcrete(
     model: string,
+    options: { allowDecisionModels?: boolean } = {},
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
     const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    const { allowDecisionModels = false } = options
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -450,6 +459,7 @@ export class RequestRouter {
       const modelInfo = node.models.get(model)
       if (!modelInfo) continue
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
+      if (!allowDecisionModels && modelInfo.profile.supportsDecision) continue
       const scored = this._scoreModel(modelInfo, { preferFast: false } as AnalysisResult, 'auto', nodeHost)
       const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
       const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0

@@ -207,6 +207,30 @@ describe('RequestHistoryManager', () => {
     expect(entry.retryHint).toBe('no_retry')
   })
 
+  it('records model load time reported by Ollama', () => {
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-load',
+      endpointType: 'chat',
+      reqBody: { model: 'auto', messages: [{ role: 'user', content: 'hi' }] },
+      analysis: {},
+    })
+
+    let [entry] = history.getRecentRequests()
+    expect(entry.modelLoadMs).toBe(0)
+
+    history.finishRequest('req-load', {
+      status: 'success',
+      responseStatus: 200,
+      latency: 4200,
+      modelLoadMs: 3400,
+    })
+
+    ;[entry] = history.getRecentRequests()
+    expect(entry.modelLoadMs).toBe(3400)
+  })
+
   it('extracts thinking from streamed reasoning chunks', () => {
     const history = new RequestHistoryManager()
 
