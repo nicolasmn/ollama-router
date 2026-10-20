@@ -250,6 +250,21 @@ export interface StreamingRequestOptions {
   signal?: AbortSignal
 }
 
+// OpenAI-compatible upstreams frame stream events as `data: {...}` (SSE);
+// native Ollama streams are bare NDJSON lines. Strip the framing so the
+// capture path can parse both wire formats.
+function parseStreamLine(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const payload = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed
+  if (!payload || payload === '[DONE]') return null
+  try {
+    return JSON.parse(payload) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 export async function handleStreamingRequest(
   opts: StreamingRequestOptions,
 ): Promise<void> {
@@ -383,16 +398,20 @@ export async function handleStreamingRequest(
             const trimmed = line.trim()
             if (trimmed) {
               try {
-                let parsed = JSON.parse(trimmed) as Record<string, unknown>
-                const chunkLoadMs = extractLoadDurationMs(parsed)
-                if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
-                if (modelName && parsed.model !== modelName) {
-                  parsed = { ...parsed, model: modelName }
-                  line = JSON.stringify(parsed)
+                let parsed = parseStreamLine(line)
+                if (parsed) {
+                  const chunkLoadMs = extractLoadDurationMs(parsed)
+                  if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
+                  if (modelName && parsed.model !== modelName) {
+                    parsed = { ...parsed, model: modelName }
+                    line = trimmed.startsWith('data:')
+                      ? `data: ${JSON.stringify(parsed)}`
+                      : JSON.stringify(parsed)
+                  }
+                  requestHistoryManager.applyStreamingEvent(requestId, parsed)
                 }
-                requestHistoryManager.applyStreamingEvent(requestId, parsed)
               } catch {
-                /* pass through */
+                /* capture must never break the stream */
               }
             }
             outputLines.push(line + '\n')
@@ -404,16 +423,20 @@ export async function handleStreamingRequest(
           const trimmed = lineBuffer.trim()
           if (trimmed) {
             try {
-              let parsed = JSON.parse(trimmed) as Record<string, unknown>
-              const chunkLoadMs = extractLoadDurationMs(parsed)
-              if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
-              if (modelName && parsed.model !== modelName) {
-                parsed = { ...parsed, model: modelName }
-                lineBuffer = JSON.stringify(parsed)
+              let parsed = parseStreamLine(lineBuffer)
+              if (parsed) {
+                const chunkLoadMs = extractLoadDurationMs(parsed)
+                if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
+                if (modelName && parsed.model !== modelName) {
+                  parsed = { ...parsed, model: modelName }
+                  lineBuffer = trimmed.startsWith('data:')
+                    ? `data: ${JSON.stringify(parsed)}`
+                    : JSON.stringify(parsed)
+                }
+                requestHistoryManager.applyStreamingEvent(requestId, parsed)
               }
-              requestHistoryManager.applyStreamingEvent(requestId, parsed)
             } catch {
-              /* ignore */
+              /* capture must never break the stream */
             }
           }
           callback(null, lineBuffer)

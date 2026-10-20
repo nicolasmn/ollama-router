@@ -80,6 +80,9 @@ export function setupOllamaInferenceRoutes(
         endpoint: '/api/generate',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
+        responseContentFrom: (result) => ({
+          content: (result as Record<string, unknown>).response,
+        }),
         successLog: '/api/generate request successful',
         failureLog: '/api/generate model failed, trying next',
         res,
@@ -204,6 +207,7 @@ export function setupOllamaInferenceRoutes(
         endpoint: '/api/chat',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
+        responseContentFrom: (result) => result,
         successLog: '/api/chat request successful',
         failureLog: '/api/chat model failed, trying next',
         res,

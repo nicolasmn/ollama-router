@@ -42,6 +42,8 @@ function createRequestHistoryManager() {
     recordAttempt: jest.fn(),
     finishRequest: jest.fn(),
     updateResponseContent: jest.fn(),
+    applyStreamingEvent: jest.fn(),
+    finalizeStreamingResponse: jest.fn(),
     registerAbortController: jest.fn(),
     unregisterAbortController: jest.fn(),
   } as unknown as RequestHistoryManager
@@ -115,6 +117,48 @@ describe('native pass-through routes', () => {
     })
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
+  })
+
+  it('streams chat completions SSE response and captures streamed content', async () => {
+    const sseLines = [
+      'data: {"id":"chatcmpl_sse","object":"chat.completion.chunk","model":"qwen3:8b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}\n\n',
+      'data: {"id":"chatcmpl_sse","object":"chat.completion.chunk","model":"qwen3:8b","choices":[{"index":0,"delta":{"content":" there"},"finish_reason":null}]}\n\n',
+      'data: [DONE]\n\n',
+    ]
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        for (const line of sseLines) res.write(line)
+        res.end(); return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    const requestRouter = {
+      analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
+      selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
+    } as any
+    const historyManager = createRequestHistoryManager()
+    setupChatRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, historyManager)
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const response = await fetch(`${routerBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', stream: true, messages: [{ role: 'user', content: 'Hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toMatch(/x-ndjson|event-stream/)
+    const text = await response.text()
+    // pass-through intact: SSE framing survives the capture transform
+    expect(text).toContain('data: {"id":"chatcmpl_sse"')
+    expect(text).toContain('data: [DONE]')
+    // capture: SSE `data:` payloads are parsed and forwarded, [DONE] is skipped
+    expect(historyManager.applyStreamingEvent).toHaveBeenCalledTimes(2)
+    expect(historyManager.applyStreamingEvent).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ id: 'chatcmpl_sse' }))
   })
 
   it('passes responses body through to upstream /v1/responses (only model is rewritten)', async () => {
