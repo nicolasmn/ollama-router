@@ -211,6 +211,46 @@ export class UnifiedRequestDrawer extends LitElement {
     `
   }
 
+  renderLatencyTimeline(r) {
+    if (!r) return ''
+    const total = r.latency || 0
+    if (total <= 0) return ''
+    const parts = []
+    const queue = Math.max(0, r.queueWaitMs || 0)
+    const load = Math.max(0, r.modelLoadMs || 0)
+    const exec = Math.max(0, r.executionTimeMs || total - queue - load)
+    let used = 0
+    const add = (label, value, color) => {
+      if (value <= 0 || total <= 0) return
+      const pct = Math.max(2, (value / total) * 100) // minimum width
+      parts.push({ label, value, pct, color })
+    }
+    add('Queue', queue, 'var(--accent)')
+    add('Load', load, 'var(--warning, #f59e0b)')
+    add('Exec', exec, 'var(--success, #10b981)')
+    if (parts.length === 0) return ''
+    return html`
+      <div class="latency-timeline" title="Queue + Load + Exec = Total latency">
+        ${parts.map(
+          (p) => html`
+            <div
+              class="lt-seg"
+              style="width:${p.pct}%;background:${p.color}"
+              aria-label="${p.label} ${fmt.duration(p.value)}"
+            ></div>
+          `,
+        )}
+      </div>
+      <div class="latency-legend">
+        ${parts.map(
+          (p) => html`
+            <span class="lt-item"><span class="lt-dot" style="background:${p.color}"></span>${p.label} ${fmt.duration(p.value)}</span>
+          `,
+        )}
+      </div>
+    `
+  }
+
   // ─── Routing section ──────────────────────────────────────────────
 
   renderRoutingSection() {
@@ -271,13 +311,8 @@ export class UnifiedRequestDrawer extends LitElement {
               <div class="metadata-label">Latency</div>
               <div class="metadata-value">
                 ${fmt.duration(r.latency)}
-                ${r.queueWaitMs > 0 || r.executionTimeMs > 0
-                  ? html`<div class="muted" style="margin-top:0.3rem">
-                      Queue ${fmt.duration(r.queueWaitMs || 0)} · Exec
-                      ${fmt.duration(r.executionTimeMs || 0)}
-                    </div>`
-                  : ''}
               </div>
+              ${this.renderLatencyTimeline(r)}
             </div>
             <div class="metadata-col">
               <div class="metadata-label">Signals</div>

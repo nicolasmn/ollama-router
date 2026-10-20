@@ -412,6 +412,33 @@ function renderThinkingBlock(thinking, inProgress = false) {
   `
 }
 
+function renderImageAttachments(images) {
+  if (!images || !images.length) return ''
+  return html`
+    <div class="msg-images">
+      ${images.map(
+        (img) => html`
+          <a
+            class="msg-image-link"
+            href="${img.url}"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open image"
+          >
+            <img
+              class="msg-image-thumb"
+              src="${img.url}"
+              alt="Attached image"
+              loading="lazy"
+              decoding="async"
+            />
+          </a>
+        `,
+      )}
+    </div>
+  `
+}
+
 function renderToolCallBlocks(toolCalls) {
   if (!toolCalls?.length) return ''
   return toolCalls.map((tc) => {
@@ -470,6 +497,7 @@ function renderMessageBody(msg, allMessages, isLiveAssistant = false) {
 
   const thinking = renderThinkingBlock(msg.thinking, isLiveAssistant)
   const toolCalls = renderToolCallBlocks(msg.toolCalls)
+  const images = renderImageAttachments(msg.images)
   const content = renderContentWithCodeBlocks(msg.content, {
     showTyping: isLiveAssistant,
     typingLabel: 'Assistant is typing',
@@ -479,6 +507,7 @@ function renderMessageBody(msg, allMessages, isLiveAssistant = false) {
     return html`
       ${thinking}
       ${toolCalls}
+      ${images}
       <details class="msg-system-details">
         <summary class="msg-system-summary">
           ${msg.content.slice(0, 120).trim()}…
@@ -488,7 +517,7 @@ function renderMessageBody(msg, allMessages, isLiveAssistant = false) {
     `
   }
 
-  return html`${thinking}${toolCalls}<div class="msg-body-inner">${content}</div>`
+  return html`${thinking}${toolCalls}${images}<div class="msg-body-inner">${content}</div>`
 }
 
 const ROLE_LABELS = {
@@ -496,6 +525,8 @@ const ROLE_LABELS = {
   user: 'User',
   assistant: 'Assistant',
   tool: 'Tool',
+  state: 'State',
+  question: 'Question',
 }
 
 // ─── SystemOne Answer Visualizations ────────────────────────────────

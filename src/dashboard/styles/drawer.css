@@ -737,6 +737,45 @@
   padding-top: 0.2rem;
 }
 
+/* ─── Latency Timeline ──────────────────────────────── */
+
+.latency-timeline {
+  display: flex;
+  width: 100%;
+  height: 0.4rem;
+  border-radius: 0.25rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  margin-top: 0.4rem;
+}
+
+.lt-seg {
+  height: 100%;
+  min-width: 0.25rem;
+  transition: width 150ms ease-in-out;
+}
+
+.latency-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.lt-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.lt-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
 /* ─── Candidate Cards ────────────────────────────────── */
 
 .candidate-list {
@@ -1335,4 +1374,35 @@
 
 .so-raw-details {
   margin-top: 0.5rem;
+}
+
+/* ─── Message Images ────────────────────────────────── */
+
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.msg-image-link {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.msg-image-thumb {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  object-fit: contain;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+}
+
+@media (max-width: 768px) {
+  .msg-image-thumb {
+    max-width: 150px;
+    max-height: 150px;
+  }
 }

@@ -55,6 +55,13 @@ export interface ToolCallFunction {
   arguments: string
 }
 
+export interface MessageImage {
+  url: string
+  mimeType?: string
+  width?: number
+  height?: number
+}
+
 export interface ToolCall {
   id: string
   type: 'function'
@@ -68,6 +75,7 @@ export interface MessageRecord {
   toolCalls?: ToolCall[]
   toolCallId?: string
   name?: string
+  images?: MessageImage[]
 }
 
 export interface ConversationInfo {
@@ -177,6 +185,7 @@ function stringifyContent(content: unknown): string {
       if (p?.type === 'text') return p.text || ''
       if (p?.type === 'image_url' || p?.type === 'image') return '[image]'
       if (p?.type === 'input_audio' || p?.type === 'audio') return '[audio]'
+      if (p?.type === 'thought') return ''
       return ''
     })
     .filter(Boolean)
@@ -190,6 +199,29 @@ function stringifyFragment(value: unknown): string {
   const record = value as Record<string, unknown>
   if (typeof record.text === 'string') return record.text
   return ''
+}
+
+function extractImages(content: unknown): MessageImage[] | undefined {
+  const images: MessageImage[] = []
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue
+      const p = part as Record<string, unknown>
+      if (p.type === 'image_url') {
+        const iu = p.image_url as Record<string, unknown> | string | undefined
+        if (!iu) continue
+        const url = typeof iu === 'string' ? iu : String((iu as any).url || '')
+        if (url) {
+          images.push({ url })
+        }
+      } else if (p.type === 'image') {
+        const iu = p.image as Record<string, unknown> | string | undefined
+        const url = typeof iu === 'string' ? iu : String((iu as any)?.url || (iu as any)?.data || '')
+        if (url) images.push({ url })
+      }
+    }
+  }
+  return images.length > 0 ? images : undefined
 }
 
 function extractThinkingFromTaggedContent(
@@ -336,6 +368,31 @@ function buildConversationInfo(
   }
 }
 
+function extractImagesFromDelta(delta: Record<string, unknown>): MessageImage[] | undefined {
+  const images: MessageImage[] = []
+  if (Array.isArray(delta.images)) {
+    for (const img of delta.images) {
+      if (!img || typeof img !== 'object') continue
+      const url = String((img as any).url || (img as any).data || '')
+      if (url) images.push({ url })
+    }
+  }
+  if (Array.isArray(delta.image_url)) {
+    for (const iu of delta.image_url) {
+      const url = typeof iu === 'string' ? iu : String((iu as any)?.url || (iu as any)?.data || '')
+      if (url) images.push({ url })
+    }
+  }
+  if (delta.image_url && typeof delta.image_url === 'object') {
+    const iu = delta.image_url as Record<string, unknown>
+    const url = String(iu.url || iu.data || '')
+    if (url) images.push({ url })
+  }
+  return images.length > 0 ? images : undefined
+}
+
+// Render a named Jev question with its type and criteria (the answer options)
+// so the conversation preview shows what the model was choosing between.
 function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined
   const calls: ToolCall[] = []
@@ -354,8 +411,6 @@ function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
   return calls.length > 0 ? calls : undefined
 }
 
-// Render a named Jev question with its type and criteria (the answer options)
-// so the conversation preview shows what the model was choosing between.
 function buildQuestionSummary(
   name: string,
   q: Record<string, unknown> | undefined,
@@ -380,6 +435,38 @@ function buildQuestionSummary(
   return parts.join('\n')
 }
 
+function sniffImageMime(b64: string): string {
+  // Sniff magic bytes from the decoded prefix. Raw base64 from Ollama carries
+  // no MIME type; guessing png for everything mislabels JPEGs (which browsers
+  // still render by content sniffing, but the declared type should be honest).
+  if (b64.startsWith('/9j/')) return 'image/jpeg'
+  if (b64.startsWith('iVBORw0KGgo')) return 'image/png'
+  if (b64.startsWith('R0lGODlh')) return 'image/gif'
+  if (b64.startsWith('UklGR')) return 'image/webp'
+  if (b64.startsWith('PHN2Zy')) return 'image/svg+xml'
+  return 'image/png'
+}
+
+function extractImagesFromStateImages(
+  images: unknown,
+): MessageImage[] | undefined {
+  if (!Array.isArray(images)) return undefined
+  const out: MessageImage[] = []
+  for (const item of images) {
+    if (typeof item !== 'string' || !item) continue
+    // Ollama native format is raw base64; normalize to a data URL so the
+    // dashboard <img> can render it. Data URLs and http(s) URLs pass through.
+    if (item.startsWith('data:')) {
+      out.push({ url: item })
+    } else if (/^https?:\/\//iu.test(item)) {
+      out.push({ url: item })
+    } else {
+      out.push({ url: `data:${sniffImageMime(item)};base64,${item}` })
+    }
+  }
+  return out.length > 0 ? out : undefined
+}
+
 function buildMessageList(
   reqBody: Record<string, unknown>,
   endpointType: string,
@@ -389,11 +476,14 @@ function buildMessageList(
     const list: MessageRecord[] = []
     const state = reqBody?.state
     if (state !== undefined) {
-      list.push({
+      const stateRecord: MessageRecord = {
         role: 'state',
         content:
           typeof state === 'string' ? state : JSON.stringify(state),
-      })
+      }
+      const stateImages = extractImagesFromStateImages(reqBody?.images)
+      if (stateImages) stateRecord.images = stateImages
+      list.push(stateRecord)
     }
     const questions = reqBody?.questions
     if (questions && typeof questions === 'object' && !Array.isArray(questions)) {
@@ -403,6 +493,17 @@ function buildMessageList(
         list.push({
           role: 'question',
           content: buildQuestionSummary(name, q),
+        })
+      }
+    }
+    // Images without a state field still deserve a preview row.
+    if (state === undefined) {
+      const stateImages = extractImagesFromStateImages(reqBody?.images)
+      if (stateImages) {
+        list.unshift({
+          role: 'state',
+          content: '(image attachments)',
+          images: stateImages,
         })
       }
     }
@@ -421,6 +522,8 @@ function buildMessageList(
     if (toolCalls) record.toolCalls = toolCalls
     if (msg?.tool_call_id) record.toolCallId = String(msg.tool_call_id)
     if (msg?.name) record.name = String(msg.name)
+    const images = extractImages(msg?.content)
+    if (images) (record as any).images = images
     return record
   })
 }
@@ -750,36 +853,38 @@ export class RequestHistoryManager {
       content = responseContent.trim()
     } else {
       const choice = responseContent as Record<string, unknown> | null | undefined
-      const message = (choice?.message ?? choice) as Record<string, unknown> | null | undefined
+    const message = (choice?.message ?? choice) as Record<string, unknown> | null | undefined
 
-      content = normalizeResponseContent(message?.content)
-      const thinkingFromFields = [
-        stringifyFragment(message?.thinking),
-        stringifyFragment(message?.reasoning_content),
-        stringifyFragment(message?.reasoning),
-      ]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('\n\n')
-        .trim()
-      thinking = thinkingFromFields || undefined
-      toolCalls = normalizeToolCalls(message?.tool_calls)
-    }
+    content = normalizeResponseContent(message?.content)
+    const thinkingFromFields = [
+      stringifyFragment(message?.thinking),
+      stringifyFragment(message?.reasoning_content),
+      stringifyFragment(message?.reasoning),
+    ]
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join('\n\n')
+      .trim()
+    thinking = thinkingFromFields || undefined
+    toolCalls = normalizeToolCalls(message?.tool_calls)
+  }
 
-    const extracted = extractThinkingFromTaggedContent(content)
-    content = extracted.content
-    if (extracted.thinking) {
-      thinking = thinking
-        ? `${thinking}\n\n${extracted.thinking}`
-        : extracted.thinking
-    }
+  const extracted = extractThinkingFromTaggedContent(content)
+  content = extracted.content
+  if (extracted.thinking) {
+    thinking = thinking
+      ? `${thinking}\n\n${extracted.thinking}`
+      : extracted.thinking
+  }
 
-    if (!content && !thinking && !toolCalls) return false
+  if (!content && !thinking && !toolCalls) return false
 
-    const record: MessageRecord = { role: 'assistant', content }
-    if (thinking) record.thinking = thinking
-    if (toolCalls) record.toolCalls = toolCalls
-    entry.messageList.push(record)
+  const record: MessageRecord = { role: 'assistant', content }
+  if (thinking) record.thinking = thinking
+  if (toolCalls) record.toolCalls = toolCalls
+  const images = extractImages(responseContent)
+  if (images) (record as any).images = images
+  entry.messageList.push(record)
     return true
   }
 
@@ -796,6 +901,7 @@ export class RequestHistoryManager {
     const record: MessageRecord = { role: 'assistant', content: assembled.content }
     if (assembled.thinking) record.thinking = assembled.thinking
     if (assembled.toolCalls.length > 0) record.toolCalls = assembled.toolCalls
+    if (assembled.images) (record as any).images = assembled.images
     entry.messageList.push(record)
     return true
   }
@@ -852,6 +958,11 @@ export class RequestHistoryManager {
       message.toolCalls = current
     }
 
+    const deltaImages = extractImagesFromDelta(payload)
+    if (deltaImages) {
+      (message as any).images = (message as any).images ? [...(message as any).images, ...deltaImages] : deltaImages
+    }
+
     return true
   }
 
@@ -879,10 +990,11 @@ export class RequestHistoryManager {
     return true
   }
 
-  #parseSSEChunks(rawSSE: string): { content: string; thinking: string; toolCalls: ToolCall[] } {
+  #parseSSEChunks(rawSSE: string): { content: string; thinking: string; toolCalls: ToolCall[]; images?: MessageImage[] } {
     let content = ''
     let thinking = ''
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
+    const images: MessageImage[] = []
 
     for (const line of rawSSE.split('\n')) {
       const normalizedLine = line.trimStart()
@@ -900,6 +1012,9 @@ export class RequestHistoryManager {
         thinking += stringifyFragment(delta.thinking)
         thinking += stringifyFragment(delta.reasoning_content)
         thinking += stringifyFragment(delta.reasoning)
+
+        const deltaImages = extractImagesFromDelta(delta)
+        if (deltaImages) images.push(...deltaImages)
 
         if (Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls as Array<Record<string, unknown>>) {
@@ -932,7 +1047,7 @@ export class RequestHistoryManager {
       toolCalls.push({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.arguments } })
     }
 
-    return { content: content.trim(), thinking: thinking.trim(), toolCalls }
+    return { content: content.trim(), thinking: thinking.trim(), toolCalls, images: images.length ? images : undefined }
   }
 
   getRecentRequests(): RequestEntry[] {
