@@ -74,7 +74,7 @@ function buildPlist() {
 \t<key>ProgramArguments</key>
 \t<array>
 \t\t<string>node</string>
-\t\t<string>${INSTALL_DIR}/index.js</string>
+\t\t<string>${INSTALL_DIR}/dist/index.js</string>
 \t</array>
 \t<key>EnvironmentVariables</key>
 \t<dict>
@@ -141,7 +141,7 @@ function assertRegistered() {
 function assertSourceDir() {
   if (
     !existsSync(join(SOURCE_DIR, 'package.json')) ||
-    !existsSync(join(SOURCE_DIR, 'index.js'))
+    !existsSync(join(SOURCE_DIR, 'index.ts'))
   ) {
     console.error(
       `Could not find a valid ollama-router source directory: ${SOURCE_DIR}`,
@@ -159,30 +159,49 @@ function isServiceLoaded() {
   }
 }
 
+function assertCommandAvailable(name) {
+  try {
+    runCapture('which', [name])
+  } catch {
+    console.error(`${name} was not found in PATH.`)
+    process.exit(1)
+  }
+}
+
+// Deploy source files and install production dependencies
+// Mirrors the Linux flow: build dist/ in the source checkout, then sync only
+// the compiled output plus static dashboard assets into the install directory.
 function deployFiles() {
-  mkdirSync(INSTALL_DIR, { recursive: true })
+  assertCommandAvailable('rsync')
+
+  // 1. Build in source dir — devDependencies (tsc) are required here
+  console.log('Installing dependencies...')
+  run('npm', ['install', '--prefix', SOURCE_DIR])
+  console.log('Building TypeScript...')
+  run('npm', ['run', 'build', '--prefix', SOURCE_DIR])
+
+  // 2. Prepare install directories
+  mkdirSync(`${INSTALL_DIR}/dist/src`, { recursive: true })
   mkdirSync(DATA_DIR, { recursive: true })
   mkdirSync(LOG_DIR, { recursive: true })
 
+  // 3. Sync compiled JS output (tsc + esbuild write to dist/)
+  run('rsync', ['-a', '--delete', `${SOURCE_DIR}/dist/`, `${INSTALL_DIR}/dist/`])
+
+  // 4. Sync dashboard static assets (HTML/CSS — not compiled by tsc/esbuild).
+  //    The JS bundle is already in dist/ from the build step above.
   run('rsync', [
     '-a',
     '--delete',
-    '--exclude', '.git',
-    '--exclude', 'node_modules',
-    '--exclude', 'coverage',
-    '--exclude', '.nyc_output',
-    '--exclude', '.DS_Store',
-    '--exclude', 'tests',
-    `${SOURCE_DIR}/`,
-    `${INSTALL_DIR}/`,
+    '--exclude=*.js',
+    `${SOURCE_DIR}/src/dashboard/`,
+    `${INSTALL_DIR}/dist/src/dashboard/`,
   ])
 
-  const lockFile = join(INSTALL_DIR, 'package-lock.json')
-  if (existsSync(lockFile)) {
-    run('npm', ['ci', '--omit=dev', '--prefix', INSTALL_DIR])
-  } else {
-    run('npm', ['install', '--omit=dev', '--prefix', INSTALL_DIR])
-  }
+  // 5. Install production-only dependencies
+  run('cp', [`${SOURCE_DIR}/package.json`, `${INSTALL_DIR}/package.json`])
+  run('cp', [`${SOURCE_DIR}/package-lock.json`, `${INSTALL_DIR}/package-lock.json`])
+  run('npm', ['ci', '--omit=dev', '--prefix', INSTALL_DIR])
 }
 
 // ---------------------------------------------------------------------------

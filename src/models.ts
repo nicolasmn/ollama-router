@@ -8,6 +8,7 @@ export interface ModelProfileData {
   supportsVision?: boolean
   supportsAudio?: boolean
   supportsThinking?: boolean
+  supportsDecision?: boolean
   isEmbedding?: boolean
   architecture?: string
   embeddingDim?: number
@@ -21,6 +22,7 @@ export class ModelProfile {
   supportsVision: boolean
   supportsAudio: boolean
   supportsThinking: boolean
+  supportsDecision: boolean
   isEmbedding: boolean
   architecture: string
   embeddingDim: number
@@ -33,6 +35,7 @@ export class ModelProfile {
     this.supportsVision = data.supportsVision ?? false
     this.supportsAudio = data.supportsAudio ?? false
     this.supportsThinking = data.supportsThinking ?? false
+    this.supportsDecision = data.supportsDecision ?? false
     this.isEmbedding = data.isEmbedding ?? false
     this.architecture = data.architecture ?? ''
     this.embeddingDim = data.embeddingDim ?? 0
@@ -49,7 +52,6 @@ export interface ModelInfoJSON {
   failures: number
   totalRequests: number
   status: string
-  activeRequests: number
   lastSeen?: number
   lastRoutingEndpoint?: string | null
   lastRoutedAt?: number
@@ -65,7 +67,6 @@ export class ModelInfo {
   failures: number
   totalRequests: number
   status: string
-  activeRequests: number
   lastSeen: number
   lastRoutingEndpoint: string | null
   lastRoutedAt: number
@@ -80,7 +81,6 @@ export class ModelInfo {
     this.failures = 0
     this.totalRequests = 0
     this.status = 'idle'
-    this.activeRequests = 0
     this.lastSeen = 0
     this.lastRoutingEndpoint = null
     this.lastRoutedAt = 0
@@ -95,6 +95,8 @@ export interface NodeInfoJSON {
   lastFailure: number
   activeRequests: number
   models: Record<string, ModelInfoJSON>
+  cloud?: boolean
+  mac: string | null
 }
 
 export class NodeInfo {
@@ -105,8 +107,12 @@ export class NodeInfo {
   lastFailure: number
   activeRequests: number
   models: Map<string, ModelInfo>
+  /** True when this node is the ollama.com cloud endpoint. Requires auth header. */
+  cloud: boolean
+  /** Learned MAC address via ARP — null until node has been seen at least once. */
+  mac: string | null
 
-  constructor(host: string) {
+  constructor(host: string, cloud = false) {
     this.host = host
     this.reachable = false
     this.lastSeen = 0
@@ -114,5 +120,7 @@ export class NodeInfo {
     this.lastFailure = 0
     this.activeRequests = 0
     this.models = new Map()
+    this.cloud = cloud
+    this.mac = null
   }
 }

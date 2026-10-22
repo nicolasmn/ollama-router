@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "tsx index.ts",
-    "dev": "tsx watch index.ts",
+    "clean": "rm -rf dist",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build:dashboard": "esbuild src/dashboard/dashboard-app.js --bundle --outfile=dist/src/dashboard/dashboard-bundle.js --format=esm --minify && node scripts/copy-dashboard-assets.js",
+    "build": "npm run clean && npm run build:ts && npm run build:dashboard",
+    "start": "node dist/index.js",
+    "dev": "npm run build && NODE_ENV=development concurrently --names ts,dashboard,app \"tsc -p tsconfig.build.json --watch --preserveWatchOutput\" \"esbuild src/dashboard/dashboard-app.js --bundle --outfile=dist/src/dashboard/dashboard-bundle.js --format=esm --watch\" \"tsx watch index.ts\"",
     "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm test",
     "service": "node scripts/service.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "lint": "eslint src/ index.ts",
@@ -15,15 +20,26 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "extensionsToTreatAsEsm": [".ts"],
+    "testTimeout": 15000,
+    "forceExit": true,
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
     "testMatch": [
       "**/tests/**/*.test.[jt]s"
     ],
     "transform": {
-      "^.+\\.ts$": ["ts-jest", {
-        "useESM": true,
-        "diagnostics": { "ignoreCodes": ["TS151002"] }
-      }]
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "diagnostics": {
+            "ignoreCodes": [
+              "TS151002"
+            ]
+          }
+        }
+      ]
     },
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
@@ -40,10 +56,12 @@
     ]
   },
   "dependencies": {
+    "@steipete/sweet-cookie": "^0.3.0",
     "cac": "^6.7.14",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "lit": "^3.3.2",
+    "microlighter": "^2.2.0",
     "pino": "^10.3.1",
     "undici": "^6.19.8",
     "ws": "^8.20.0"
@@ -57,6 +75,8 @@
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.0",
     "@types/ws": "^8.5.14",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
     "jest": "^30.3.0",

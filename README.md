@@ -83,22 +83,65 @@ Notes for `/v1/responses`:
 
 You can set the `model` field in requests to either a concrete model name or a router alias.
 
-- `auto`: default router behavior (best candidate)
-- `auto-fast`: prefers small/fast models and falls back to `auto` if none match
-- `auto-think`: strictly routes only to thinking-capable models
+- `auto`: default router behavior — picks the best candidate across local and cloud nodes
+- `auto-fast`: prefers small/fast models; includes cloud when no suitable local is available
+- `auto-think`: routes only to thinking-capable models; includes cloud candidates
+- `auto-local`: local-only variant — never routes to cloud nodes
 - `<real-model-name>`: routes only to that model across discovered nodes
 
 Notes:
 
-- Unknown model names return `404`.
+- Unknown model names return `404` by default.
+- Set `ROUTER_FALLBACK_TO_AUTO=true` to silently reroute unknown model names to `auto` selection instead of returning `404`. The `model` field in the response will reflect the actual model that served the request.
 - Alias names are reserved and also listed in `/v1/models`.
+
+## Force-Model Override
+
+Force a specific model for the **next single request**, bypassing normal routing logic. The override is one-shot — consumed on the first routed request, then automatically cleared.
+
+### From the dashboard
+
+1. Open the dashboard and expand a node card.
+2. Click the **▶** button on any model row to set that model as the override.
+3. A yellow banner appears at the top of the dashboard: `Next request forced to <model>`.
+4. Click **✕ Cancel** in the banner to clear the override before it is consumed.
+
+The ▶ button is disabled on offline nodes. The banner updates in real time via the WebSocket connection.
+
+### Via the admin API
+
+```bash
+# Set override (validates model exists on a reachable node)
+curl -X POST http://localhost:8000/admin/force-model \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.2"}'
+# → { "ok": true, "model": "llama3.2", "expiresAt": 1234567890000 }
+
+# Check current state
+curl http://localhost:8000/admin/force-model
+# → { "active": true, "model": "llama3.2", "expiresAt": ... }
+# → { "active": false, "model": null, "expiresAt": null }
+
+# Clear manually
+curl -X DELETE http://localhost:8000/admin/force-model
+# → { "ok": true, "cleared": true }
+```
+
+### Behaviour details
+
+- **One-shot**: override consumed on first request routed after it is set.
+- **TTL**: auto-expires after 10 minutes if not consumed.
+- **Validation**: `POST` rejects model names not found on any reachable node (`404`).
+- **Logging**: router logs `forcedModel: true` + original model name at `info` level when override applies.
+- **Metrics**: resulting `RoutingCandidate` is tagged `forcedModel: true` for history/trace filtering.
 
 ## Configuration
 
 Environment variables:
 
-- OLLAMA_NODES: comma-separated node list. Example: localhost:11434,10.0.0.12:11434
-- PORT: router listen port (default: 8000)
+- `OLLAMA_NODES`: comma-separated node list. Example: `localhost:11434,10.0.0.12:11434`
+- `PORT`: router listen port (default: `8000`)
+- `ROUTER_FALLBACK_TO_AUTO`: set to `true` to reroute requests for unknown model names to `auto` selection instead of returning `404` (default: `false`)
 
 Current defaults in code:
 
@@ -116,7 +159,7 @@ Discovery is adaptive and uses three triggers:
 	- If connected only to localhost nodes, scans every 60 seconds.
 	- If connected to at least one non-localhost node, scans every 30 minutes.
 
-2. On-request scan for virtual models (`auto`, `auto-fast`, `auto-think`)
+2. On-request scan for virtual models (`auto`, `auto-fast`, `auto-think`, `auto-local`)
 	- If the previous scan is fresh (< 5 minutes), scan runs async in background.
 	- If scan data is stale (>= 5 minutes), router waits up to 3 seconds for a fresh scan, then falls back to current inventory.
 
@@ -135,26 +178,50 @@ Prerequisites:
 - Node.js 18+
 - npm
 
-Install and run:
+Install, build, and run:
 
 ```bash
 npm install
+npm run build
 npm start
 ```
 
-Development mode:
+Development mode (clean build + watch for TypeScript, dashboard, and app changes):
 
 ```bash
 npm run dev
 ```
 
+## npm Scripts
+
+| Script | Description |
+|--------|-------------|
+| `build` | Clean `dist/`, compile TypeScript, bundle and copy dashboard assets |
+| `build:ts` | TypeScript-only compile step (`tsconfig.build.json`, no tests in output) |
+| `build:dashboard` | Bundle dashboard JS and copy static assets to `dist/src/dashboard/` |
+| `clean` | Remove `dist/` entirely |
+| `start` | Run `dist/index.js` (requires prior build) |
+| `dev` | Full build then parallel watch: TypeScript, dashboard bundle, and `tsx` app runner |
+| `typecheck` | Type-check entire codebase including tests — no output emitted |
+| `check` | `typecheck` + `lint` + `test` in one command |
+| `test` | Run Jest test suite |
+| `lint` | ESLint across `src/` and `index.ts` |
+| `lint:fix` | ESLint with auto-fix |
+| `format` | Prettier write |
+| `format:check` | Prettier check |
+
 ## TypeScript
 
-The codebase is fully TypeScript. Runtime uses `tsx` (no compile step — types stripped at runtime). Type-checking is a separate step:
+The codebase is fully TypeScript. Production is compiled via `tsc` (`tsconfig.build.json`) into `dist/`. Only `index.ts` and `src/**/*.ts` are emitted — tests are never part of the build output. Type-checking runs against the full project including tests:
 
 ```bash
 npm run typecheck
 ```
+
+Two TypeScript configs:
+
+- `tsconfig.json` — full project typecheck (includes `tests/`); used by `typecheck` and IDEs
+- `tsconfig.build.json` — production emit only (excludes `tests/`); used by `build` and `dev`
 
 Shared API types live in `src/types/`: `OpenAIApiTypes.ts`, `OllamaApiTypes.ts`, `AnthropicApiTypes.ts`. Internal types (routing, config, models) are re-exported from `src/types/index.ts`.
 

@@ -3,16 +3,22 @@ import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
-import pino from 'pino'
+import { createLogger } from './logger.js'
 import { DiscoveryManager } from './discovery-manager.js'
 import { LoadManager } from './load-manager.js'
 import { RequestHistoryManager } from './request-history.js'
 import { RequestRouter } from './request-router.js'
 import { WsManager } from './ws-manager.js'
 import { createRoutes } from './routes/index.js'
+import {
+  OLLAMA_CLOUD_URL,
+  OLLAMA_CLOUD_API_KEY,
+  DISABLED_MODELS_FILE,
+} from './config.js'
+import { disabledModelsStore } from './disabled-models-store.js'
+import { cloudUsageStore } from './cloud-usage.js'
 
-const logger = pino()
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const logger = createLogger('app')
 
 export interface AppConfig {
   ollamaNodes: string[]
@@ -37,6 +43,28 @@ export interface AppResult {
   managers: AppManagers
 }
 
+// Endpoints that are JSON-only in native Ollama and OpenAI-compatible APIs.
+// For these, we normalize any non-JSON Content-Type to application/json so
+// that curl -d '{...}' (which defaults to x-www-form-urlencoded or text/plain)
+// is parsed correctly by express.json() without requiring an explicit header.
+export const JSON_ONLY_PREFIXES = ['/api/', '/v1/']
+
+export function isJsonOnlyEndpoint(path: string, method: string): boolean {
+  if (path.startsWith('/api/blobs/')) return false
+
+  if (JSON_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+    if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
+      return true
+    }
+  }
+
+  return false
+}
+
+function isJsonContentType(ct: string): boolean {
+  return ct.startsWith('application/json') || ct.startsWith('application/ld+json')
+}
+
 export async function createApp(config: AppConfig): Promise<AppResult> {
   logger.info(
     {
@@ -48,12 +76,16 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     'Creating application with config',
   )
 
+  disabledModelsStore.configure(DISABLED_MODELS_FILE)
+
   const discoveryManager = new DiscoveryManager({
     ollamaNodes: config.ollamaNodes,
     discoveryInterval: config.discoveryInterval,
     autoDiscover: config.autoDiscover,
     networkScanInterval: config.networkScanInterval,
     metricsFile: config.metricsFile ?? null,
+    cloudUrl: OLLAMA_CLOUD_URL,
+    cloudApiKey: OLLAMA_CLOUD_API_KEY,
   })
 
   const loadManager = new LoadManager({
@@ -64,6 +96,14 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     },
   })
 
+  // Cloud node has no concurrency cap — register it as unlimited.
+  if (OLLAMA_CLOUD_URL && OLLAMA_CLOUD_API_KEY) {
+    loadManager.setUnlimited(OLLAMA_CLOUD_URL)
+    // Start background usage polling so router scoring has fresh quota data
+    cloudUsageStore.start()
+    logger.info('Cloud usage polling started')
+  }
+
   discoveryManager.setInventoryUpdateHandler((inventory) => {
     const activeNodeHosts = new Set(inventory.keys())
     loadManager.cleanupOrphanedNodes(activeNodeHosts)
@@ -72,38 +112,55 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
   const requestRouter = new RequestRouter(discoveryManager, loadManager)
   const requestHistoryManager = new RequestHistoryManager()
 
-  const reachableCount = await discoveryManager.initialize()
-  if (reachableCount === 0) {
-    if (config.autoDiscover) {
-      logger.warn(
-        'No reachable nodes found at startup — will keep scanning the network',
-      )
-    } else {
-      logger.error('No reachable nodes at startup')
-      throw new Error('No reachable nodes available')
-    }
-  }
-
-  discoveryManager.startPeriodicProbe()
+  // Run discovery in the background so the HTTP server can start immediately.
+  // startPeriodicProbe() is chained to run after initialize() completes.
+  discoveryManager
+    .initialize()
+    .then((reachableCount) => {
+      if (reachableCount === 0) {
+        logger.warn(
+          {
+            autoDiscover: config.autoDiscover,
+            configuredNodes: config.ollamaNodes.length,
+          },
+          'No reachable nodes found after discovery — will retry on next probe interval',
+        )
+      }
+      discoveryManager.startPeriodicProbe()
+    })
+    .catch((err: Error) =>
+      logger.warn({ err: err.message }, 'Background initialization failed'),
+    )
 
   const app = express()
+  app.use((_req, res, next) => {
+    res.setHeader('X-Ollama-Router', '1')
+    next()
+  })
+
+  // Normalize Content-Type for JSON-only endpoints.
+  // Rewrites any non-JSON Content-Type (missing, text/plain, x-www-form-urlencoded, etc.)
+  // to application/json so express.json() can parse the body.
+  // This allows curl -d '{...}' to work without -H 'Content-Type: application/json'.
+  app.use((req, _res, next) => {
+    if (!isJsonOnlyEndpoint(req.path, req.method)) return next()
+
+    const ct = req.headers['content-type'] ?? ''
+    if (!isJsonContentType(ct)) {
+      req.headers['content-type'] = 'application/json'
+    }
+    next()
+  })
+
   app.use(express.json({ limit: '10mb' }))
+
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = dirname(__filename)
   app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))
+  // In dev (tsx), __dirname resolves to src/ which has no bundle; also serve dist/src/dashboard/
   app.use(
-    '/dashboard-vendor/lit',
-    express.static(join(__dirname, '..', 'node_modules', 'lit')),
-  )
-  app.use(
-    '/dashboard-vendor/lit-html',
-    express.static(join(__dirname, '..', 'node_modules', 'lit-html')),
-  )
-  app.use(
-    '/dashboard-vendor/lit-element',
-    express.static(join(__dirname, '..', 'node_modules', 'lit-element')),
-  )
-  app.use(
-    '/dashboard-vendor/@lit',
-    express.static(join(__dirname, '..', 'node_modules', '@lit')),
+    '/dashboard-assets',
+    express.static(join(__dirname, '../dist/src/dashboard')),
   )
 
   createRoutes(

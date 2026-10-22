@@ -6,6 +6,7 @@
 import {
   readFileSync,
   writeFileSync,
+  copyFileSync,
   mkdirSync,
   rmSync,
   existsSync,
@@ -71,10 +72,6 @@ function buildDefaultEnv() {
   return `PORT=8000\r\nOLLAMA_NODES=127.0.0.1:11434\r\nAUTO_DISCOVER=false\r\nNETWORK_SCAN_INTERVAL=300000\r\nMETRICS_FILE=${DATA_DIR}\\model-metrics.json\r\nINFERENCE_TIMEOUT=0\r\n`
 }
 
-function run(cmd, args = []) {
-  execFileSync(cmd, args, { stdio: 'inherit' })
-}
-
 function runCapture(cmd, args = []) {
   return execFileSync(cmd, args, { encoding: 'utf8' }).trim()
 }
@@ -99,7 +96,7 @@ function assertRegistered() {
 function assertSourceDir() {
   if (
     !existsSync(join(SOURCE_DIR, 'package.json')) ||
-    !existsSync(join(SOURCE_DIR, 'index.js'))
+    !existsSync(join(SOURCE_DIR, 'index.ts'))
   ) {
     console.error(
       `Could not find a valid ollama-router source directory: ${SOURCE_DIR}`,
@@ -114,32 +111,72 @@ function createService() {
   return new Service({
     name: APP_NAME,
     description: 'Ollama load-balancing router',
-    script: join(INSTALL_DIR, 'index.js'),
+    script: join(INSTALL_DIR, 'dist', 'index.js'),
     workingDirectory: INSTALL_DIR,
     logpath: LOG_DIR,
     env: Object.entries(env).map(([name, value]) => ({ name, value })),
   })
 }
 
+// node.exe refuses to spawn .cmd shims directly (Node 20+ hardening), so run
+// npm through its CLI entry point with the current node binary.
+function runNpm(args) {
+  const npmCli = join(
+    process.execPath,
+    '..',
+    'node_modules',
+    'npm',
+    'bin',
+    'npm-cli.js',
+  )
+  execFileSync(process.execPath, [npmCli, ...args], { stdio: 'inherit' })
+}
+
+// robocopy uses exit codes 0-7 for success-only states (1 = files copied);
+// anything at 8 or above is a real failure.
+function runRobocopy(args) {
+  try {
+    execFileSync('robocopy', args, { stdio: 'inherit' })
+  } catch (err) {
+    if (typeof err?.status === 'number' && err.status < 8) return
+    throw err
+  }
+}
+
+// Deploy source files and install production dependencies
+// Mirrors the Linux flow: build dist/ in the source checkout, then sync only
+// the compiled output plus static dashboard assets into the install directory.
 function deployFiles() {
-  mkdirSync(INSTALL_DIR, { recursive: true })
+  // 1. Build in source dir — devDependencies (tsc) are required here
+  console.log('Installing dependencies...')
+  runNpm(['install', '--prefix', SOURCE_DIR])
+  console.log('Building TypeScript...')
+  runNpm(['run', 'build', '--prefix', SOURCE_DIR])
+
+  // 2. Prepare install directories
+  mkdirSync(join(INSTALL_DIR, 'dist', 'src'), { recursive: true })
   mkdirSync(DATA_DIR, { recursive: true })
   mkdirSync(LOG_DIR, { recursive: true })
 
-  const excludeFile = join(SOURCE_DIR, 'scripts', 'xcopy-exclude.txt')
-  run('xcopy', [
-    `${SOURCE_DIR}\\`,
-    `${INSTALL_DIR}\\`,
-    '/E', '/I', '/Y',
-    `/EXCLUDE:${excludeFile}`,
+  // 3. Sync compiled JS output (tsc + esbuild write to dist/).
+  //    /MIR prunes stale files the same way rsync --delete does.
+  runRobocopy([`${SOURCE_DIR}\\dist`, `${INSTALL_DIR}\\dist`, '/MIR', '/NJH', '/NJP'])
+
+  // 4. Sync dashboard static assets (HTML/CSS — not compiled by tsc/esbuild).
+  //    The JS bundle is already in dist/ from the build step above.
+  runRobocopy([
+    `${SOURCE_DIR}\\src\\dashboard`,
+    `${INSTALL_DIR}\\dist\\src\\dashboard`,
+    '/MIR', '/XF', '*.js', '/NJH', '/NJP',
   ])
 
-  const lockFile = join(INSTALL_DIR, 'package-lock.json')
-  if (existsSync(lockFile)) {
-    run('npm', ['ci', '--omit=dev', '--prefix', INSTALL_DIR])
-  } else {
-    run('npm', ['install', '--omit=dev', '--prefix', INSTALL_DIR])
-  }
+  // 5. Install production-only dependencies
+  copyFileSync(join(SOURCE_DIR, 'package.json'), join(INSTALL_DIR, 'package.json'))
+  copyFileSync(
+    join(SOURCE_DIR, 'package-lock.json'),
+    join(INSTALL_DIR, 'package-lock.json'),
+  )
+  runNpm(['ci', '--omit=dev', '--prefix', INSTALL_DIR])
 }
 
 // ---------------------------------------------------------------------------

@@ -16,23 +16,17 @@
       href="/dashboard-assets/favicon.svg"
     />
     <link rel="stylesheet" href="/dashboard-assets/styles.css" />
-    <script type="importmap">
-      {
-        "imports": {
-          "lit": "/dashboard-vendor/lit/index.js",
-          "lit/": "/dashboard-vendor/lit/",
-          "lit-html": "/dashboard-vendor/lit-html/lit-html.js",
-          "lit-html/": "/dashboard-vendor/lit-html/",
-          "lit-element/lit-element.js": "/dashboard-vendor/lit-element/lit-element.js",
-          "lit-element/": "/dashboard-vendor/lit-element/",
-          "@lit/reactive-element": "/dashboard-vendor/@lit/reactive-element/reactive-element.js",
-          "@lit/reactive-element/": "/dashboard-vendor/@lit/reactive-element/"
-        }
-      }
-    </script>
-    <script type="module" src="/dashboard-assets/dashboard-app.js"></script>
+    <link
+      rel="stylesheet"
+      href="/dashboard-assets/vendor/microlighter/themes-github.css"
+    />
+    <script type="module" src="/dashboard-assets/dashboard-bundle.js"></script>
+    <script
+      type="module"
+      src="/dashboard-assets/vendor/microlighter/microlighter.min.js"
+    ></script>
   </head>
-  <body>
+  <body data-syntax-theme="github">
     <router-dashboard></router-dashboard>
   </body>
 </html>

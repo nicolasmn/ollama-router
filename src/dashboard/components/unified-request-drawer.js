@@ -3,23 +3,42 @@ import { LitElement, html } from 'lit'
 import {
   endpointLabel,
   fmt,
+  formatAbortReason,
+  formatFailureCategory,
+  formatRetryHint,
   renderFlagBadges,
-  renderMessageThread,
+  renderConversationThread,
+  renderRoutingRationale,
   routeTarget,
 } from './dashboard-utils.js'
+
+/** Virtual model aliases that are never real model names and should not be
+ * shown as "not found" in the routing section even when the selected model
+ * differs from the requested one. */
+const VIRTUAL_MODEL_ALIASES = new Set(['auto', 'auto-fast', 'auto-think', 'auto-local'])
 
 export class UnifiedRequestDrawer extends LitElement {
   static properties = {
     open: { type: Boolean },
     request: { attribute: false },
-    attemptExpanded: { state: true },
+    expandedCandidates: { state: true },
   }
 
   constructor() {
     super()
     this.open = false
     this.request = null
-    this.attemptExpanded = false
+    this.expandedCandidates = new Set()
+  }
+
+  // Re-run microlighter syntax highlighting after lit re-renders the
+  // conversation thread (CSS Custom Highlights don't survive DOM updates).
+  updated() {
+    if (this.open && this.request) {
+      this.dispatchEvent(
+        new Event('syntax-highlight', { bubbles: true, composed: true }),
+      )
+    }
   }
 
   createRenderRoot() {
@@ -35,18 +54,24 @@ export class UnifiedRequestDrawer extends LitElement {
     )
   }
 
-  toggleAttempts() {
-    this.attemptExpanded = !this.attemptExpanded
+  async handleTerminate() {
+    if (!this.request) return
+    try {
+      await fetch(`/admin/requests/${encodeURIComponent(this.request.requestId)}`, { method: 'DELETE' })
+    } catch {
+      // ignore — dashboard will reflect change on next WS update
+    }
   }
 
-  shouldExpandAttempts() {
-    if (!this.request) return false
-    // Expand if failed/rejected or 2+ attempts
-    return (
-      this.request.status === 'failed' ||
-      this.request.status === 'rejected' ||
-      (this.request.attempts?.length ?? 0) > 1
-    )
+  candidateKey(modelName, nodeHost) {
+    return `${modelName}@${nodeHost}`
+  }
+
+  toggleCandidate(key) {
+    const next = new Set(this.expandedCandidates)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    this.expandedCandidates = next
   }
 
   selectedModelLabel() {
@@ -58,12 +83,8 @@ export class UnifiedRequestDrawer extends LitElement {
     )
   }
 
-  // Merge candidates (router's scored plan) with attempts (actual execution).
-  // Each row joins plan-score + outcome for the same model@node.
-  // Orphaned attempts (fallbacks beyond top-N) are appended at the end.
   buildRoutingPath(candidates, attempts) {
     const usedAttempts = new Set()
-
     const rows = candidates.map((candidate) => {
       const idx = attempts.findIndex(
         (a, i) =>
@@ -75,196 +96,310 @@ export class UnifiedRequestDrawer extends LitElement {
       if (idx !== -1) usedAttempts.add(idx)
       return { candidate, attempt }
     })
-
     const orphans = attempts
       .filter((_, i) => !usedAttempts.has(i))
       .map((attempt) => ({ candidate: null, attempt }))
-
     return [...rows, ...orphans]
   }
 
-  renderRoutingRow({ candidate, attempt }) {
-    const modelName = candidate?.modelName ?? attempt?.modelName
-    const nodeHost = candidate?.nodeHost ?? attempt?.nodeHost
-    const score = candidate?.score ?? null
-    const status = attempt?.status ?? null
-    const latency = attempt?.latency ?? 0
-    const error = attempt?.error ?? null
-
-    const isSelected =
-      modelName === this.request.selectedModel &&
-      (!this.request.selectedNode || nodeHost === this.request.selectedNode)
-    const isFailed =
-      status !== null &&
-      status !== 'success' &&
-      status !== 'running' &&
-      status !== 'waiting'
-    const isPending = !attempt
-
-    let rowMod = ''
-    if (isSelected) rowMod = 'routing-row--selected'
-    else if (isFailed) rowMod = 'routing-row--failed'
-    else if (isPending) rowMod = 'routing-row--pending'
-
-    const icon = isSelected ? '✓' : isFailed ? '✗' : isPending ? '·' : '↗'
-    let iconMod = 'routing-icon--skip'
-    if (isSelected) iconMod = 'routing-icon--ok'
-    else if (isFailed) iconMod = 'routing-icon--fail'
-
-    let statusBadgeClass = 'b-blue'
-    if (status === 'success') statusBadgeClass = 'b-green'
-    else if (status === 'capacity') statusBadgeClass = 'b-yellow'
-    else if (isFailed) statusBadgeClass = 'b-red'
-
-    return html`
-      <div class="routing-row ${rowMod}">
-        <span class="routing-icon ${iconMod}">${icon}</span>
-        <div class="routing-row-body">
-          <div class="routing-row-top">
-            <span class="routing-model mono">${modelName}</span>
-            ${score !== null
-              ? html`<span class="routing-score">${score}</span>`
-              : ''}
-          </div>
-          ${nodeHost || error
-            ? html`<div class="routing-row-sub">
-                ${nodeHost
-                  ? html`<span class="routing-node">${nodeHost}</span>`
-                  : ''}
-                ${error
-                  ? html`<span class="routing-error">${error}</span>`
-                  : ''}
-              </div>`
-            : ''}
-        </div>
-        <div class="routing-row-right">
-          ${status
-            ? html`<span class="badge ${statusBadgeClass}">${status}</span>`
-            : html`<span class="routing-pending">skipped</span>`}
-          ${latency > 0
-            ? html`<span class="mono muted">${fmt.duration(latency)}</span>`
-            : ''}
-        </div>
-      </div>
-    `
+  selectedCandidate() {
+    if (!this.request) return null
+    const candidates = this.request.candidates || []
+    const selectedModel = this.request.selectedModel
+    const selectedNode = this.request.selectedNode
+    if (!selectedModel) return candidates[0] ?? null
+    return (
+      candidates.find(
+        (c) =>
+          c.modelName === selectedModel &&
+          (!selectedNode || c.nodeHost === selectedNode),
+      ) ?? candidates[0] ?? null
+    )
   }
 
-  // MARK: META
+  // ─── Candidate card ──────────────────────────────────────────────
 
-  renderCompactMetadata() {
-    if (!this.request) {
-      return html`<div class="empty">Select a request from the list.</div>`
+  renderCandidateCard({ candidate, attempt }, isWinner) {
+    const modelName     = candidate?.modelName ?? attempt?.modelName ?? '—'
+    const nodeHost      = candidate?.nodeHost  ?? attempt?.nodeHost  ?? ''
+    const score         = candidate?.score ?? null
+    const requestStatus = this.request?.status
+    const inProgress    = requestStatus === 'waiting' || requestStatus === 'running'
+
+    // For the winner card while the request is still in-progress, always use
+    // request.status so the badge stays in sync with the panel list. The
+    // attempt status can lag behind (e.g. still 'waiting' when the request is
+    // already 'running') because attempts are only updated on discrete events.
+    // Once the request reaches a terminal state, fall back to attempt.status
+    // for the precise per-attempt outcome.
+    const status = isWinner && inProgress
+      ? requestStatus
+      : attempt?.status ?? (isWinner ? requestStatus ?? null : null)
+
+    const key = this.candidateKey(modelName, nodeHost)
+
+    const isOpen = this.expandedCandidates.has(key) ||
+      (isWinner && !this.expandedCandidates.has(`__collapsed_${key}`))
+
+    let badgeClass = 'b-muted'
+    let badgeLabel = 'Skipped'
+    if (isWinner) {
+      if (status === 'success')        { badgeClass = 'b-green';  badgeLabel = 'Success' }
+      else if (status === 'running')   { badgeClass = 'b-blue';   badgeLabel = 'Running' }
+      else if (status === 'waiting')   { badgeClass = 'b-yellow'; badgeLabel = 'Waiting' }
+      else if (status)                 { badgeClass = 'b-red';    badgeLabel = fmt.status(status) }
+      else                             { badgeClass = 'b-blue';   badgeLabel = 'Selected' }
+    } else if (status) {
+      if (status === 'success')        { badgeClass = 'b-green';  badgeLabel = 'Success' }
+      else if (status === 'capacity')  { badgeClass = 'b-yellow'; badgeLabel = 'Capacity' }
+      else                             { badgeClass = 'b-red';    badgeLabel = fmt.status(status) }
     }
 
+    const scoreDetail = candidate?.rationale
+      ? renderRoutingRationale(candidate)
+      : score !== null
+        ? html`<div class="cand-score-only">${score.toFixed(1)}</div>`
+        : ''
+
     return html`
-      <div class="metadata-compact">
-        <!-- Row 1: Routing Signals | Latency -->
-        <div class="metadata-row">
-          <div class="metadata-col">
-            <div class="metadata-label">Routing Signals</div>
-            <div class="metadata-value">
-              ${renderFlagBadges(this.request.analysis || {})}
-            </div>
+      <div class="cand-card ${isWinner ? 'winner' : ''} ${isOpen ? 'open' : ''}">
+        <div class="cand-header"
+          @click=${() => {
+            if (isWinner && !this.expandedCandidates.has(key)) {
+              this.expandedCandidates = new Set([...this.expandedCandidates, `__collapsed_${key}`])
+            }
+            this.toggleCandidate(key)
+          }}
+        >
+          <div class="cand-line1">
+            <span class="cand-model mono">${modelName}</span>
+            <span class="badge ${badgeClass}">${badgeLabel}</span>
           </div>
-          <div class="metadata-col">
-            <div class="metadata-label">Latency</div>
-            <div class="metadata-value">
-              ${fmt.duration(this.request.latency)}
+          <div class="cand-line2">
+            <span class="cand-ip">${nodeHost}</span>
+            <div class="cand-meta">
+              ${score !== null
+                ? html`<span class="cand-score-label">score</span>
+                       <span class="cand-score-val ${isWinner ? 'winner' : ''}">${score.toFixed(1)}</span>`
+                : ''}
+              <span class="cand-expand">▸</span>
             </div>
           </div>
         </div>
+        <div class="cand-detail">
+          ${scoreDetail}
+        </div>
+      </div>
+    `
+  }
 
-        <!-- Row 2: Tokens | Input -->
-        <div class="metadata-row">
-          <div class="metadata-col">
-            <div class="metadata-label">Tokens out</div>
-            <div class="metadata-value">
-              ${this.request.tokensGenerated || 0}
-            </div>
+  // A non-interactive card shown at the end of the list when the originally
+  // requested model was not found and the request was rerouted.
+  renderMissingModelCard(modelName) {
+    return html`
+      <div class="cand-card" style="opacity:0.6">
+        <div class="cand-header" style="cursor:default">
+          <div class="cand-line1">
+            <span class="cand-model mono">${modelName}</span>
+            <span class="badge b-red">Not found</span>
           </div>
-          <div class="metadata-col">
-            <div class="metadata-label">Input</div>
-            <div class="metadata-value">
-              ${this.request.inputSummary || '—'}
-            </div>
+          <div class="cand-line2">
+            <span class="cand-ip muted">originally requested — rerouted to auto</span>
           </div>
         </div>
       </div>
     `
   }
+
+  renderLatencyTimeline(r) {
+    if (!r) return ''
+    const total = r.latency || 0
+    if (total <= 0) return ''
+    const parts = []
+    const queue = Math.max(0, r.queueWaitMs || 0)
+    const load = Math.max(0, r.modelLoadMs || 0)
+    const exec = Math.max(0, r.executionTimeMs || total - queue - load)
+    let used = 0
+    const add = (label, value, color) => {
+      if (value <= 0 || total <= 0) return
+      const pct = Math.max(2, (value / total) * 100) // minimum width
+      parts.push({ label, value, pct, color })
+    }
+    add('Queue', queue, 'var(--accent)')
+    add('Load', load, 'var(--warning, #f59e0b)')
+    add('Exec', exec, 'var(--success, #10b981)')
+    if (parts.length === 0) return ''
+    return html`
+      <div class="latency-timeline" title="Queue + Load + Exec = Total latency">
+        ${parts.map(
+          (p) => html`
+            <div
+              class="lt-seg"
+              style="width:${p.pct}%;background:${p.color}"
+              aria-label="${p.label} ${fmt.duration(p.value)}"
+            ></div>
+          `,
+        )}
+      </div>
+      <div class="latency-legend">
+        ${parts.map(
+          (p) => html`
+            <span class="lt-item"><span class="lt-dot" style="background:${p.color}"></span>${p.label} ${fmt.duration(p.value)}</span>
+          `,
+        )}
+      </div>
+    `
+  }
+
+  // ─── Routing section ──────────────────────────────────────────────
 
   renderRoutingSection() {
     if (!this.request) return ''
-
     const candidates = this.request.candidates || []
-    const attempts = this.request.attempts || []
+    const attempts   = this.request.attempts   || []
     if (!candidates.length && !attempts.length) return ''
 
-    const isExpanded = this.attemptExpanded || this.shouldExpandAttempts()
-    const selectedModel = this.selectedModelLabel()
-    const selectedNode = this.request.selectedNode || null
     const rows = this.buildRoutingPath(candidates, attempts)
-    const failedCount = attempts.filter(
-      (a) =>
-        a.status !== 'success' &&
-        a.status !== 'running' &&
-        a.status !== 'waiting',
-    ).length
-
-    // MARK: DETAILS
-
-    const statusBadgeClass =
-      this.request.status === 'success'
-        ? 'b-green'
-        : this.request.status === 'running'
-          ? 'b-blue'
-          : 'b-red'
+    const selectedModel  = this.request.selectedModel
+    const selectedNode   = this.request.selectedNode
+    const requestedModel = this.request.requestedModel
+    const inProgress     = this.request.status === 'waiting' || this.request.status === 'running'
+    // Only show the "not found" card for concrete model names, not virtual
+    // aliases like "auto" which are expected to resolve to a different model.
+    const wasRerouted = selectedModel && requestedModel &&
+      selectedModel !== requestedModel &&
+      !VIRTUAL_MODEL_ALIASES.has(requestedModel)
 
     return html`
       <div class="detail-section">
+        <div class="section-title-row">
           <h3>Routing Decision</h3>
-          ${
-            rows.length > 1 || failedCount > 0
-              ? html`<details>
-                  <summary class="selection-toggle-stats">
-                    ${rows.length > 1
-                      ? html`<span class="selection-stat"
-                          >${rows.length} candidates</span
-                        >`
-                      : ''}
-                    ${failedCount > 0
-                      ? html`<span class="selection-stat selection-stat--warn"
-                          >${failedCount} failed</span
-                        >`
-                      : ''}
-                  </summary>
-                  ${
-                    // render rows in reverse order, skipping the first one which is the final selection
-                    rows
-                      .slice(1)
-                      .reverse()
-                      .map((row) => this.renderRoutingRow(row))
-                  }
-                </details>`
-              : ''
-          }
-            <div class="selection-toggle-value">
-              <span class="mono">${selectedModel}</span>
-              ${
-                selectedNode
-                  ? html`
-                      <span class="selection-node">${selectedNode}</span>
-                      <span class="selection-status badge ${statusBadgeClass}">
-                        ${fmt.status(this.request.status)}
-                      </span>
-                    `
-                  : ''
-              }
-            </div>
-          </div>
+          ${rows.length > 1
+            ? html`<span class="section-count">${rows.length} candidates</span>`
+            : ''}
+        </div>
+        <div class="candidate-list">
+          ${rows.map(({ candidate, attempt }, rowIndex) => {
+            const modelName = candidate?.modelName ?? attempt?.modelName
+            const nodeHost  = candidate?.nodeHost  ?? attempt?.nodeHost
+            // A candidate is the winner when its model+node matches selectedModel/selectedNode.
+            // When selectedModel is not yet set (request still in-progress before
+            // recordSelection fires), treat the first candidate as winner so the badge
+            // correctly reflects the in-progress status instead of showing "Skipped".
+            const isWinner = selectedModel
+              ? modelName === selectedModel && (!selectedNode || nodeHost === selectedNode)
+              : inProgress && rowIndex === 0
+            return this.renderCandidateCard({ candidate, attempt }, isWinner)
+          })}
+          ${wasRerouted ? this.renderMissingModelCard(requestedModel) : ''}
+        </div>
       </div>
     `
   }
+
+  // ─── Execution (metadata) ─────────────────────────────────────────
+
+  renderExecutionSection() {
+    if (!this.request) return ''
+    const r = this.request
+    return html`
+      <div class="detail-section">
+        <h3>Execution</h3>
+        <div class="metadata-compact">
+          <div class="metadata-row">
+            <div class="metadata-col">
+              <div class="metadata-label">Latency</div>
+              <div class="metadata-value">
+                ${fmt.duration(r.latency)}
+              </div>
+              ${this.renderLatencyTimeline(r)}
+            </div>
+            <div class="metadata-col">
+              <div class="metadata-label">Signals</div>
+              <div class="metadata-value">
+                ${renderFlagBadges(r.analysis || {})}
+              </div>
+            </div>
+          </div>
+          <div class="metadata-row">
+            <div class="metadata-col">
+              <div class="metadata-label">Tokens in</div>
+              <div class="metadata-value">${r.tokensPrompt ?? '—'}</div>
+            </div>
+            <div class="metadata-col">
+              <div class="metadata-label">Tokens out</div>
+              <div class="metadata-value">${r.tokensGenerated ?? 0}</div>
+            </div>
+          </div>
+          <div class="metadata-row">
+            <div class="metadata-col">
+              <div class="metadata-label">Input</div>
+              <div class="metadata-value">${r.inputSummary || '—'}</div>
+            </div>
+            <div class="metadata-col">
+              <div class="metadata-label">Stream</div>
+              <div class="metadata-value">${r.stream ? 'Yes' : 'No'}</div>
+            </div>
+          </div>
+          <div class="metadata-row span-all">
+            <div class="metadata-col">
+              <div class="metadata-label">Model load</div>
+              <div class="metadata-value">
+                ${r.modelLoadMs > 0 ? fmt.duration(r.modelLoadMs) : '—'}
+                ${r.modelLoadMs > 0
+                  ? html`<span class="muted">time to load model into memory</span>`
+                  : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  // ─── Actionable insights ──────────────────────────────────────────
+
+  renderActionableInsights() {
+    if (!this.request) return ''
+    const hasAbortReason      = Boolean(this.request.abortReason)
+    const hasFailureCategory  = Boolean(this.request.failureCategory)
+    const hasRetryHint        = Boolean(this.request.retryHint)
+    if (!hasAbortReason && !hasFailureCategory && !hasRetryHint) return ''
+
+    return html`
+      <div class="detail-section">
+        <h3>Insights</h3>
+        <div class="detail-list">
+          ${hasAbortReason
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Abort reason</div>
+                  <div class="detail-row-sub">${formatAbortReason(this.request.abortReason)}</div>
+                </div>
+              </div>`
+            : ''}
+          ${hasFailureCategory
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Failure category</div>
+                  <div class="detail-row-sub">${formatFailureCategory(this.request.failureCategory)}</div>
+                </div>
+              </div>`
+            : ''}
+          ${hasRetryHint
+            ? html`<div class="detail-row">
+                <div class="detail-row-main">
+                  <div class="detail-row-title">Recommended action</div>
+                  <div class="detail-row-sub">${formatRetryHint(this.request.retryHint)}</div>
+                </div>
+              </div>`
+            : ''}
+        </div>
+      </div>
+    `
+  }
+
+  // ─── Main render ──────────────────────────────────────────────────
 
   renderRequestDetails() {
     if (!this.request) {
@@ -272,11 +407,15 @@ export class UnifiedRequestDrawer extends LitElement {
     }
 
     return html`
-      ${this.renderRoutingSection()} ${this.renderCompactMetadata()}
+      ${this.renderRoutingSection()}
+      ${this.renderExecutionSection()}
+      ${this.renderActionableInsights()}
 
       <div class="detail-section">
         <h3>Conversation</h3>
-        ${renderMessageThread(this.request)}
+        <div class="conversation-scroll">
+          ${renderConversationThread(this.request)}
+        </div>
       </div>
 
       ${this.request.error
@@ -291,6 +430,8 @@ export class UnifiedRequestDrawer extends LitElement {
   }
 
   render() {
+    const isActive = this.request &&
+      (this.request.status === 'running' || this.request.status === 'waiting')
     return html`
       <div
         class="drawer-shell ${this.open ? 'open' : ''}"
@@ -307,13 +448,21 @@ export class UnifiedRequestDrawer extends LitElement {
                   : 'Select a request from the list.'}
               </div>
             </div>
-            <button
-              class="drawer-close"
-              type="button"
-              @click=${() => this.emitClose()}
-            >
-              ✕
-            </button>
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              ${isActive
+                ? html`<button
+                    class="drawer-terminate-btn"
+                    type="button"
+                    title="Terminate this request"
+                    @click=${() => this.handleTerminate()}
+                  >Terminate</button>`
+                : ''}
+              <button
+                class="drawer-close"
+                type="button"
+                @click=${() => this.emitClose()}
+              >✕</button>
+            </div>
           </div>
           <div class="drawer-body">${this.renderRequestDetails()}</div>
         </aside>

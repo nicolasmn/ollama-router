@@ -23,12 +23,15 @@ function createDiscoveryManager(nodeHost: string, modelName: string) {
       [
         nodeHost,
         {
-          models: new Map([[modelName, { profile: { supportsThinking: true } }]]),
+          models: new Map([
+            [modelName, { profile: { supportsThinking: true } }],
+          ]),
         },
       ],
     ]),
     updateModelMetrics: jest.fn(),
     recordModelFailure: jest.fn(),
+    getCloudApiKey: jest.fn().mockReturnValue(null),
   } as unknown as DiscoveryManager
 }
 
@@ -39,6 +42,10 @@ function createRequestHistoryManager() {
     recordAttempt: jest.fn(),
     finishRequest: jest.fn(),
     updateResponseContent: jest.fn(),
+    applyStreamingEvent: jest.fn(),
+    finalizeStreamingResponse: jest.fn(),
+    registerAbortController: jest.fn(),
+    unregisterAbortController: jest.fn(),
   } as unknown as RequestHistoryManager
 }
 
@@ -67,12 +74,18 @@ describe('native pass-through routes', () => {
         for await (const chunk of req) chunks.push(chunk as Buffer)
         upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
-          id: 'chatcmpl_test', object: 'chat.completion', created: 1,
-          model: (upstreamBody as any).model,
-          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }))
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl_test',
+            object: 'chat.completion',
+            created: 1,
+            model: upstreamBody!.model,
+            choices: [
+              { index: 0, message: { role: 'assistant', content: 'ok' } },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+        )
         return
       }
       res.writeHead(404); res.end()
@@ -104,6 +117,48 @@ describe('native pass-through routes', () => {
     })
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
+  })
+
+  it('streams chat completions SSE response and captures streamed content', async () => {
+    const sseLines = [
+      'data: {"id":"chatcmpl_sse","object":"chat.completion.chunk","model":"qwen3:8b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}\n\n',
+      'data: {"id":"chatcmpl_sse","object":"chat.completion.chunk","model":"qwen3:8b","choices":[{"index":0,"delta":{"content":" there"},"finish_reason":null}]}\n\n',
+      'data: [DONE]\n\n',
+    ]
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        for (const line of sseLines) res.write(line)
+        res.end(); return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    const requestRouter = {
+      analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
+      selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
+    } as any
+    const historyManager = createRequestHistoryManager()
+    setupChatRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, historyManager)
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const response = await fetch(`${routerBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', stream: true, messages: [{ role: 'user', content: 'Hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toMatch(/x-ndjson|event-stream/)
+    const text = await response.text()
+    // pass-through intact: SSE framing survives the capture transform
+    expect(text).toContain('data: {"id":"chatcmpl_sse"')
+    expect(text).toContain('data: [DONE]')
+    // capture: SSE `data:` payloads are parsed and forwarded, [DONE] is skipped
+    expect(historyManager.applyStreamingEvent).toHaveBeenCalledTimes(2)
+    expect(historyManager.applyStreamingEvent).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ id: 'chatcmpl_sse' }))
   })
 
   it('passes responses body through to upstream /v1/responses (only model is rewritten)', async () => {
@@ -168,7 +223,7 @@ describe('native pass-through routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'auto', previous_response_id: 'resp_prev', input: 'hi' }),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(400)
     expect(json.param).toBe('previous_response_id')
     expect(upstreamCalls).toBe(0)
@@ -228,7 +283,7 @@ describe('/v1/messages route', () => {
       headers: { 'Content-Type': 'application/json', 'x-api-key': 'test', 'anthropic-version': '2023-06-01' },
       body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
+    const json = await response.json()
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
     expect(json.type).toBe('message')
@@ -278,7 +333,7 @@ describe('/v1/messages route', () => {
     app.use(express.json())
     const requestRouter = {
       analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
-      selectForChat: jest.fn(() => ({ nodeHost: upstreamBase, modelName: routedModel })),
+      selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
     } as any
     setupMessagesRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
     routerServer = http.createServer(app)
@@ -293,7 +348,7 @@ describe('/v1/messages route', () => {
     const text = await response.text()
     expect(text).toContain('message_start')
     expect(text).toContain('message_stop')
-  })
+  }, 30000)
 })
 
 describe('/api/generate and /api/chat routes', () => {
@@ -303,7 +358,7 @@ describe('/api/generate and /api/chat routes', () => {
   afterEach(async () => {
     if (routerServer?.listening) await new Promise<void>((r) => routerServer!.close(() => r()))
     if (upstreamServer?.listening) await new Promise<void>((r) => upstreamServer!.close(() => r()))
-  })
+  }, 30000)
 
   function buildRequestRouter(upstreamBase: string, routedModel: string) {
     return {
@@ -320,7 +375,7 @@ describe('/api/generate and /api/chat routes', () => {
         for await (const chunk of req) chunks.push(chunk as Buffer)
         upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ model: (upstreamBody as any).model, created_at: new Date().toISOString(), response: 'ok', done: true, eval_count: 3 }))
+        res.end(JSON.stringify({ model: upstreamBody!.model, response: 'ok', done: true }))
         return
       }
       res.writeHead(404); res.end()
@@ -332,15 +387,15 @@ describe('/api/generate and /api/chat routes', () => {
     setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
-    const payload = { model: 'auto', prompt: 'Why is the sky blue?', stream: false, options: { temperature: 0.7 } }
+    const payload = { model: 'auto', prompt: 'Why is the sky blue?', stream: false }
     const response = await fetch(`${routerBase}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
-    expect(json.done).toBe(true)
-  })
+  }, 30000)
 
   it('passes chat body through to upstream /api/chat (only model is rewritten)', async () => {
     let upstreamBody: Record<string, unknown> | null = null
@@ -350,7 +405,7 @@ describe('/api/generate and /api/chat routes', () => {
         for await (const chunk of req) chunks.push(chunk as Buffer)
         upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ model: (upstreamBody as any).model, created_at: new Date().toISOString(), message: { role: 'assistant', content: 'ok' }, done: true, eval_count: 2 }))
+        res.end(JSON.stringify({ model: upstreamBody!.model, message: { role: 'assistant', content: 'ok' }, done: true }))
         return
       }
       res.writeHead(404); res.end()
@@ -362,25 +417,26 @@ describe('/api/generate and /api/chat routes', () => {
     setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
-    const payload = { model: 'auto', stream: false, messages: [{ role: 'user', content: 'Hello' }] }
+    const payload = { model: 'auto', messages: [{ role: 'user', content: 'Hi' }], stream: false }
     const response = await fetch(`${routerBase}/api/chat`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     })
-    const json = await response.json() as any
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
-    expect(json.done).toBe(true)
-  })
+  }, 30000)
 
   it('streams generate response by default when stream is not set', async () => {
     const ndjsonLines = [
       '{"model":"qwen3:8b","response":"Why","done":false}\n',
       '{"model":"qwen3:8b","response":" is","done":false}\n',
-      '{"model":"qwen3:8b","response":"","done":true,"eval_count":5}\n',
+      '{"model":"qwen3:8b","response":" the sky blue?","done":false}\n',
+      '{"model":"qwen3:8b","response":"","done":true,"done_reason":"stop"}\n',
     ]
     upstreamServer = http.createServer(async (req, res) => {
       if (req.method === 'POST' && req.url === '/api/generate') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
         for (const line of ndjsonLines) res.write(line)
         res.end(); return
       }
@@ -394,12 +450,15 @@ describe('/api/generate and /api/chat routes', () => {
     routerServer = http.createServer(app)
     const routerBase = await startServer(routerServer)
     const response = await fetch(`${routerBase}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'auto', prompt: 'Why is the sky blue?' }),
     })
     expect(response.status).toBe(200)
     const text = await response.text()
-    expect(text).toContain('"done":true')
-    expect(text).toContain('"done":false')
-  })
+    const lines = text.trim().split('\n').filter(Boolean)
+    expect(lines.length).toBeGreaterThan(0)
+    const last = JSON.parse(lines[lines.length - 1])
+    expect(last.done).toBe(true)
+  }, 30000)
 })

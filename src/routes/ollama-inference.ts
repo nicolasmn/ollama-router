@@ -41,6 +41,7 @@ export function setupOllamaInferenceRoutes(
       reqBody: req.body as Record<string, unknown>,
       analysis: {},
     })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     try {
       const candidates = await selectCandidatesOrHandleError({
@@ -48,32 +49,20 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body as Record<string, unknown>,
         taskType: 'generate',
         res,
-        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
+        requestHistoryManager,
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody, abortController.signal),
         selectionErrorMessage: '/api/generate model selection failed',
         logger,
       })
-      if (!candidates) {
-        requestHistoryManager.finishRequest(requestId, {
-          status: res.statusCode === 404 ? 'rejected' : 'failed',
-          responseStatus: res.statusCode || 503,
-          error:
-            res.statusCode === 404
-              ? 'Requested model not found'
-              : 'No suitable models available',
-        })
-        return
-      }
+      if (!candidates) return
 
-      requestHistoryManager.recordSelection(
-        requestId,
-        Array.isArray(candidates) ? candidates : [candidates],
-      )
+      requestHistoryManager.recordSelection(requestId, candidates)
 
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
           reqBody: req.body as Record<string, unknown>,
-          candidate: candidates,
+          candidate: candidates[0],
           endpoint: '/api/generate',
           forwardContentType: true,
           res,
@@ -86,11 +75,14 @@ export function setupOllamaInferenceRoutes(
 
       const success = await tryCandidatesWithRetry({
         requestId,
-        candidates: Array.isArray(candidates) ? candidates : [candidates],
+        candidates,
         reqBody: req.body as Record<string, unknown>,
         endpoint: '/api/generate',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
+        responseContentFrom: (result) => ({
+          content: (result as Record<string, unknown>).response,
+        }),
         successLog: '/api/generate request successful',
         failureLog: '/api/generate model failed, trying next',
         res,
@@ -155,6 +147,7 @@ export function setupOllamaInferenceRoutes(
       if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 
@@ -175,6 +168,7 @@ export function setupOllamaInferenceRoutes(
       reqBody: req.body as Record<string, unknown>,
       analysis: {},
     })
+    requestHistoryManager.registerAbortController(requestId, abortController)
 
     try {
       const candidates = await selectCandidatesOrHandleError({
@@ -182,32 +176,20 @@ export function setupOllamaInferenceRoutes(
         reqBody: req.body as Record<string, unknown>,
         taskType: 'chat',
         res,
-        selectFn: (reqBody) => requestRouter.selectForChat(reqBody),
+        requestHistoryManager,
+        selectFn: (reqBody) => requestRouter.selectForChat(reqBody, abortController.signal),
         selectionErrorMessage: '/api/chat model selection failed',
         logger,
       })
-      if (!candidates) {
-        requestHistoryManager.finishRequest(requestId, {
-          status: res.statusCode === 404 ? 'rejected' : 'failed',
-          responseStatus: res.statusCode || 503,
-          error:
-            res.statusCode === 404
-              ? 'Requested model not found'
-              : 'No suitable models available',
-        })
-        return
-      }
+      if (!candidates) return
 
-      requestHistoryManager.recordSelection(
-        requestId,
-        Array.isArray(candidates) ? candidates : [candidates],
-      )
+      requestHistoryManager.recordSelection(requestId, candidates)
 
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
           reqBody: req.body as Record<string, unknown>,
-          candidate: candidates,
+          candidate: candidates[0],
           endpoint: '/api/chat',
           forwardContentType: true,
           res,
@@ -220,11 +202,12 @@ export function setupOllamaInferenceRoutes(
 
       const success = await tryCandidatesWithRetry({
         requestId,
-        candidates: Array.isArray(candidates) ? candidates : [candidates],
+        candidates,
         reqBody: req.body as Record<string, unknown>,
         endpoint: '/api/chat',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
+        responseContentFrom: (result) => result,
         successLog: '/api/chat request successful',
         failureLog: '/api/chat model failed, trying next',
         res,
@@ -289,6 +272,7 @@ export function setupOllamaInferenceRoutes(
       if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
     } finally {
       res.off('close', onClientClose)
+      requestHistoryManager.unregisterAbortController(requestId)
     }
   })
 }

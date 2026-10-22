@@ -5,6 +5,9 @@ import type { Server } from 'node:http'
 import type { DiscoveryManager } from './discovery-manager.js'
 import type { LoadManager } from './load-manager.js'
 import type { RequestHistoryManager, RequestEntry } from './request-history.js'
+import { forceModelStore } from './force-model-store.js'
+import { disabledModelsStore } from './disabled-models-store.js'
+import { cloudUsageStore } from './cloud-usage.js'
 
 const BROADCAST_INTERVAL_MS = 2000
 const ACTIVE_STATUSES = new Set(['waiting', 'running'])
@@ -66,6 +69,15 @@ export class WsManager {
     )
     const scanStatus = this.#discoveryManager.getScanStatus()
 
+    // Full message threads can be large; the periodic broadcast only needs
+    // routing metadata. The dashboard fetches message details via
+    // GET /admin/requests/:id (hydration) when a drawer is opened.
+    const slimmedRequests = recentRequests.map((request) => ({
+      ...request,
+      messageList: undefined,
+      hasMessages: Array.isArray(request.messageList) && request.messageList.length > 0,
+    }))
+
     const activeModels = new Map<string, Map<string, number>>()
     for (const req of recentRequests) {
       if (req.status !== 'running') continue
@@ -81,42 +93,66 @@ export class WsManager {
     }
 
     const nodes = Object.fromEntries(
-      Array.from(inventory.entries()).map(([nodeHost, node]) => [
-        nodeHost,
-        {
-          host: node.host,
-          reachable: node.reachable,
-          lastSeen: node.lastSeen,
-          activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
-          models: Object.fromEntries(
-            Array.from(node.models.entries()).map(([modelName, modelInfo]) => [
-              modelName,
-              {
-                name: modelInfo.name,
-                family: modelInfo.family,
-                size: modelInfo.size,
-                profile: modelInfo.profile,
-                recentLatency: modelInfo.recentLatency,
-                recentTps: modelInfo.recentTps,
-                failures: modelInfo.failures,
-                totalRequests: modelInfo.totalRequests || 0,
-                activeRequests:
-                  activeModels.get(nodeHost)?.get(modelName) || 0,
-                lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
-                lastRoutedAt: modelInfo.lastRoutedAt,
-              },
-            ]),
-          ),
-        },
-      ]),
+      Array.from(inventory.entries()).map(([nodeHost, node]) => {
+        const isCloud = node.cloud ?? false
+        return [
+          nodeHost,
+          {
+            host: node.host,
+            reachable: node.reachable,
+            cloud: isCloud,
+            lastSeen: node.lastSeen,
+            mac: node.mac,
+            activeRequests: this.#loadManager.getCurrentLoad(nodeHost),
+            // Cloud nodes have no concurrency cap — null hides the capacity bar in the UI
+            maxConcurrentRequests: isCloud
+              ? null
+              : this.#loadManager.getMaxConcurrentPerNode(),
+            atCapacity: this.#loadManager.isAtCapacity(nodeHost),
+            utilization: this.#loadManager.getUtilization(nodeHost),
+            models: Object.fromEntries(
+              Array.from(node.models.entries()).map(
+                ([modelName, modelInfo]) => [
+                  modelName,
+                  {
+                    name: modelInfo.name,
+                    family: modelInfo.family,
+                    size: modelInfo.size,
+                    profile: modelInfo.profile,
+                    recentLatency: modelInfo.recentLatency,
+                    recentTps: modelInfo.recentTps,
+                    failures: modelInfo.failures,
+                    totalRequests: modelInfo.totalRequests || 0,
+                    activeRequests:
+                      activeModels.get(nodeHost)?.get(modelName) || 0,
+                    lastRoutingEndpoint: modelInfo.lastRoutingEndpoint,
+                    lastRoutedAt: modelInfo.lastRoutedAt,
+                    disabled: disabledModelsStore.isDisabled(
+                      nodeHost,
+                      modelName,
+                    ),
+                  },
+                ],
+              ),
+            ),
+          },
+        ]
+      }),
     )
+
+    const forceOverrideEntry = forceModelStore.get()
+    const forceOverride = forceOverrideEntry
+      ? { model: forceOverrideEntry.model, expiresAt: forceOverrideEntry.expiresAt }
+      : null
 
     return {
       type: 'inventory',
       data: {
         timestamp: Date.now(),
         nodes,
-        requests: recentRequests,
+        requests: slimmedRequests,
+        forceOverride,
+        cloudUsage: cloudUsageStore.get(),
         scan: {
           inProgress: scanStatus.inProgress,
           lastScanMs: scanStatus.lastScanMs,
