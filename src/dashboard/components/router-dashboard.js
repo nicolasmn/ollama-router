@@ -126,16 +126,70 @@ export class RouterDashboard extends LitElement {
   }
 
   get selectedRequest() {
-    return this.requests.find((request) => request.requestId === this.selectedRequestId)
+    const base = this.requests.find(
+      (request) => request.requestId === this.selectedRequestId,
+    )
+    if (!base) {
+      this.#hydratedRequest = null
+      return null
+    }
+    if (!base.hasMessages) return base
+    // WS broadcasts omit messageList; the hydrated copy (fetched once plus a
+    // light refresh while the drawer is open) carries the full thread.
+    return this.#hydratedRequest
+      && this.#hydratedRequest.requestId === base.requestId
+      ? { ...base, ...this.#hydratedRequest }
+      : base
   }
+
+  #hydratedRequest = null
+  #hydrateTimer = null
 
   openRequest(requestId) {
     this.selectedRequestId = requestId
     this.drawerOpen = true
+    this.#scheduleHydration(0)
   }
 
   closeDrawer() {
     this.drawerOpen = false
+    if (this.#hydrateTimer) {
+      clearInterval(this.#hydrateTimer)
+      this.#hydrateTimer = null
+    }
+  }
+
+  async #scheduleHydration(delayMs = 0) {
+    if (this.#hydrateTimer) {
+      clearInterval(this.#hydrateTimer)
+      this.#hydrateTimer = null
+    }
+    await this.#hydrateSelected()
+    if (!this.drawerOpen) return
+    // Keep the open drawer fresh (streaming captures, attempt updates). The
+    // single-entry REST response is small compared to the full list.
+    this.#hydrateTimer = setInterval(() => {
+      if (!this.drawerOpen) return
+      this.#hydrateSelected()
+    }, 2000)
+  }
+
+  async #hydrateSelected() {
+    const requestId = this.selectedRequestId
+    if (!requestId) return
+    try {
+      const response = await fetch(
+        `/admin/requests/${encodeURIComponent(requestId)}`,
+      )
+      if (!response.ok) return
+      const detail = await response.json()
+      if (detail?.requestId !== requestId) return
+      if (requestId !== this.selectedRequestId) return
+      this.#hydratedRequest = detail
+      this.requestUpdate()
+    } catch {
+      // WS still delivers metadata; hydration is best-effort
+    }
   }
 
   async onRescanClick() {

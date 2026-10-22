@@ -169,6 +169,20 @@ export function createAdminRouter({
     res.json(requestHistoryManager.getRecentRequests())
   })
 
+  // Single request detail — used by the dashboard drawer to hydrate message
+  // threads (the periodic WS broadcast omits messageList to stay cheap).
+  r.get('/requests/:requestId', (req, res) => {
+    const { requestId } = req.params
+    const entry = requestHistoryManager
+      .getRecentRequests()
+      .find((r) => r.requestId === requestId)
+    if (!entry) {
+      res.status(404).json({ error: 'Request not found' })
+      return
+    }
+    res.json(entry)
+  })
+
   r.delete('/requests/:requestId', (req, res) => {
     const { requestId } = req.params
     const entry = requestHistoryManager

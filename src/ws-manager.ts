@@ -69,6 +69,15 @@ export class WsManager {
     )
     const scanStatus = this.#discoveryManager.getScanStatus()
 
+    // Full message threads can be large; the periodic broadcast only needs
+    // routing metadata. The dashboard fetches message details via
+    // GET /admin/requests/:id (hydration) when a drawer is opened.
+    const slimmedRequests = recentRequests.map((request) => ({
+      ...request,
+      messageList: undefined,
+      hasMessages: Array.isArray(request.messageList) && request.messageList.length > 0,
+    }))
+
     const activeModels = new Map<string, Map<string, number>>()
     for (const req of recentRequests) {
       if (req.status !== 'running') continue
@@ -141,7 +150,7 @@ export class WsManager {
       data: {
         timestamp: Date.now(),
         nodes,
-        requests: recentRequests,
+        requests: slimmedRequests,
         forceOverride,
         cloudUsage: cloudUsageStore.get(),
         scan: {
