@@ -225,9 +225,19 @@ Two TypeScript configs:
 
 Shared API types live in `src/types/`: `OpenAIApiTypes.ts`, `OllamaApiTypes.ts`, `AnthropicApiTypes.ts`. Internal types (routing, config, models) are re-exported from `src/types/index.ts`.
 
-## Raspberry Pi Service
+## Running as a Service
 
-`scripts/service.js` is a Linux-only systemd CLI for service registration and lifecycle management. Prerequisites: Linux with systemd, Node.js 18+, npm.
+`scripts/service.js` is a cross-platform service CLI. It auto-detects the OS and delegates to the appropriate backend:
+
+| Platform | Backend | Runs as |
+|---|---|---|
+| Linux | systemd | `ollama-router` system user |
+| macOS | launchd (`/Library/LaunchDaemons`) | root (system daemon) |
+| Windows | Windows Service (`node-windows`) | SYSTEM |
+
+Prerequisites: Node.js 18+, npm. Windows additionally requires `node-windows` (`npm install node-windows`).
+
+### Commands
 
 ```bash
 # register service (deploy + enable + start)
@@ -248,39 +258,62 @@ sudo node scripts/service.js update
 # remove the service (keeps files and configuration)
 sudo node scripts/service.js uninstall
 
-# remove everything including files, data, config, and service user
+# remove everything including files, data, and config
 sudo node scripts/service.js uninstall --purge
 ```
 
-You can also run through npm:
+Or via npm:
 
 ```bash
 npm run service -- --help
 npm run service -- status
 ```
 
-The installer copies the application to `/opt/ollama-router`, installs production dependencies, creates a locked-down `ollama-router` system user, and registers a systemd unit. It creates `/etc/ollama-router.env` only if it does not already exist, so updates never overwrite your configuration.
+### Install Locations
 
-Adjust `/etc/ollama-router.env` after the first install if your Ollama nodes are on other machines:
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| App | `/opt/ollama-router` | `/opt/ollama-router` | `C:\ProgramData\ollama-router` |
+| Data | `/var/lib/ollama-router` | `/var/lib/ollama-router` | `C:\ProgramData\ollama-router\data` |
+| Config | `/etc/ollama-router.env` | `/etc/ollama-router.env` | `C:\ProgramData\ollama-router\ollama-router.env` |
+| Logs | `journalctl -u ollama-router` | `/var/log/ollama-router/` | `C:\ProgramData\ollama-router\logs\` |
+
+The installer creates the config file only on first run — updates never overwrite your configuration.
+
+Adjust the config file after the first install if your Ollama nodes are on other machines:
 
 ```bash
 OLLAMA_NODES=192.168.1.50:11434,192.168.1.51:11434
 AUTO_DISCOVER=false
 ```
 
-Useful service commands:
+### Platform-Specific Log Commands
+
+Linux:
 
 ```bash
 systemctl status ollama-router
 journalctl -u ollama-router -f
-curl http://127.0.0.1:8000/health
 ```
 
-`status` exit codes:
+macOS:
 
-- `0`: service is active
-- `1`: service is not active
-- `2`: status check error
+```bash
+tail -f /var/log/ollama-router/stdout.log
+tail -f /var/log/ollama-router/stderr.log
+```
+
+Windows (PowerShell):
+
+```powershell
+Get-Content C:\ProgramData\ollama-router\logs\ollama-router.log -Wait
+```
+
+### Status Exit Codes
+
+- `0`: service is running
+- `1`: service is stopped
+- `2`: status check error / service not registered
 
 ## Example
 
