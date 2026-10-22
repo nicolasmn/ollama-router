@@ -5,6 +5,22 @@ const MAX_ATTEMPTS = 8
 const MAX_CANDIDATES = 3
 const ACTIVE_ATTEMPT_STATUSES = new Set(['waiting', 'running'])
 
+// Retention budgeting. The dashboard history used to copy the entire inbound
+// conversation (full message content, base64 images, tool outputs) into every
+// history entry for the last N requests — so a client that resends a growing
+// transcript (agent loop, chat UI with history) made retained heap grow
+// quadratically with conversation size until Node's heap limit was reached.
+// Every captured chunk is now capped so total retained memory stays bounded.
+const MAX_MESSAGE_TEXT_CHARS = 4_000
+const MAX_MESSAGES_PER_ENTRY = 300
+const MAX_ENTRY_TOTAL_BYTES = 512_000
+const MAX_IMAGE_DATA_URL_CHARS = 64_000
+const MAX_IMAGES_PER_MESSAGE = 4
+const MAX_CAPTURED_CONTENT_CHARS = 64_000
+const MAX_CAPTURED_THINKING_CHARS = 32_000
+const MAX_TOOL_ARGUMENT_CHARS = 16_000
+const MAX_PREVIEW_CHARS = 4_000
+
 export interface CandidateRationale {
   latencyScore: number
   tpsScore: number
@@ -175,6 +191,111 @@ function hashString(input: string): string {
   return Math.abs(hash).toString(36)
 }
 
+// ---------------------------------------------------------------------------
+// Capture caps — see the MAX_* constants at the top of this file.
+// ---------------------------------------------------------------------------
+
+function truncateCappedText(value: string, cap: number): string {
+  if (value.length <= cap) return value
+  return `${value.slice(0, cap)}…[truncated, ${value.length} chars total]`
+}
+
+/** Cap base64 data URLs; keep the MIME prefix so the type stays visible. */
+function capImageDataUrl(url: string): string {
+  if (url.length <= MAX_IMAGE_DATA_URL_CHARS) return url
+  if (url.startsWith('data:')) {
+    const comma = url.indexOf(',')
+    if (comma !== -1 && comma <= 64) {
+      return `${url.slice(0, comma + 1)}…[image data truncated, ${url.length} chars total]`
+    }
+    return `data:image/*;base64,…[truncated, ${url.length} chars total]`
+  }
+  return truncateCappedText(url, MAX_IMAGE_DATA_URL_CHARS)
+}
+
+function capImages(images: MessageImage[] | undefined): MessageImage[] | undefined {
+  if (!images || images.length === 0) return undefined
+  return images
+    .slice(0, MAX_IMAGES_PER_MESSAGE)
+    .map((img) => ({ ...img, url: capImageDataUrl(img.url) }))
+}
+
+function capToolCalls(toolCalls: ToolCall[] | undefined): ToolCall[] | undefined {
+  if (!toolCalls || toolCalls.length === 0) return undefined
+  return toolCalls.map((call) => ({
+    ...call,
+    function: {
+      ...call.function,
+      arguments: truncateCappedText(call.function.arguments, MAX_TOOL_ARGUMENT_CHARS),
+    },
+  }))
+}
+
+function messagePayloadChars(msg: MessageRecord): number {
+  let sum = (msg.content || '').length + (msg.thinking || '').length
+  for (const img of msg.images ?? []) sum += img.url.length
+  for (const call of msg.toolCalls ?? []) sum += (call.function?.arguments || '').length
+  return sum
+}
+
+/** Keep the newest messages only when the entry payload exceeds the budget. */
+function applyEntryBudget(messages: MessageRecord[]): MessageRecord[] {
+  const capped = messages
+    .slice(0, MAX_MESSAGES_PER_ENTRY)
+    .map((msg) => {
+      const record: MessageRecord = {
+        ...msg,
+        content: truncateCappedText(msg.content || '', MAX_MESSAGE_TEXT_CHARS),
+      }
+      if (record.thinking) {
+        record.thinking = truncateCappedText(record.thinking, MAX_CAPTURED_THINKING_CHARS)
+      }
+      const images = capImages(record.images)
+      if (images) record.images = images as any
+      const toolCalls = capToolCalls(record.toolCalls)
+      if (toolCalls) record.toolCalls = toolCalls
+      return record
+    })
+
+  let total = 0
+  for (const msg of capped) total += messagePayloadChars(msg)
+
+  let index = 0
+  let dropped = 0
+  while (total > MAX_ENTRY_TOTAL_BYTES && index < capped.length) {
+    total -= messagePayloadChars(capped[index])
+    index += 1
+    dropped += 1
+  }
+  if (dropped === 0) return capped
+  return [
+    {
+      role: 'system',
+      content: `(${dropped} earlier message${dropped === 1 ? '' : 's'} truncated to keep dashboard history bounded)`,
+    },
+    ...capped.slice(index),
+  ]
+}
+
+/** Append text to a capture field without ever exceeding the cap. */
+function appendCappedText(
+  message: MessageRecord,
+  field: 'content' | 'thinking',
+  part: string,
+): void {
+  if (!part) return
+  const cap = field === 'thinking' ? MAX_CAPTURED_THINKING_CHARS : MAX_CAPTURED_CONTENT_CHARS
+  const current = (field === 'content' ? message.content : message.thinking) || ''
+  if (current.length >= cap) {
+    return // already at cap — the live stream still flows, capture just stops growing
+  }
+  if (current.length + part.length >= cap) {
+    message[field] = `${current.slice(0, cap)}…[truncated]`
+    return
+  }
+  message[field] = current + part
+}
+
 function stringifyContent(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -221,7 +342,7 @@ function extractImages(content: unknown): MessageImage[] | undefined {
       }
     }
   }
-  return images.length > 0 ? images : undefined
+  return capImages(images)
 }
 
 function extractThinkingFromTaggedContent(
@@ -265,28 +386,29 @@ function buildPreview(
   reqBody: Record<string, unknown>,
   endpointType: string,
 ): string {
+  let preview: string
   if (endpointType === 'embeddings') {
-    return stringifyEmbeddingInput(reqBody?.input)
-  }
-  if (endpointType === 'completions') {
-    return typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
-  }
-  if (endpointType === 'systemone') {
+    preview = stringifyEmbeddingInput(reqBody?.input)
+  } else if (endpointType === 'completions') {
+    preview = typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
+  } else if (endpointType === 'systemone') {
     // Jev wire format has no `messages`; the `state` field is the input.
     // Can be a string or a JSON-serializable object/array.
     const state = reqBody?.state
-    if (typeof state === 'string') return state
-    if (state && typeof state === 'object') return JSON.stringify(state)
-    return ''
+    if (typeof state === 'string') preview = state
+    else if (state && typeof state === 'object') preview = JSON.stringify(state)
+    else preview = ''
+  } else {
+    const messages = Array.isArray(reqBody?.messages)
+      ? (reqBody.messages as Array<Record<string, unknown>>)
+      : []
+    const userMessages = messages.filter((m) => m?.role === 'user')
+    const lastUserMessage = userMessages.at(-1)
+    preview = lastUserMessage
+      ? stringifyContent(lastUserMessage.content)
+      : stringifyContent((messages.at(-1) as Record<string, unknown>)?.content)
   }
-  const messages = Array.isArray(reqBody?.messages)
-    ? (reqBody.messages as Array<Record<string, unknown>>)
-    : []
-  const userMessages = messages.filter((m) => m?.role === 'user')
-  const lastUserMessage = userMessages.at(-1)
-  return lastUserMessage
-    ? stringifyContent(lastUserMessage.content)
-    : stringifyContent((messages.at(-1) as Record<string, unknown>)?.content)
+  return truncateCappedText(preview, MAX_PREVIEW_CHARS)
 }
 
 function getNestedValue(
@@ -342,14 +464,17 @@ function buildConversationInfo(
       : []
     const firstUserMessage = messages.find((m) => m?.role === 'user')
     const anchor = normalizeInlineText(
-      firstUserMessage
-        ? stringifyContent(firstUserMessage.content)
-        : preview,
+      truncateCappedText(
+        firstUserMessage
+          ? stringifyContent(firstUserMessage.content)
+          : preview,
+        2_000,
+      ),
     )
     if (anchor) {
       return {
         id: `chat:${hashString(anchor.toLowerCase())}`,
-        label: anchor,
+        label: truncateCappedText(anchor, 200),
         source: 'derived',
       }
     }
@@ -357,7 +482,7 @@ function buildConversationInfo(
   if (endpointType === 'systemone' && preview) {
     return {
       id: `systemone:${hashString(preview.toLowerCase())}`,
-      label: normalizeInlineText(preview),
+      label: truncateCappedText(normalizeInlineText(preview), 200),
       source: 'derived',
     }
   }
@@ -388,7 +513,7 @@ function extractImagesFromDelta(delta: Record<string, unknown>): MessageImage[] 
     const url = String(iu.url || iu.data || '')
     if (url) images.push({ url })
   }
-  return images.length > 0 ? images : undefined
+  return capImages(images)
 }
 
 // Render a named Jev question with its type and criteria (the answer options)
@@ -404,7 +529,10 @@ function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
       type: 'function',
       function: {
         name: String(fn?.name || ''),
-        arguments: typeof fn?.arguments === 'string' ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+        arguments: truncateCappedText(
+          typeof fn?.arguments === 'string' ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+          MAX_TOOL_ARGUMENT_CHARS,
+        ),
       },
     })
   }
@@ -464,7 +592,7 @@ function extractImagesFromStateImages(
       out.push({ url: `data:${sniffImageMime(item)};base64,${item}` })
     }
   }
-  return out.length > 0 ? out : undefined
+  return capImages(out)
 }
 
 function buildMessageList(
@@ -507,25 +635,27 @@ function buildMessageList(
         })
       }
     }
-    return list
+    return applyEntryBudget(list)
   }
   if (endpointType !== 'chat') return []
   const messages = Array.isArray(reqBody?.messages)
     ? (reqBody.messages as Array<Record<string, unknown>>)
     : []
-  return messages.map((msg) => {
-    const record: MessageRecord = {
-      role: String(msg?.role || 'unknown'),
-      content: stringifyContent(msg?.content),
-    }
-    const toolCalls = normalizeToolCalls(msg?.tool_calls)
-    if (toolCalls) record.toolCalls = toolCalls
-    if (msg?.tool_call_id) record.toolCallId = String(msg.tool_call_id)
-    if (msg?.name) record.name = String(msg.name)
-    const images = extractImages(msg?.content)
-    if (images) (record as any).images = images
-    return record
-  })
+  return applyEntryBudget(
+    messages.map((msg) => {
+      const record: MessageRecord = {
+        role: String(msg?.role || 'unknown'),
+        content: stringifyContent(msg?.content),
+      }
+      const toolCalls = normalizeToolCalls(msg?.tool_calls)
+      if (toolCalls) record.toolCalls = toolCalls
+      if (msg?.tool_call_id) record.toolCallId = String(msg.tool_call_id)
+      if (msg?.name) record.name = String(msg.name)
+      const images = extractImages(msg?.content)
+      if (images) (record as any).images = images
+      return record
+    }),
+  )
 }
 
 function buildInputSummary(
@@ -876,6 +1006,8 @@ export class RequestHistoryManager {
       ? `${thinking}\n\n${extracted.thinking}`
       : extracted.thinking
   }
+  content = truncateCappedText(content, MAX_CAPTURED_CONTENT_CHARS)
+  if (thinking) thinking = truncateCappedText(thinking, MAX_CAPTURED_THINKING_CHARS)
 
   if (!content && !thinking && !toolCalls) return false
 
@@ -898,8 +1030,13 @@ export class RequestHistoryManager {
     const assembled = this.#parseSSEChunks(rawSSE)
     if (!assembled.content && !assembled.thinking && assembled.toolCalls.length === 0) return false
 
-    const record: MessageRecord = { role: 'assistant', content: assembled.content }
-    if (assembled.thinking) record.thinking = assembled.thinking
+    const record: MessageRecord = {
+      role: 'assistant',
+      content: truncateCappedText(assembled.content, MAX_CAPTURED_CONTENT_CHARS),
+    }
+    if (assembled.thinking) {
+      record.thinking = truncateCappedText(assembled.thinking, MAX_CAPTURED_THINKING_CHARS)
+    }
     if (assembled.toolCalls.length > 0) record.toolCalls = assembled.toolCalls
     if (assembled.images) (record as any).images = assembled.images
     entry.messageList.push(record)
@@ -923,10 +1060,10 @@ export class RequestHistoryManager {
     const message = this.#getOrCreateStreamingAssistantMessage(entry)
 
     if (contentPart) {
-      message.content = `${message.content || ''}${contentPart}`
+      appendCappedText(message, 'content', contentPart)
     }
     if (thinkingPart) {
-      message.thinking = `${message.thinking || ''}${thinkingPart}`
+      appendCappedText(message, 'thinking', thinkingPart)
     }
 
     if (toolCalls.length > 0) {
@@ -952,7 +1089,10 @@ export class RequestHistoryManager {
           target.function.name = `${target.function.name}${String(fn.name)}`
         }
         if (fn?.arguments) {
-          target.function.arguments = `${target.function.arguments}${String(fn.arguments)}`
+          target.function.arguments = truncateCappedText(
+            `${target.function.arguments}${String(fn.arguments)}`,
+            MAX_TOOL_ARGUMENT_CHARS,
+          )
         }
       }
       message.toolCalls = current
@@ -960,7 +1100,10 @@ export class RequestHistoryManager {
 
     const deltaImages = extractImagesFromDelta(payload)
     if (deltaImages) {
-      (message as any).images = (message as any).images ? [...(message as any).images, ...deltaImages] : deltaImages
+      (message as any).images = [
+        ...((message as any).images ?? []),
+        ...deltaImages,
+      ].slice(0, MAX_IMAGES_PER_MESSAGE * 2)
     }
 
     return true
@@ -978,13 +1121,16 @@ export class RequestHistoryManager {
     }
 
     const extracted = extractThinkingFromTaggedContent(last.content || '')
-    last.content = extracted.content
+    last.content = truncateCappedText(extracted.content, MAX_CAPTURED_CONTENT_CHARS)
     if (extracted.thinking) {
-      last.thinking = last.thinking
-        ? `${last.thinking}\n\n${extracted.thinking}`.trim()
-        : extracted.thinking
+      last.thinking = truncateCappedText(
+        last.thinking
+          ? `${last.thinking}\n\n${extracted.thinking}`.trim()
+          : extracted.thinking,
+        MAX_CAPTURED_THINKING_CHARS,
+      )
     } else if (last.thinking) {
-      last.thinking = last.thinking.trim()
+      last.thinking = truncateCappedText(last.thinking.trim(), MAX_CAPTURED_THINKING_CHARS)
     }
 
     return true
@@ -1057,6 +1203,21 @@ export class RequestHistoryManager {
       candidates: request.candidates.map((c) => ({ ...c })),
       attempts: request.attempts.map((a) => ({ ...a })),
     }))
+  }
+
+  /**
+   * Number of requests that are still in flight (queued or executing).
+   * Used by the shutdown drain so a systemd restart waits for running
+   * inference to finish instead of killing it mid-stream.
+   */
+  activeRequestCount(): number {
+    return this.requests.reduce(
+      (count, request) =>
+        request.status === 'waiting' || request.status === 'running'
+          ? count + 1
+          : count,
+      0,
+    )
   }
 
   #findRequest(requestId: string): RequestEntry | null {
