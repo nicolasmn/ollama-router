@@ -53,17 +53,67 @@ try {
     }
   })
 
+  // How long systemd will allow graceful drain before SIGKILL (unit file sets
+  // TimeoutStopSec to the same value). Node quits slightly before the deadline
+  // so the timer itself finishes the job cleanly.
+  const DRAIN_TIMEOUT_MS = 14 * 60 * 1000
+
+  // In-flight work = max of node-side routing claims and history-side active
+  // entries, so a request stuck in either layer still blocks shutdown.
+  function activeWorkCount(): number {
+    let nodeLoad = 0
+    for (const host of managers.discovery.getNodes().keys()) {
+      nodeLoad += managers.load.getCurrentLoad(host)
+    }
+    return Math.max(nodeLoad, managers.requests.activeRequestCount())
+  }
+
   let shuttingDown = false
   function shutdown(signal: string): void {
-    if (shuttingDown) return
+    if (shuttingDown) {
+      // Second signal (manual double-kill, or a fast systemctl stop/restart
+      // pair) — don't wait for the drain, stop immediately.
+      logger.warn(`${signal} received again — forcing immediate exit`)
+      process.exit(0)
+      return
+    }
     shuttingDown = true
-    logger.info(`${signal} received, shutting down gracefully`)
+    logger.info(
+      `${signal} received — draining, waiting for in-flight requests to finish (send ${signal} again to stop immediately)`,
+    )
     cloudUsageStore.stop()
     managers.discovery.stopPeriodicProbe()
     managers.discovery.persistMetrics()
     managers.ws.stop()
-    server.close(() => process.exit(0))
-    setTimeout(() => process.exit(0), 3000).unref()
+    // Stop accepting new connections immediately; existing inference
+    // requests keep running until they complete (or the drain dead-
+    // line is hit).
+    server.close()
+
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS
+    let lastProgressLog = 0
+    const drainPoll = setInterval(() => {
+      const active = activeWorkCount()
+      if (active === 0) {
+        clearInterval(drainPoll)
+        managers.discovery.persistMetrics()
+        logger.info('Drained — all requests finished, exiting')
+        process.exit(0)
+        return
+      }
+      if (Date.now() >= deadline) {
+        clearInterval(drainPoll)
+        logger.warn(
+          `Drain deadline reached with ${active} request(s) still in flight — exiting`,
+        )
+        process.exit(0)
+        return
+      }
+      if (Date.now() - lastProgressLog > 15_000) {
+        lastProgressLog = Date.now()
+        logger.info(`Draining — ${active} request(s) still in flight`)
+      }
+    }, 250)
   }
 
   process.on('SIGTERM', () => shutdown('SIGTERM'))

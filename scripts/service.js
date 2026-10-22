@@ -60,6 +60,9 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/bin/env node ${INSTALL_DIR}/dist/index.js
 Restart=always
 RestartSec=5
+# Node drains in-flight inference on SIGTERM (up to 14 min node-side, DRAIN_TIMEOUT_MS
+# in index.ts); this must stay above that so systemd does not SIGKILL mid-drain.
+TimeoutStopSec=900
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
