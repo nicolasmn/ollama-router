@@ -15,6 +15,9 @@ export type { RouterError } from '../request-router.js'
 
 const logger = createLogger('request')
 
+/** Rough tokens-per-character estimate for SSE streams without eval stats. */
+const APPROX_CHARS_PER_TOKEN = 4
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -40,6 +43,46 @@ function extractLoadDurationMs(result: unknown): number {
   const ns = (result as Record<string, unknown>).load_duration
   if (typeof ns !== 'number' || !Number.isFinite(ns) || ns <= 0) return 0
   return Math.round(ns / 1e6)
+}
+
+/** Ollama reports eval_duration in nanoseconds; returns milliseconds, or 0 when absent/zero. */
+function extractEvalDurationMs(result: unknown): number {
+  if (!result || typeof result !== 'object') return 0
+  const ns = (result as Record<string, unknown>).eval_duration
+  if (typeof ns !== 'number' || !Number.isFinite(ns) || ns <= 0) return 0
+  return Math.round(ns / 1e6)
+}
+
+/** Ollama reports the number of tokens in eval_count; 0 when absent/zero. */
+function extractEvalCount(result: unknown): number {
+  if (!result || typeof result !== 'object') return 0
+  const count = (result as Record<string, unknown>).eval_count
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return 0
+  return Math.round(count)
+}
+
+/**
+ * Output text delta carried by a stream chunk, for token estimation when the
+ * upstream does not send eval stats (OpenAI-format SSE). Handles native
+ * Ollama NDJSON, OpenAI chat SSE, and the Responses API delta events.
+ * Reasoning text counts too — Ollama's eval_count includes it.
+ */
+function streamDeltaText(parsed: Record<string, unknown>): string {
+  const msg = parsed.message as Record<string, unknown> | undefined
+  if (msg && typeof msg.content === 'string' && msg.content) return msg.content
+  if (msg && typeof (msg as Record<string, unknown>).thinking === 'string') {
+    const thinking = (msg as Record<string, unknown>).thinking as string
+    if (thinking) return thinking
+  }
+  if (typeof parsed.response === 'string' && parsed.response) return parsed.response
+  const choices = parsed.choices as Array<{ delta?: { content?: unknown } | null; text?: unknown }> | undefined
+  const delta = choices?.[0]?.delta
+  if (delta && typeof delta.content === 'string' && delta.content) return delta.content
+  if (choices?.[0] && typeof choices[0].text === 'string' && choices[0].text) return choices[0].text
+  if (parsed.type === 'response.output_text.delta' && typeof parsed.delta === 'string' && parsed.delta) {
+    return parsed.delta
+  }
+  return ''
 }
 
 /** Fire-and-forget cloud usage refresh; only triggers when the node is a cloud node. */
@@ -351,6 +394,44 @@ export async function handleStreamingRequest(
     const body = await sanitizeMessages({ ...reqBody, model: modelName })
     const startTime = Date.now()
     let modelLoadMs = 0
+    // Streaming telemetry, from either wire format:
+    // - native Ollama streams carry eval stats on the final NDJSON chunk
+    // - OpenAI-format SSE never does, so tokens are estimated from deltas
+    let firstChunkMs = 0      // elapsed ms until first content-bearing chunk (TTFT)
+    let streamEvalCount = 0
+    let streamEvalDurMs = 0
+    let contentChars = 0
+
+    // Parse one raw line: forward it as-is, record timings/eval stats for
+    // metrics, and rewrite the model field when the upstream renames it.
+    const processStreamLine = (raw: string): { line: string; parsed: Record<string, unknown> | null } => {
+      const trimmed = raw.trim()
+      if (!trimmed) return { line: raw, parsed: null }
+      try {
+        let parsed = parseStreamLine(trimmed)
+        if (!parsed) return { line: raw, parsed: null }
+        if (firstChunkMs === 0 && !isLoadOnlyResponse(parsed)) {
+          firstChunkMs = Date.now() - startTime
+        }
+        const chunkLoadMs = extractLoadDurationMs(parsed)
+        if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
+        const chunkEvalCount = extractEvalCount(parsed)
+        if (chunkEvalCount > 0) streamEvalCount = chunkEvalCount
+        const chunkEvalDurMs = extractEvalDurationMs(parsed)
+        if (chunkEvalDurMs > 0) streamEvalDurMs = chunkEvalDurMs
+        const deltaText = streamDeltaText(parsed)
+        if (deltaText) contentChars += deltaText.length
+        let line = raw
+        if (modelName && parsed.model !== modelName) {
+          parsed = { ...parsed, model: modelName }
+          const encoded = JSON.stringify(parsed)
+          line = trimmed.startsWith('data:') ? `data: ${encoded}` : encoded
+        }
+        return { line, parsed }
+      } catch {
+        return { line: raw, parsed: null }
+      }
+    }
 
     try {
       requestHistoryManager.recordAttempt(requestId, {
@@ -399,28 +480,13 @@ export async function handleStreamingRequest(
           let nl = lineBuffer.indexOf('\n')
           const outputLines: string[] = []
           while (nl !== -1) {
-            let line = lineBuffer.slice(0, nl)
+            const line = lineBuffer.slice(0, nl)
             lineBuffer = lineBuffer.slice(nl + 1)
-            const trimmed = line.trim()
-            if (trimmed) {
-              try {
-                let parsed = parseStreamLine(line)
-                if (parsed) {
-                  const chunkLoadMs = extractLoadDurationMs(parsed)
-                  if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
-                  if (modelName && parsed.model !== modelName) {
-                    parsed = { ...parsed, model: modelName }
-                    line = trimmed.startsWith('data:')
-                      ? `data: ${JSON.stringify(parsed)}`
-                      : JSON.stringify(parsed)
-                  }
-                  requestHistoryManager.applyStreamingEvent(requestId, parsed)
-                }
-              } catch {
-                /* capture must never break the stream */
-              }
+            const { line: processed, parsed } = processStreamLine(line)
+            if (parsed) {
+              requestHistoryManager.applyStreamingEvent(requestId, parsed)
             }
-            outputLines.push(line + '\n')
+            outputLines.push(processed + '\n')
             nl = lineBuffer.indexOf('\n')
           }
           callback(null, outputLines.join(''))
@@ -428,22 +494,12 @@ export async function handleStreamingRequest(
         flush(callback) {
           const trimmed = lineBuffer.trim()
           if (trimmed) {
-            try {
-              let parsed = parseStreamLine(lineBuffer)
-              if (parsed) {
-                const chunkLoadMs = extractLoadDurationMs(parsed)
-                if (chunkLoadMs > 0) modelLoadMs = chunkLoadMs
-                if (modelName && parsed.model !== modelName) {
-                  parsed = { ...parsed, model: modelName }
-                  lineBuffer = trimmed.startsWith('data:')
-                    ? `data: ${JSON.stringify(parsed)}`
-                    : JSON.stringify(parsed)
-                }
-                requestHistoryManager.applyStreamingEvent(requestId, parsed)
-              }
-            } catch {
-              /* capture must never break the stream */
+            const { line: processed, parsed } = processStreamLine(lineBuffer)
+            if (parsed) {
+              requestHistoryManager.applyStreamingEvent(requestId, parsed)
             }
+            callback(null, processed)
+            return
           }
           callback(null, lineBuffer)
         },
@@ -451,9 +507,28 @@ export async function handleStreamingRequest(
       await pipeline(resp.body, captureTransform, res)
 
       const latency = Date.now() - startTime
-      discoveryManager.updateModelMetrics(nodeHost, modelName, latency, 0, endpoint)
+      const ttftMs = firstChunkMs > 0 ? firstChunkMs : 0
+      // Native Ollama streams report eval stats on the final chunk; for
+      // OpenAI-format SSE estimate tokens from the delta text.
+      const tokensGenerated =
+        streamEvalCount > 0
+          ? streamEvalCount
+          : contentChars > 0
+            ? Math.round(contentChars / APPROX_CHARS_PER_TOKEN)
+            : 0
+      const decodeMs =
+        streamEvalDurMs > 0
+          ? streamEvalDurMs
+          : tokensGenerated > 0 && ttftMs > 0
+            ? Math.max(1, latency - ttftMs)
+            : 0
+      discoveryManager.updateModelMetrics(nodeHost, modelName, latency, tokensGenerated, endpoint, {
+        ttftMs,
+        loadMs: modelLoadMs,
+        decodeMs,
+      })
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
-      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, modelLoadMs })
+      requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, tokensGenerated, modelLoadMs })
       requestHistoryManager.finalizeStreamingResponse(requestId)
       maybeRefreshCloudUsage(apiKey)
       logger.info({ requestId, nodeHost, modelName, endpoint, latency }, 'Streaming request successful')
@@ -567,7 +642,10 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       const latency = Date.now() - startTime
       if (responseContentFrom) requestHistoryManager.updateResponseContent(requestId, responseContentFrom(result))
       const tokensGenerated = tokensFromResult(result)
-      discoveryManager.updateModelMetrics(nodeHost, modelName, latency, tokensGenerated, endpoint)
+      discoveryManager.updateModelMetrics(nodeHost, modelName, latency, tokensGenerated, endpoint, {
+        loadMs: modelLoadMs,
+        decodeMs: extractEvalDurationMs(result),
+      })
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'success', latency })
       requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: 200, latency, nodeHost, modelName, tokensGenerated, modelLoadMs })
       maybeRefreshCloudUsage(apiKey)

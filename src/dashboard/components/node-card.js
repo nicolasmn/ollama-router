@@ -385,7 +385,7 @@ export class NodeCard extends LitElement {
               ${isCloud ? '' : html`<th>Size</th>`}
               <th>Params</th>
               <th>Ctx</th>
-              <th>Latency</th>
+              <th title="Time to first token (EMA over recent requests)">TTFT</th>
               <th>${tpsHeader}</th>
               <th>Req/Fails</th>
               <th>Last used</th>
@@ -436,14 +436,25 @@ export class NodeCard extends LitElement {
         <td class="mono">${fmt.params(model.profile?.parameters)}</td>
         <td class="mono">${fmt.ctx(model.profile?.contextLength)}</td>
         <td>
-          <span class="mono ${latCls(model.recentLatency)}"
-            >${fmt.duration(model.recentLatency)}</span
-          >
+          ${(() => {
+            const hasTtft = model.recentTtft > 0
+            const latencyMs = hasTtft ? model.recentTtft : model.recentLatency
+            const title = hasTtft
+              ? `First token after ${fmt.duration(latencyMs)} · model load ~${fmt.duration(model.recentLoadMs)}`
+              : 'Recent response latency (legacy metric, TTFT pending)'
+            return html`<span class="mono ${latCls(latencyMs)}"
+              title=${title}>${fmt.duration(latencyMs)}</span
+            >`
+          })()}
         </td>
         <td class="mono">
           ${isEmbedding
             ? model.profile?.embeddingDim || '\u2014'
-            : fmt.tps(model.recentTps)}
+            : html`<span
+                class="mono ${fmt.tps(model.recentTps) === '—' ? 'muted' : ''}"
+                title="Decoding speed (tokens/s), excluding model load"
+                >${fmt.tps(model.recentTps)}</span
+              >`}
         </td>
         <td class="mono">
           ${model.totalRequests || 0}<span class="muted">/</span

@@ -34,6 +34,9 @@ const CLOUD_COST_PREFERENCE = 8
  */
 const LOAD_PENALTY_MAX = 15
 
+/** TTFT score scale: latency score loses 1 point per TTFT_PENALTY_SCALE_MS ms. */
+const TTFT_PENALTY_SCALE_MS = 150
+
 /** Bonus when a model is the most recently active on its node (likely warm in VRAM). */
 const WARM_MODEL_BONUS = 8
 
@@ -574,9 +577,14 @@ export class RequestRouter {
     const messageCount = requirements.messageCount || 0
     const estimatedTokens = requirements.estimatedInputTokens || 0
 
-    const latencyScore = modelInfo.recentLatency
-      ? Math.max(0, 20 - modelInfo.recentLatency / 500)
-      : 10
+    // Prefer the real first-token latency; fall back to the legacy whole-
+    // response duration (persisted data from before TTFT was measured),
+    // scored on its own wall-clock scale until TTFT overwrites it.
+    const legacyLatencyScore =
+      modelInfo.recentLatency > 0 ? Math.max(0, 20 - modelInfo.recentLatency / 500) : 10
+    const latencyScore = modelInfo.recentTtft > 0
+      ? Math.max(0, 20 - modelInfo.recentTtft / TTFT_PENALTY_SCALE_MS)
+      : legacyLatencyScore
     const tpsScore = modelInfo.recentTps
       ? Math.min(10, modelInfo.recentTps / 5)
       : 5
