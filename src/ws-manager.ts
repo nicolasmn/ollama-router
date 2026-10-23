@@ -123,6 +123,7 @@ export class WsManager {
                     recentTps: modelInfo.recentTps,
                     recentTtft: modelInfo.recentTtft,
                     recentLoadMs: modelInfo.recentLoadMs,
+                    systemoneMaxCriteria: modelInfo.systemoneMaxCriteria,
                     failures: modelInfo.failures,
                     totalRequests: modelInfo.totalRequests || 0,
                     activeRequests:

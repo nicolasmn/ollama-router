@@ -448,13 +448,22 @@ export class NodeCard extends LitElement {
           })()}
         </td>
         <td class="mono">
-          ${isEmbedding
-            ? model.profile?.embeddingDim || '\u2014'
-            : html`<span
+          ${(() => {
+            if (isEmbedding) return model.profile?.embeddingDim || '\u2014'
+            if (model.profile?.supportsDecision) {
+              const cap = model.systemoneMaxCriteria || 0
+              return html`<span
+                class="mono ${cap ? '' : 'muted'}"
+                title="SystemOne: max choice criteria per question (learned from upstream caps; larger questionnaires route to bigger deciders)"
+                >${cap ? `≤${cap} opts` : '—'}</span
+              >`
+            }
+            return html`<span
                 class="mono ${fmt.tps(model.recentTps) === '—' ? 'muted' : ''}"
                 title="Decoding speed (tokens/s), excluding model load"
                 >${fmt.tps(model.recentTps)}</span
-              >`}
+              >`
+          })()}
         </td>
         <td class="mono">
           ${model.totalRequests || 0}<span class="muted">/</span

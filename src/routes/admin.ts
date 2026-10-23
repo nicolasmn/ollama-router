@@ -71,6 +71,7 @@ export function createAdminRouter({
                     recentTps: info.recentTps,
                     recentTtft: info.recentTtft,
                     recentLoadMs: info.recentLoadMs,
+                    systemoneMaxCriteria: info.systemoneMaxCriteria,
                     failures: info.failures,
                     totalRequests: info.totalRequests,
                     lastRoutingEndpoint: info.lastRoutingEndpoint,
