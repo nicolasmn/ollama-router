@@ -60,6 +60,11 @@ export function handleSelectionError(
     res.status(404).json({ error: err.message })
     return true
   }
+  if (err?.code === 'MODEL_NOT_DECISION') {
+    routeLogger.warn({ requestId, err: err.message }, contextMessage)
+    res.status(400).json({ error: err.message })
+    return true
+  }
   return false
 }
 
@@ -110,11 +115,12 @@ export async function selectCandidatesOrHandleError(
     const routerErr = err as RouterError
     const handled = handleSelectionError(routerErr, res, requestId, selectionErrorMessage, routeLogger)
     if (handled) {
+      const isDecisionError = routerErr.code === 'MODEL_NOT_DECISION'
       requestHistoryManager.finishRequest(requestId, {
         status: 'failed',
-        responseStatus: 404,
+        responseStatus: isDecisionError ? 400 : 404,
         error: routerErr.message,
-        failureCategory: 'model_not_found',
+        failureCategory: isDecisionError ? 'wrong_model_type' : 'model_not_found',
         retryHint: 'no_retry',
       })
       return null
