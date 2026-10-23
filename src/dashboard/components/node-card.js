@@ -407,7 +407,7 @@ export class NodeCard extends LitElement {
     `
   }
 
-  _renderModelRow(model, { isCloud, isEmbedding }) {
+  _renderModelRow(model, { isCloud, isEmbedding, isDecision }) {
     return html`
       <tr
         class="${model.activeRequests > 0

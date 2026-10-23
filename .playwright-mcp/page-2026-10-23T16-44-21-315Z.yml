@@ -1,0 +1,72 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Ollama Router" [ref=e5]
+      - heading "Ollama Router / Dashboard" [level=1] [ref=e6]
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Never scanned
+        - button "Rescan" [ref=e10] [cursor=pointer]:
+          - generic [aria-hidden] [ref=e11]: ↻
+      - generic [ref=e13]: Live
+  - main [ref=e16]:
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]: Nodes Online
+        - generic [ref=e21]: "2"
+        - generic [ref=e22]: of 4 configured
+      - generic [ref=e23]:
+        - generic [ref=e24]: Total Models
+        - generic [ref=e25]: "9"
+      - generic [ref=e26]:
+        - generic [ref=e27]: Active Requests
+        - generic [ref=e28]: "0"
+      - generic [ref=e29]:
+        - generic [ref=e30]: Average Latency
+        - generic [ref=e31]: 47s
+      - generic [ref=e32]:
+        - generic [ref=e33]: Average TPS
+        - generic [ref=e34]: "14.1"
+    - generic [ref=e36]:
+      - button "Recent Requests 0 tracked 0 running 0 waiting 0 failed" [ref=e37] [cursor=pointer]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: Recent Requests
+          - generic [ref=e44]:
+            - generic [ref=e45]: 0 tracked
+            - generic [ref=e46]: 0 running
+            - generic [ref=e47]: 0 waiting
+            - generic [ref=e48]: 0 failed
+      - generic [ref=e49]: No requests received yet.
+    - generic [ref=e51]:
+      - generic [ref=e55]:
+        - button "192.168.178.74:11434 Offline 0/3 0 models" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: 192.168.178.74:11434
+          - generic [ref=e60]:
+            - generic [ref=e61]: Offline
+            - generic [ref=e62]: 0/3
+            - generic [ref=e63]: 0 models
+        - generic [ref=e64]:
+          - button "Wake node" [ref=e65] [cursor=pointer]
+          - button "Remove node" [ref=e68] [cursor=pointer]
+          - button "Expand node" [ref=e73] [cursor=pointer]
+      - generic [ref=e78]:
+        - button "192.168.178.69:11434 Offline 0/3 0 models" [ref=e79] [cursor=pointer]:
+          - generic [ref=e80]: 192.168.178.69:11434
+          - generic [ref=e83]:
+            - generic [ref=e84]: Offline
+            - generic [ref=e85]: 0/3
+            - generic [ref=e86]: 0 models
+        - generic [ref=e87]:
+          - button "Remove node" [ref=e88] [cursor=pointer]
+          - button "Expand node" [ref=e93] [cursor=pointer]
+    - generic [ref=e97]: "Last update: 18:44:20"
+  - generic:
+    - generic [aria-hidden]:
+      - complementary:
+        - generic:
+          - generic:
+            - generic: Request Details
+            - generic: Select a request from the list.
+          - generic:
+            - button: ✕
+        - generic: Select a request from the list.
