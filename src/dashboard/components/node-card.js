@@ -358,7 +358,7 @@ export class NodeCard extends LitElement {
 
   _renderModelTable(models, { isCloud, isEmbedding, activeNames }) {
     if (models.length === 0) return ''
-    const tpsHeader = isEmbedding ? 'Dim' : 'TPS'
+    const tpsHeader = isEmbedding ? 'Dim' : 'TPS / opts'
     const tableClasses = [
       isCloud ? 'cloud-table' : '',
       isEmbedding ? 'embed-table' : '',
@@ -386,7 +386,10 @@ export class NodeCard extends LitElement {
               <th>Params</th>
               <th>Ctx</th>
               <th title="Time to first token (EMA over recent requests)">TTFT</th>
-              <th>${tpsHeader}</th>
+              <th
+                title="Decoding speed (tokens/s), excluding model load — decision models show max SystemOne choice criteria per question, learned from upstream caps"
+                >${tpsHeader}</th
+              >
               <th>Req/Fails</th>
               <th>Last used</th>
               <th></th>
@@ -452,10 +455,8 @@ export class NodeCard extends LitElement {
             if (isEmbedding) return model.profile?.embeddingDim || '\u2014'
             if (model.profile?.supportsDecision) {
               const cap = model.systemoneMaxCriteria || 0
-              return html`<span
-                class="mono ${cap ? '' : 'muted'}"
-                title="SystemOne: max choice criteria per question (learned from upstream caps; larger questionnaires route to bigger deciders)"
-                >${cap ? `≤${cap} opts` : '—'}</span
+              return html`<span class="mono ${cap ? '' : 'muted'}"
+                >${cap ? `≤${cap}` : '—'}</span
               >`
             }
             return html`<span
