@@ -356,9 +356,9 @@ export class NodeCard extends LitElement {
     `
   }
 
-  _renderModelTable(models, { isCloud, isEmbedding, activeNames }) {
+  _renderModelTable(models, { isCloud, isEmbedding, isDecision, activeNames }) {
     if (models.length === 0) return ''
-    const tpsHeader = isEmbedding ? 'Dim' : 'TPS / opts'
+    const tpsHeader = isEmbedding ? 'Dim' : isDecision ? 'OPTS' : 'TPS'
     const tableClasses = [
       isCloud ? 'cloud-table' : '',
       isEmbedding ? 'embed-table' : '',
@@ -387,7 +387,9 @@ export class NodeCard extends LitElement {
               <th>Ctx</th>
               <th title="Time to first token (EMA over recent requests)">TTFT</th>
               <th
-                title="Decoding speed (tokens/s), excluding model load — decision models show max SystemOne choice criteria per question, learned from upstream caps"
+                title=${isDecision
+                  ? 'Max SystemOne choice criteria per question, learned from upstream caps'
+                  : 'Decoding speed (tokens/s), excluding model load'}
                 >${tpsHeader}</th
               >
               <th>Req/Fails</th>
@@ -453,7 +455,7 @@ export class NodeCard extends LitElement {
         <td class="mono">
           ${(() => {
             if (isEmbedding) return model.profile?.embeddingDim || '\u2014'
-            if (model.profile?.supportsDecision) {
+            if (isDecision) {
               const cap = model.systemoneMaxCriteria || 0
               return html`<span class="mono ${cap ? '' : 'muted'}"
                 >${cap ? `≤${cap}` : '—'}</span
@@ -744,6 +746,7 @@ export class NodeCard extends LitElement {
                       ? this._renderModelTable(chatModels, {
                           isCloud,
                           isEmbedding: false,
+                          isDecision: false,
                           activeNames,
                         })
                       : ''}
@@ -755,6 +758,7 @@ export class NodeCard extends LitElement {
                           ${this._renderModelTable(decisionModels, {
                             isCloud,
                             isEmbedding: false,
+                            isDecision: true,
                             activeNames,
                           })}
                         `
