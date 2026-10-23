@@ -399,7 +399,7 @@ export class NodeCard extends LitElement {
           </thead>
           <tbody>
             ${models.map((model) =>
-              this._renderModelRow(model, { isCloud, isEmbedding }),
+              this._renderModelRow(model, { isCloud, isEmbedding, isDecision }),
             )}
           </tbody>
         </table>
