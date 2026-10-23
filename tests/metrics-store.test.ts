@@ -11,7 +11,7 @@ function makeTmpPath(name = 'metrics.json'): string {
   return join(TMP, name)
 }
 
-type RawModel = Partial<Pick<PersistedModelMetrics, 'recentLatency' | 'recentTps' | 'recentTtft' | 'recentLoadMs' | 'failures'>>
+type RawModel = Partial<Pick<PersistedModelMetrics, 'recentLatency' | 'recentTps' | 'recentTtft' | 'recentLoadMs' | 'systemoneMaxCriteria' | 'failures'>>
 
 function makeNodes(
   entries: Record<string, Record<string, RawModel>>,
@@ -63,7 +63,7 @@ describe('metrics-store', () => {
       const nodes = makeNodes({
         'http://node-a:11434': {
           'gemma4:e4b': { recentLatency: 250, recentTps: 18.5, recentTtft: 210, recentLoadMs: 8_000, failures: 0 },
-          'gemma4:26b': { recentLatency: 800, recentTps: 6.2, recentTtft: 1_500, recentLoadMs: 12_000, failures: 1 },
+          'gemma4:26b': { recentLatency: 800, recentTps: 6.2, recentTtft: 1_500, recentLoadMs: 12_000, systemoneMaxCriteria: 64, failures: 1 },
         },
         'http://node-b:11434': {
           'nomic-embed-text:latest': { recentLatency: 50, recentTps: 0, recentTtft: 0, recentLoadMs: 0, failures: 0 },
@@ -81,12 +81,13 @@ describe('metrics-store', () => {
         recentTps: 18.5,
         recentTtft: 210,
         recentLoadMs: 8_000,
+        systemoneMaxCriteria: 0,
         failures: 0,
         totalRequests: 0,
         lastRoutedAt: 0,
         lastRoutingEndpoint: null,
       })
-      expect(nodeA.get('gemma4:26b')).toMatchObject({ recentLatency: 800, failures: 1 })
+      expect(nodeA.get('gemma4:26b')).toMatchObject({ recentLatency: 800, failures: 1, systemoneMaxCriteria: 64 })
       expect(knownNodes).toContain('http://node-a:11434')
       expect(knownNodes).toContain('http://node-b:11434')
     })

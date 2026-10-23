@@ -11,6 +11,7 @@ export interface PersistedModelMetrics {
   recentTps: number
   recentTtft: number
   recentLoadMs: number
+  systemoneMaxCriteria?: number
   failures: number
   totalRequests: number
   lastRoutedAt: number
@@ -61,6 +62,7 @@ export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
             recentTps: m.recentTps ?? 0,
             recentTtft: m.recentTtft ?? 0,
             recentLoadMs: m.recentLoadMs ?? 0,
+            systemoneMaxCriteria: m.systemoneMaxCriteria ?? 0,
             failures: m.failures ?? 0,
             totalRequests: m.totalRequests ?? 0,
             lastRoutedAt: m.lastRoutedAt ?? 0,
@@ -107,6 +109,7 @@ export function saveMetrics(
         recentTps: m.recentTps,
         recentTtft: m.recentTtft ?? 0,
         recentLoadMs: m.recentLoadMs ?? 0,
+        systemoneMaxCriteria: (m as { systemoneMaxCriteria?: number }).systemoneMaxCriteria || undefined,
         failures: m.failures,
         totalRequests: m.totalRequests ?? 0,
         lastRoutedAt: m.lastRoutedAt ?? 0,

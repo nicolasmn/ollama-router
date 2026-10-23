@@ -146,6 +146,32 @@ export interface RouterError extends Error {
   code?: string
 }
 
+/**
+ * Largest criteria set across all questions of a /v1/systemone request.
+ * 0 when the request carries no measurable criteria (non-object questions).
+ */
+export function maxChoiceCriteria(reqBody: Record<string, unknown> | null | undefined): number {
+  const questions = reqBody?.questions as unknown
+  if (typeof questions !== 'object' || questions === null) return 0
+  const list = Array.isArray(questions) ? questions : Object.values(questions as Record<string, unknown>)
+  let max = 0
+  for (const q of list) {
+    if (typeof q !== 'object' || q === null) continue
+    const criteria = (q as { criteria?: unknown }).criteria
+    if (Array.isArray(criteria)) max = Math.max(max, criteria.length)
+    else if (typeof criteria === 'object' && criteria !== null) {
+      max = Math.max(max, Object.keys(criteria).length)
+    }
+  }
+  return max
+}
+
+export interface SelectionOptions {
+  decisionOnly?: boolean
+  // Largest criteria set in the request, for decision-model cap filtering.
+  maxCriteria?: number
+}
+
 export class RequestRouter {
   readonly discovery: DiscoveryManager
   readonly load: LoadManager
@@ -196,7 +222,7 @@ export class RequestRouter {
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
-    options: { decisionOnly?: boolean } = {},
+    options: SelectionOptions = {},
   ): Promise<RoutingCandidate[] | null> {
     const deadline = Date.now() + WOL_WAIT_TIMEOUT_MS
     while (Date.now() < deadline) {
@@ -222,7 +248,7 @@ export class RequestRouter {
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
     signal?: AbortSignal,
-    options: { decisionOnly?: boolean } = {},
+    options: SelectionOptions = {},
   ): Promise<RoutingCandidate[] | null> {
     const candidates = this._selectCandidates(model, analysis, reqBody, options)
     if (candidates) return candidates
@@ -391,12 +417,14 @@ export class RequestRouter {
     model: string,
     analysis: AnalysisResult,
     reqBody: Record<string, unknown>,
-    options: { decisionOnly?: boolean } = {},
+    options: SelectionOptions = {},
   ): RoutingCandidate[] | null {
     const isVirtual = VIRTUAL_MODELS.has(model)
-    if (isVirtual) return this._selectVirtual(model, analysis, options)
+    if (isVirtual) {
+      return this._selectVirtual(model, analysis, { ...options, maxCriteria: maxChoiceCriteria(reqBody) })
+    }
     try {
-      return this._selectConcrete(model, options)
+      return this._selectConcrete(model, { ...options, maxCriteria: maxChoiceCriteria(reqBody) })
     } catch (err) {
       const routerErr = err as RouterError
       if (routerErr.code === 'MODEL_NOT_FOUND' && ROUTER_FALLBACK_TO_AUTO) {
@@ -404,7 +432,7 @@ export class RequestRouter {
           { model },
           'Model not found — falling back to auto routing',
         )
-        return this._selectVirtual('auto', analysis, options)
+        return this._selectVirtual('auto', analysis, { ...options, maxCriteria: maxChoiceCriteria(reqBody) })
       }
       throw err
     }
@@ -413,12 +441,12 @@ export class RequestRouter {
   private _selectVirtual(
     alias: string,
     analysis: AnalysisResult,
-    options: { decisionOnly?: boolean } = {},
+    options: SelectionOptions = {},
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
     const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
-    const { decisionOnly = false } = options
+    const { decisionOnly = false, maxCriteria = 0 } = options
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -430,6 +458,9 @@ export class RequestRouter {
         const { profile } = modelInfo
         if (decisionOnly) {
           if (!profile.supportsDecision) continue
+          // Skip decision models whose learned criteria cap can't fit this
+          // request (e.g. nimble caps at 26) — they would 400 upstream.
+          if (maxCriteria > 0 && modelInfo.systemoneMaxCriteria > 0 && maxCriteria > modelInfo.systemoneMaxCriteria) continue
         } else if (profile.supportsDecision) {
           continue
         }
@@ -478,12 +509,12 @@ export class RequestRouter {
 
   private _selectConcrete(
     model: string,
-    options: { decisionOnly?: boolean } = {},
+    options: SelectionOptions = {},
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
     const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
-    const { decisionOnly = false } = options
+    const { decisionOnly = false, maxCriteria = 0 } = options
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -493,6 +524,7 @@ export class RequestRouter {
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
       if (decisionOnly) {
         if (!modelInfo.profile.supportsDecision) continue
+        if (maxCriteria > 0 && modelInfo.systemoneMaxCriteria > 0 && maxCriteria > modelInfo.systemoneMaxCriteria) continue
       } else if (modelInfo.profile.supportsDecision) {
         continue
       }

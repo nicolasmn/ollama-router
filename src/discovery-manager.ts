@@ -366,6 +366,7 @@ export class DiscoveryManager {
         model.recentTps = m.recentTps
         model.recentTtft = m.recentTtft ?? 0
         model.recentLoadMs = m.recentLoadMs ?? 0
+        model.systemoneMaxCriteria = m.systemoneMaxCriteria ?? 0
         model.failures = m.failures
         model.totalRequests = m.totalRequests
         model.lastRoutedAt = m.lastRoutedAt
@@ -714,6 +715,17 @@ export class DiscoveryManager {
     model.totalRequests++
     model.lastRoutedAt = Date.now()
     if (endpoint) model.lastRoutingEndpoint = endpoint
+  }
+
+  /** Remember the maximum choice-criteria count a decision model accepts.
+   *  Learned from upstream "criteria must contain 2–N candidates" 400s. */
+  setSystemoneCriteriaCap(nodeHost: string, modelName: string, cap: number): void {
+    if (!cap || cap <= 0) return
+    const model = this.inventory.get(nodeHost)?.models.get(modelName)
+    if (!model || model.systemoneMaxCriteria === cap) return
+    model.systemoneMaxCriteria = cap
+    logger.info({ nodeHost, modelName, cap }, 'Learned systemone criteria cap')
+    this.persistMetrics()
   }
 
   recordModelFailure(nodeHost: string, modelName: string, err: NodeJS.ErrnoException): void {

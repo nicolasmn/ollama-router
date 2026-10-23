@@ -196,8 +196,14 @@ function bindAbortSignal(signal: AbortSignal | undefined, controller: AbortContr
   return () => signal.removeEventListener('abort', onAbort)
 }
 
-function categorizeFailure(err: RouterError): { failureCategory: string; retryHint: string } {
-  const statusCode = typeof err?.statusCode === 'number' ? Number(err.statusCode) : 0
+/** Upstream decision models reject oversized questions with a 400 that states
+ *  their own cap, e.g. `question "next": criteria must contain 2–26 candidates`. */
+export function parseCriteriaCap(message: string): number | null {
+  const m = /criteria must contain 2[–—-]\s*(\d+)/.exec(message || '')
+  return m ? Number(m[1]) : null
+}
+
+function categorizeFailure(err: RouterError): { failureCategory: string; retryHint: string } {  const statusCode = typeof err?.statusCode === 'number' ? Number(err.statusCode) : 0
   if (isAbortError(err)) return { failureCategory: 'client_abort', retryHint: 'no_retry' }
   if (statusCode === 429 || statusCode === 503 || err?.message === 'Node busy')
     return { failureCategory: 'capacity', retryHint: 'retry_later' }
@@ -665,6 +671,10 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       const latency = Date.now() - startTime
       logger.warn({ requestId, nodeHost, modelName, err: typedErr.message }, failureLog ?? `${endpoint} failed, trying next`)
       discoveryManager.recordModelFailure(nodeHost, modelName, typedErr as NodeJS.ErrnoException)
+      // The cap error is deterministic per (body, model) — recording it here
+      // means the NEXT request of this size routes correctly on first try.
+      const learnedCap = endpoint === '/v1/systemone' ? parseCriteriaCap(typedErr.message) : null
+      if (learnedCap) discoveryManager.setSystemoneCriteriaCap(nodeHost, modelName, learnedCap)
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'failed', latency, error: typedErr.message, attemptReason: index === 0 ? 'first_try' : 'fallback_error' })
       lastFailure = { responseStatus, error: typedErr.message, failureCategory, retryHint, nodeHost, modelName }
     } finally {
