@@ -49,6 +49,10 @@ export interface ModelInfoJSON {
   profile: ModelProfileData
   recentLatency: number
   recentTps: number
+  /** EMA of time to first token, ms; 0 = not yet measured. */
+  recentTtft?: number
+  /** EMA of model load duration, ms; 0 = not yet measured. */
+  recentLoadMs?: number
   failures: number
   totalRequests: number
   status: string
@@ -64,6 +68,14 @@ export class ModelInfo {
   profile: ModelProfile
   recentLatency: number
   recentTps: number
+  /** EMA of time to first token, ms; 0 = not yet measured. */
+  recentTtft: number
+  /** EMA of model load duration, ms; 0 = not yet measured. */
+  recentLoadMs: number
+  /** Max choice criteria this model accepts for /v1/systemone (learned from
+   *  upstream 400s); 0 = unknown — upstream decision models enforce
+   *  model-specific caps the router cannot query directly. */
+  systemoneMaxCriteria: number
   failures: number
   totalRequests: number
   status: string
@@ -78,6 +90,9 @@ export class ModelInfo {
     this.profile = profile
     this.recentLatency = 0
     this.recentTps = 0
+    this.recentTtft = 0
+    this.recentLoadMs = 0
+    this.systemoneMaxCriteria = 0
     this.failures = 0
     this.totalRequests = 0
     this.status = 'idle'

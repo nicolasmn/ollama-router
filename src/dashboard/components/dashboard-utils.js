@@ -190,8 +190,9 @@ export function summarizePayload(nodes = []) {
     (sum, node) => sum + (node.activeRequests || 0),
     0,
   )
+  // Prefer the real first-token latency; fall back to legacy wall-clock data
   const lats = allModels
-    .map((model) => model.recentLatency)
+    .map((model) => model.recentTtft > 0 ? model.recentTtft : model.recentLatency)
     .filter((value) => value > 0)
   const tpsList = allModels
     .map((model) => model.recentTps)

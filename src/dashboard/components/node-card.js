@@ -356,9 +356,9 @@ export class NodeCard extends LitElement {
     `
   }
 
-  _renderModelTable(models, { isCloud, isEmbedding, activeNames }) {
+  _renderModelTable(models, { isCloud, isEmbedding, isDecision, activeNames }) {
     if (models.length === 0) return ''
-    const tpsHeader = isEmbedding ? 'Dim' : 'TPS'
+    const tpsHeader = isEmbedding ? 'Dim' : isDecision ? 'OPTS' : 'TPS'
     const tableClasses = [
       isCloud ? 'cloud-table' : '',
       isEmbedding ? 'embed-table' : '',
@@ -385,8 +385,13 @@ export class NodeCard extends LitElement {
               ${isCloud ? '' : html`<th>Size</th>`}
               <th>Params</th>
               <th>Ctx</th>
-              <th>Latency</th>
-              <th>${tpsHeader}</th>
+              <th title="Time to first token (EMA over recent requests)">TTFT</th>
+              <th
+                title=${isDecision
+                  ? 'Max SystemOne choice criteria per question, learned from upstream caps'
+                  : 'Decoding speed (tokens/s), excluding model load'}
+                >${tpsHeader}</th
+              >
               <th>Req/Fails</th>
               <th>Last used</th>
               <th></th>
@@ -394,7 +399,7 @@ export class NodeCard extends LitElement {
           </thead>
           <tbody>
             ${models.map((model) =>
-              this._renderModelRow(model, { isCloud, isEmbedding }),
+              this._renderModelRow(model, { isCloud, isEmbedding, isDecision }),
             )}
           </tbody>
         </table>
@@ -402,7 +407,7 @@ export class NodeCard extends LitElement {
     `
   }
 
-  _renderModelRow(model, { isCloud, isEmbedding }) {
+  _renderModelRow(model, { isCloud, isEmbedding, isDecision }) {
     return html`
       <tr
         class="${model.activeRequests > 0
@@ -436,14 +441,32 @@ export class NodeCard extends LitElement {
         <td class="mono">${fmt.params(model.profile?.parameters)}</td>
         <td class="mono">${fmt.ctx(model.profile?.contextLength)}</td>
         <td>
-          <span class="mono ${latCls(model.recentLatency)}"
-            >${fmt.duration(model.recentLatency)}</span
-          >
+          ${(() => {
+            const hasTtft = model.recentTtft > 0
+            const latencyMs = hasTtft ? model.recentTtft : model.recentLatency
+            const title = hasTtft
+              ? `First token after ${fmt.duration(latencyMs)} · model load ~${fmt.duration(model.recentLoadMs)}`
+              : 'Recent response latency (legacy metric, TTFT pending)'
+            return html`<span class="mono ${latCls(latencyMs)}"
+              title=${title}>${fmt.duration(latencyMs)}</span
+            >`
+          })()}
         </td>
         <td class="mono">
-          ${isEmbedding
-            ? model.profile?.embeddingDim || '\u2014'
-            : fmt.tps(model.recentTps)}
+          ${(() => {
+            if (isEmbedding) return model.profile?.embeddingDim || '\u2014'
+            if (isDecision) {
+              const cap = model.systemoneMaxCriteria || 0
+              return html`<span class="mono ${cap ? '' : 'muted'}"
+                >${cap ? `≤${cap}` : '—'}</span
+              >`
+            }
+            return html`<span
+                class="mono ${fmt.tps(model.recentTps) === '—' ? 'muted' : ''}"
+                title="Decoding speed (tokens/s), excluding model load"
+                >${fmt.tps(model.recentTps)}</span
+              >`
+          })()}
         </td>
         <td class="mono">
           ${model.totalRequests || 0}<span class="muted">/</span
@@ -723,6 +746,7 @@ export class NodeCard extends LitElement {
                       ? this._renderModelTable(chatModels, {
                           isCloud,
                           isEmbedding: false,
+                          isDecision: false,
                           activeNames,
                         })
                       : ''}
@@ -734,6 +758,7 @@ export class NodeCard extends LitElement {
                           ${this._renderModelTable(decisionModels, {
                             isCloud,
                             isEmbedding: false,
+                            isDecision: true,
                             activeNames,
                           })}
                         `

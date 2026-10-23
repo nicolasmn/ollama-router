@@ -339,13 +339,18 @@ export class DiscoveryManager {
     }
 
     await this.registerCloudNode()
-    await this.performProbe()
+    // Persist is skipped on this first probe: it runs before the loaded
+    // metrics below are applied, so it would momentarily write back
+    // zero-metric models — losing respawns of persisted telemetry if the
+    // process died in that window.
+    await this.performProbe({ skipPersist: true })
     if (this.autoDiscover) await this.discoverNetworkNodes()
 
     if (this._pendingMetrics) {
       this._applyLoadedMetrics(this._pendingMetrics)
       this._pendingMetrics = null
     }
+    this.persistMetrics()
 
     return this.getReachableNodeCount()
   }
@@ -359,6 +364,9 @@ export class DiscoveryManager {
         if (!model) continue
         model.recentLatency = m.recentLatency
         model.recentTps = m.recentTps
+        model.recentTtft = m.recentTtft ?? 0
+        model.recentLoadMs = m.recentLoadMs ?? 0
+        model.systemoneMaxCriteria = m.systemoneMaxCriteria ?? 0
         model.failures = m.failures
         model.totalRequests = m.totalRequests
         model.lastRoutedAt = m.lastRoutedAt
@@ -426,7 +434,7 @@ export class DiscoveryManager {
     }
   }
 
-  async performProbe(): Promise<void> {
+  async performProbe(options: { skipPersist?: boolean } = {}): Promise<void> {
     const probes = Array.from(this.inventory.entries())
       .filter(([, node]) => !node.cloud)
       .map(([host]) =>
@@ -434,7 +442,7 @@ export class DiscoveryManager {
       )
     await Promise.allSettled(probes)
     this.inventoryUpdateHandler?.(this.inventory)
-    this.persistMetrics()
+    if (!options.skipPersist) this.persistMetrics()
   }
 
   private async _probeNode(host: string): Promise<void> {
@@ -642,6 +650,8 @@ export class DiscoveryManager {
         if (existingModel) {
           freshModel.recentLatency = existingModel.recentLatency
           freshModel.recentTps = existingModel.recentTps
+          freshModel.recentTtft = existingModel.recentTtft
+          freshModel.recentLoadMs = existingModel.recentLoadMs
           freshModel.failures = existingModel.failures
           freshModel.totalRequests = existingModel.totalRequests
           freshModel.lastRoutedAt = existingModel.lastRoutedAt
@@ -652,22 +662,70 @@ export class DiscoveryManager {
     }
   }
 
-  updateModelMetrics(nodeHost: string, modelName: string, latencyMs: number, tokens: number, endpoint?: string): void {
+  updateModelMetrics(
+    nodeHost: string,
+    modelName: string,
+    latencyMs: number,
+    tokens: number,
+    endpoint?: string,
+    extra?: { ttftMs?: number; loadMs?: number; decodeMs?: number },
+  ): void {
     const node = this.inventory.get(nodeHost)
     const model = node?.models.get(modelName)
     if (!model) return
+
+    // Throughput must be measured against decode time only. Prefer the
+    // upstream's own eval_duration (excludes load and prompt processing);
+    // fall back to wall clock minus model load.
+    const loadMs = extra?.loadMs && extra.loadMs > 0 ? extra.loadMs : 0
+    const decodeWindowMs =
+      extra?.decodeMs && extra.decodeMs > 0
+        ? extra.decodeMs
+        : loadMs > 0 && latencyMs > loadMs
+          ? latencyMs - loadMs
+          : latencyMs
+    const tps = tokens > 0 && decodeWindowMs > 0 ? (tokens / decodeWindowMs) * 1000 : 0
+
     if (model.totalRequests === 0) {
       model.recentLatency = latencyMs
-      model.recentTps = tokens > 0 ? (tokens / latencyMs) * 1000 : 0
+      if (tps > 0) model.recentTps = tps
     } else {
       model.recentLatency = EMA_ALPHA * latencyMs + (1 - EMA_ALPHA) * model.recentLatency
-      if (tokens > 0) {
-        model.recentTps = EMA_ALPHA * ((tokens / latencyMs) * 1000) + (1 - EMA_ALPHA) * model.recentTps
+      if (tps > 0) {
+        model.recentTps = EMA_ALPHA * tps + (1 - EMA_ALPHA) * model.recentTps
       }
     }
+
+    // Time-to-first-token (streaming) and model load duration each get their
+    // own EMA. Without the per-request ttftMs signal these stay 0.
+    const ttftMs = extra?.ttftMs && extra.ttftMs > 0 ? extra.ttftMs : 0
+    if (ttftMs > 0) {
+      model.recentTtft =
+        model.recentTtft > 0
+          ? EMA_ALPHA * ttftMs + (1 - EMA_ALPHA) * model.recentTtft
+          : ttftMs
+    }
+    if (loadMs > 0) {
+      model.recentLoadMs =
+        model.recentLoadMs > 0
+          ? EMA_ALPHA * loadMs + (1 - EMA_ALPHA) * model.recentLoadMs
+          : loadMs
+    }
+
     model.totalRequests++
     model.lastRoutedAt = Date.now()
     if (endpoint) model.lastRoutingEndpoint = endpoint
+  }
+
+  /** Remember the maximum choice-criteria count a decision model accepts.
+   *  Learned from upstream "criteria must contain 2–N candidates" 400s. */
+  setSystemoneCriteriaCap(nodeHost: string, modelName: string, cap: number): void {
+    if (!cap || cap <= 0) return
+    const model = this.inventory.get(nodeHost)?.models.get(modelName)
+    if (!model || model.systemoneMaxCriteria === cap) return
+    model.systemoneMaxCriteria = cap
+    logger.info({ nodeHost, modelName, cap }, 'Learned systemone criteria cap')
+    this.persistMetrics()
   }
 
   recordModelFailure(nodeHost: string, modelName: string, err: NodeJS.ErrnoException): void {

@@ -1,6 +1,8 @@
 // request-router-systemone.test.ts — /v1/systemone routes ONLY decision models
 import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import { RequestRouter } from '../src/request-router.js'
+import { maxChoiceCriteria } from '../src/request-router.js'
+import { parseCriteriaCap } from '../src/routes/request-helpers.js'
 import { LoadManager } from '../src/load-manager.js'
 import { DiscoveryManager } from '../src/discovery-manager.js'
 import { ModelInfo, ModelProfile, NodeInfo } from '../src/models.js'
@@ -28,6 +30,58 @@ function makeDiscovery(
   }
   return dm
 }
+
+describe('systemone criteria-cap filtering (learned from upstream 400s)', () => {
+  const questions = (n: number) => ({
+    q: {
+      type: 'choice',
+      instructions: 'Pick one',
+      criteria: Object.fromEntries(Array.from({ length: n }, (_, i) => [`c${i}`, `Option ${i}`])),
+    },
+  })
+
+  function routerWithCap(cap: number): RequestRouter {
+    const loadManager = new LoadManager({ maxConcurrentPerNode: 3 })
+    const discovery = makeDiscovery({
+      'http://node-a:11434': {
+        'decision-base:2b': { supportsDecision: true, parameters: 2, contextLength: 8192 },
+      },
+    })
+    for (const node of discovery.getNodes().values()) {
+      for (const info of node.models.values()) info.systemoneMaxCriteria = cap
+    }
+    return new RequestRouter(discovery, loadManager)
+  }
+
+  it('skips a model whose learned cap cannot fit the request', async () => {
+    const router = routerWithCap(26)
+    const result = await router.selectForSystemone({ model: 'auto', state: {}, questions: questions(27) })
+    expect(result).toBeNull()
+    // Small enough to fit → still routed.
+    const fits = await router.selectForSystemone({ model: 'auto', state: {}, questions: questions(26) })
+    expect(fits?.length).toBeGreaterThan(0)
+  })
+
+  it('routes normally when the cap is unknown (0)', async () => {
+    const router = routerWithCap(0)
+    const result = await router.selectForSystemone({ model: 'auto', state: {}, questions: questions(27) })
+    expect(result?.length).toBeGreaterThan(0)
+  })
+
+  it('parseCriteriaCap extracts the cap from upstream 400 messages', () => {
+    expect(parseCriteriaCap('question "next": criteria must contain 2\u201326 candidates')).toBe(26)
+    expect(parseCriteriaCap('criteria must contain 2-26 candidates')).toBe(26)
+    expect(parseCriteriaCap('questions must contain 1\u201364 fields')).toBeNull()
+    expect(parseCriteriaCap('Value looks like object')).toBeNull()
+  })
+
+  it('maxChoiceCriteria reads the largest criteria set from the body', () => {
+    expect(maxChoiceCriteria({ questions: questions(27) })).toBe(27)
+    expect(maxChoiceCriteria({ questions: [{ criteria: ['a', 'b', 'c'] }] })).toBe(3)
+    expect(maxChoiceCriteria({})).toBe(0)
+    expect(maxChoiceCriteria(undefined)).toBe(0)
+  })
+})
 
 describe('selectForSystemone', () => {
   let loadManager: LoadManager
@@ -100,8 +154,7 @@ describe('selectForSystemone', () => {
     }
   })
 
-  it('returns null when no decision models exist on any node', async () => {
-    const discovery = makeDiscovery({
+  it('returns null when no decision models exist on any node', async () => {    const discovery = makeDiscovery({
       'http://node-a:11434': {
         'gemma4:e4b': { supportsThinking: true, parameters: 4.5, contextLength: 128000 },
       },

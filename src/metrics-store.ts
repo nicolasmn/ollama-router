@@ -9,6 +9,9 @@ const logger = createLogger('metrics')
 export interface PersistedModelMetrics {
   recentLatency: number
   recentTps: number
+  recentTtft: number
+  recentLoadMs: number
+  systemoneMaxCriteria?: number
   failures: number
   totalRequests: number
   lastRoutedAt: number
@@ -57,6 +60,9 @@ export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
           modelMap.set(name, {
             recentLatency: m.recentLatency ?? 0,
             recentTps: m.recentTps ?? 0,
+            recentTtft: m.recentTtft ?? 0,
+            recentLoadMs: m.recentLoadMs ?? 0,
+            systemoneMaxCriteria: m.systemoneMaxCriteria ?? 0,
             failures: m.failures ?? 0,
             totalRequests: m.totalRequests ?? 0,
             lastRoutedAt: m.lastRoutedAt ?? 0,
@@ -91,10 +97,19 @@ export function saveMetrics(
     const modelRecord: Record<string, PersistedModelMetrics> = {}
     for (const [name, model] of node.models) {
       const m = model as unknown as PersistedModelMetrics
-      if (m.recentLatency === 0 && m.recentTps === 0 && m.failures === 0) continue
+      if (
+        (m.recentLatency || 0) === 0 &&
+        (m.recentTps || 0) === 0 &&
+        (m.recentTtft || 0) === 0 &&
+        (m.recentLoadMs || 0) === 0 &&
+        (m.failures || 0) === 0
+      ) continue
       modelRecord[name] = {
         recentLatency: m.recentLatency,
         recentTps: m.recentTps,
+        recentTtft: m.recentTtft ?? 0,
+        recentLoadMs: m.recentLoadMs ?? 0,
+        systemoneMaxCriteria: (m as { systemoneMaxCriteria?: number }).systemoneMaxCriteria || undefined,
         failures: m.failures,
         totalRequests: m.totalRequests ?? 0,
         lastRoutedAt: m.lastRoutedAt ?? 0,
