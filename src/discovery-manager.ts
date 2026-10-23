@@ -339,13 +339,18 @@ export class DiscoveryManager {
     }
 
     await this.registerCloudNode()
-    await this.performProbe()
+    // Persist is skipped on this first probe: it runs before the loaded
+    // metrics below are applied, so it would momentarily write back
+    // zero-metric models — losing respawns of persisted telemetry if the
+    // process died in that window.
+    await this.performProbe({ skipPersist: true })
     if (this.autoDiscover) await this.discoverNetworkNodes()
 
     if (this._pendingMetrics) {
       this._applyLoadedMetrics(this._pendingMetrics)
       this._pendingMetrics = null
     }
+    this.persistMetrics()
 
     return this.getReachableNodeCount()
   }
@@ -428,7 +433,7 @@ export class DiscoveryManager {
     }
   }
 
-  async performProbe(): Promise<void> {
+  async performProbe(options: { skipPersist?: boolean } = {}): Promise<void> {
     const probes = Array.from(this.inventory.entries())
       .filter(([, node]) => !node.cloud)
       .map(([host]) =>
@@ -436,7 +441,7 @@ export class DiscoveryManager {
       )
     await Promise.allSettled(probes)
     this.inventoryUpdateHandler?.(this.inventory)
-    this.persistMetrics()
+    if (!options.skipPersist) this.persistMetrics()
   }
 
   private async _probeNode(host: string): Promise<void> {
