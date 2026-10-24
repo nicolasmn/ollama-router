@@ -8,6 +8,7 @@ import type { RequestHistoryManager } from '../request-history.js'
 import { forceModelStore } from '../force-model-store.js'
 import { disabledModelsStore } from '../disabled-models-store.js'
 import { cloudUsageStore } from '../cloud-usage.js'
+import { readJsonBody } from '../read-body.js'
 import { createLogger } from '../logger.js'
 
 const logger = createLogger('admin')
@@ -210,10 +211,11 @@ export function createAdminRouter({
   // Per-node model disable/enable
   // ---------------------------------------------------------------------------
 
-  r.put('/inventory/nodes/:host/models/:name', (req, res) => {
+  r.put('/inventory/nodes/:host/models/:name', async (req, res) => {
     const host = decodeURIComponent(req.params.host)
     const name = decodeURIComponent(req.params.name)
-    const disabled = (req.body as Record<string, unknown>)?.disabled
+    const { body } = await readJsonBody(req)
+    const disabled = body?.disabled
     if (typeof disabled !== 'boolean') {
       res
         .status(400)
@@ -252,8 +254,9 @@ export function createAdminRouter({
     )
   })
 
-  r.post('/force-model', (req, res) => {
-    const model = (req.body as Record<string, unknown>)?.model
+  r.post('/force-model', async (req, res) => {
+    const { body } = await readJsonBody(req)
+    const model = body?.model
     if (!model || typeof model !== 'string') {
       res.status(400).json({ error: 'Missing or invalid "model" field' })
       return
@@ -328,13 +331,14 @@ export function createAdminRouter({
     })
   })
 
-  r.post('/cloud/models', (req, res) => {
+  r.post('/cloud/models', async (req, res) => {
     const info = discoveryManager.getCloudInfo()
     if (!info.configured) {
       res.status(503).json({ error: 'Cloud not configured' })
       return
     }
-    const name = (req.body as Record<string, unknown>)?.name
+    const { body } = await readJsonBody(req)
+    const name = body?.name
     if (!name || typeof name !== 'string') {
       res.status(400).json({ error: 'Missing or invalid "name" field' })
       return

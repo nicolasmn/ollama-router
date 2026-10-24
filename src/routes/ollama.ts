@@ -13,6 +13,7 @@ import { INFERENCE_TIMEOUT, ROUTER_FALLBACK_TO_AUTO } from '../config.js'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { ModelInfo } from '../models.js'
 import type { RequestRouter } from '../request-router.js'
+import { readJsonBody } from '../read-body.js'
 
 const logger = pino()
 
@@ -85,8 +86,9 @@ export function setupOllamaRoutes(
     res.json({ models })
   })
 
-  app.post('/api/show', (req, res) => {
-    const { name } = (req.body ?? {}) as { name?: string }
+  app.post('/api/show', async (req, res) => {
+    const { body } = await readJsonBody(req)
+    const { name } = body as { name?: string }
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'name is required' })
     }
@@ -221,7 +223,7 @@ export function setupOllamaRoutes(
 
   // ── /api/embed (current embedding endpoint) ──────────────────────────────────
   app.post('/api/embed', async (req, res) => {
-    const body = req.body as Record<string, unknown>
+    const { body } = await readJsonBody(req)
     const modelName = body.model as string | undefined
     if (!modelName) {
       return res.status(400).json({ error: 'model is required' })
@@ -283,7 +285,7 @@ export function setupOllamaRoutes(
 
   // ── /api/embeddings (deprecated, single prompt → single vector) ───────────────
   app.post('/api/embeddings', async (req, res) => {
-    const body = req.body as Record<string, unknown>
+    const { body } = await readJsonBody(req)
     const modelName = body.model as string | undefined
     if (!modelName) {
       return res.status(400).json({ error: 'model is required' })
@@ -456,6 +458,7 @@ async function proxyStreamingToNode(
   endpoint: string,
   logLabel: string,
 ): Promise<void> {
+  const { body } = await readJsonBody(req)
   const nodeHost = firstReachableNode(discoveryManager)
   if (!nodeHost) {
     res.status(503).json({ error: 'No reachable nodes' })
@@ -465,7 +468,7 @@ async function proxyStreamingToNode(
     const upstream = await request(`${nodeHost}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(body),
       headersTimeout: INFERENCE_TIMEOUT,
       bodyTimeout: INFERENCE_TIMEOUT,
     })
@@ -488,6 +491,7 @@ async function proxyJsonToNode(
   logLabel: string,
   method: Dispatcher.HttpMethod = 'POST',
 ): Promise<void> {
+  const { body } = await readJsonBody(req)
   const nodeHost = firstReachableNode(discoveryManager)
   if (!nodeHost) {
     res.status(503).json({ error: 'No reachable nodes' })
@@ -497,7 +501,7 @@ async function proxyJsonToNode(
     const upstream = await request(`${nodeHost}${endpoint}`, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(body),
       headersTimeout: 30_000,
       bodyTimeout: 30_000,
     })

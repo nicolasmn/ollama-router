@@ -204,6 +204,36 @@ async function sanitizeMessages(body: Record<string, unknown>): Promise<Record<s
   return { ...body, messages }
 }
 
+/** Returns true when the request body can be forwarded to the upstream node as
+ *  raw bytes without re-serialization. Safe when the model field isn't changing
+ *  and no message content needs modification (null content or http(s) images
+ *  that need fetching + base64 encoding). */
+function canForwardRaw(reqBody: Record<string, unknown>, modelName: string): boolean {
+  const model = reqBody.model
+  if (model !== modelName) return false
+
+  const messages = reqBody.messages
+  if (!Array.isArray(messages)) return true
+
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue
+    const m = msg as Record<string, unknown>
+    if (m.content === null) return false
+    if (!Array.isArray(m.content)) continue
+    for (const part of m.content) {
+      if (!part || typeof part !== 'object') continue
+      const p = part as Record<string, unknown>
+      if (p.type === 'image_url') {
+        const imageUrl = p.image_url as { url: string } | undefined
+        if (typeof imageUrl?.url === 'string' && (imageUrl.url.startsWith('http://') || imageUrl.url.startsWith('https://'))) {
+          return false
+        }
+      }
+    }
+  }
+  return true
+}
+
 function buildHeaders(apiKey: string): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
@@ -215,14 +245,17 @@ export async function forwardRequest(
   modelName: string,
   reqBody: Record<string, unknown>,
   endpoint: string,
-  options: { signal?: AbortSignal; apiKey?: string } = {},
+  options: { signal?: AbortSignal; apiKey?: string; rawBody?: Buffer | null } = {},
 ): Promise<unknown> {
-  const body = await sanitizeMessages({ ...reqBody, model: modelName })
+  const useRaw = options.rawBody != null && canForwardRaw(reqBody, modelName)
+  const bodyPayload = useRaw
+    ? options.rawBody!
+    : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }))
 
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers: buildHeaders(options.apiKey ?? ''),
-    body: JSON.stringify(body),
+    body: bodyPayload,
     headersTimeout: INFERENCE_TIMEOUT,
     bodyTimeout: INFERENCE_TIMEOUT,
     signal: options.signal,
@@ -248,6 +281,8 @@ export interface StreamingRequestOptions {
   loadManager: LoadManager
   requestHistoryManager: RequestHistoryManager
   signal?: AbortSignal
+  /** Raw body bytes for forwarding without re-serialization. */
+  rawBody?: Buffer | null
 }
 
 // OpenAI-compatible upstreams frame stream events as `data: {...}` (SSE);
@@ -342,7 +377,10 @@ export async function handleStreamingRequest(
     }
 
     const apiKey = discoveryManager.getCloudApiKey(nodeHost)
-    const body = await sanitizeMessages({ ...reqBody, model: modelName })
+    const useRaw = opts.rawBody != null && canForwardRaw(reqBody, modelName)
+    const bodyPayload = useRaw
+      ? opts.rawBody!
+      : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }))
     const startTime = Date.now()
     let modelLoadMs = 0
 
@@ -357,7 +395,7 @@ export async function handleStreamingRequest(
       const resp = await request(`${nodeHost}${endpoint}`, {
         method: 'POST',
         headers: buildHeaders(apiKey),
-        body: JSON.stringify(body),
+        body: bodyPayload,
         headersTimeout: INFERENCE_TIMEOUT,
         bodyTimeout: INFERENCE_TIMEOUT,
         signal: abortController.signal,
@@ -503,6 +541,8 @@ export interface TryCandidatesOptions {
   loadManager: LoadManager
   requestHistoryManager: RequestHistoryManager
   signal?: AbortSignal
+  /** Raw body bytes for forwarding without re-serialization. */
+  rawBody?: Buffer | null
 }
 
 export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promise<boolean> {
@@ -510,7 +550,7 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
     requestId, candidates, reqBody, endpoint,
     tokensFromResult, responseContentFrom,
     successLog, failureLog,
-    res, discoveryManager, loadManager, requestHistoryManager, signal,
+    res, discoveryManager, loadManager, requestHistoryManager, signal, rawBody,
   } = opts
 
   let lastFailure: {
@@ -545,7 +585,7 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
     try {
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'waiting', attemptReason: index === 0 ? 'first_try' : 'fallback_error' })
 
-      let result = await forwardRequest(nodeHost, modelName, reqBody, endpoint, { signal, apiKey })
+      let result = await forwardRequest(nodeHost, modelName, reqBody, endpoint, { signal, apiKey, rawBody })
       let modelLoadMs = extractLoadDurationMs(result)
 
       if (isLoadOnlyResponse(result)) {
