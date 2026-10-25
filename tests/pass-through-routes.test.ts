@@ -119,6 +119,78 @@ describe('native pass-through routes', () => {
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
   })
 
+  it('inlines http(s) image_url parts as data URLs before forwarding', async () => {
+    let upstreamBody: Record<string, unknown> | null = null
+
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'GET' && req.url === '/img.png') {
+        res.writeHead(200, { 'Content-Type': 'image/png' })
+        res.end(Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+          'base64',
+        ))
+        return
+      }
+      if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl_img',
+            object: 'chat.completion',
+            created: 1,
+            model: upstreamBody!.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+        )
+        return
+      }
+      res.writeHead(404); res.end()
+    })
+
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+
+    const requestRouter = {
+      analyzeRequest: jest.fn(() => ({ endpointType: 'chat' })),
+      selectForChat: jest.fn(() => [{ nodeHost: upstreamBase, modelName: routedModel }]),
+    } as any
+    setupChatRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), requestRouter, createRequestHistoryManager())
+
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+
+    const payload = {
+      model: routedModel,
+      stream: false,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image_url', image_url: { url: `${upstreamBase}/img.png` } },
+          ],
+        },
+      ],
+    }
+    const response = await fetch(`${routerBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    expect(response.status).toBe(200)
+    const content = (upstreamBody as any)?.messages?.[0]?.content as Array<Record<string, unknown>>
+    expect(content[1]).toEqual({
+      type: 'image_url',
+      image_url: { url: `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==` },
+    })
+  })
+
   it('streams chat completions SSE response and captures streamed content', async () => {
     const sseLines = [
       'data: {"id":"chatcmpl_sse","object":"chat.completion.chunk","model":"qwen3:8b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}\n\n',
@@ -367,6 +439,8 @@ describe('/api/generate and /api/chat routes', () => {
     } as any
   }
 
+  const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
+
   it('passes generate body through to upstream /api/generate (only model is rewritten)', async () => {
     let upstreamBody: Record<string, unknown> | null = null
     upstreamServer = http.createServer(async (req, res) => {
@@ -425,6 +499,146 @@ describe('/api/generate and /api/chat routes', () => {
     })
     expect(response.status).toBe(200)
     expect(upstreamBody).toEqual({ ...payload, model: routedModel })
+  }, 30000)
+
+  it('passes native per-message base64 images through untouched', async () => {
+    let upstreamBody: Record<string, unknown> | null = null
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/api/chat') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ model: upstreamBody!.model, message: { role: 'assistant', content: 'ok' }, done: true }))
+        return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const payload = {
+      model: routedModel,
+      stream: false,
+      messages: [{ role: 'user', content: 'what is in this image?', images: [TINY_PNG_BASE64] }],
+    }
+    const response = await fetch(`${routerBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    expect(response.status).toBe(200)
+    expect(upstreamBody).toEqual(payload)
+  }, 30000)
+
+  it('merges top-level images on native /api/chat into the user message', async () => {
+    let upstreamBody: Record<string, unknown> | null = null
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/api/chat') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ model: upstreamBody!.model, message: { role: 'assistant', content: 'ok' }, done: true }))
+        return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const payload = {
+      model: 'auto',
+      stream: false,
+      messages: [{ role: 'user', content: 'what is in this image?' }],
+      images: [TINY_PNG_BASE64],
+    }
+    const response = await fetch(`${routerBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    expect(response.status).toBe(200)
+    expect(upstreamBody).toEqual({
+      model: routedModel,
+      stream: false,
+      messages: [{ role: 'user', content: 'what is in this image?', images: [TINY_PNG_BASE64] }],
+    })
+  }, 30000)
+
+  it('passes /api/generate top-level images through untouched', async () => {
+    let upstreamBody: Record<string, unknown> | null = null
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/api/generate') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ model: upstreamBody!.model, response: 'ok', done: true }))
+        return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const payload = { model: routedModel, prompt: 'what is in this picture?', images: [TINY_PNG_BASE64], stream: false }
+    const response = await fetch(`${routerBase}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    expect(response.status).toBe(200)
+    expect(upstreamBody).toEqual(payload)
+  }, 30000)
+
+  it('strips data: prefixes in native image arrays to raw base64', async () => {
+    let upstreamBody: Record<string, unknown> | null = null
+    upstreamServer = http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/api/chat') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        upstreamBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ model: upstreamBody!.model, message: { role: 'assistant', content: 'ok' }, done: true }))
+        return
+      }
+      res.writeHead(404); res.end()
+    })
+    const upstreamBase = await startServer(upstreamServer)
+    const routedModel = 'qwen3:8b'
+    const app: Express = express()
+    app.use(express.json())
+    setupOllamaInferenceRoutes(app, createDiscoveryManager(upstreamBase, routedModel), createLoadManager(), buildRequestRouter(upstreamBase, routedModel), createRequestHistoryManager())
+    routerServer = http.createServer(app)
+    const routerBase = await startServer(routerServer)
+    const payload = {
+      model: routedModel,
+      stream: false,
+      messages: [{ role: 'user', content: 'describe', images: [`data:image/png;base64,${TINY_PNG_BASE64}`] }],
+    }
+    const response = await fetch(`${routerBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    expect(response.status).toBe(200)
+    expect(upstreamBody).toEqual({
+      ...payload,
+      messages: [{ role: 'user', content: 'describe', images: [TINY_PNG_BASE64] }],
+    })
   }, 30000)
 
   it('streams generate response by default when stream is not set', async () => {
