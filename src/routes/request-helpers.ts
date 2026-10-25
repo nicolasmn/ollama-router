@@ -215,57 +215,167 @@ function categorizeFailure(err: RouterError): { failureCategory: string; retryHi
   return { failureCategory: 'upstream_error', retryHint: 'retry_now' }
 }
 
+type FetchedImage = { base64: string; mediaType: string }
+
+/** Fetches an http(s) image and returns its bytes as base64 — null on failure. */
+async function fetchImageAsBase64(url: string): Promise<FetchedImage | null> {
+  try {
+    const { fetch } = await import('undici')
+    const resp = await fetch(url, { headers: { 'User-Agent': 'ollama-router/1.0' } })
+    if (!resp.ok) {
+      logger.warn({ url, status: resp.status }, 'Image URL fetch returned non-2xx, passing through')
+      return null
+    }
+    const contentType = resp.headers.get('content-type') ?? 'image/jpeg'
+    const mediaType = contentType.split(';')[0].trim()
+    const base64 = Buffer.from(await resp.arrayBuffer()).toString('base64')
+    logger.debug({ url, bytes: base64.length, mediaType }, 'Resolved image URL to base64')
+    return { base64, mediaType }
+  } catch (err) {
+    logger.warn({ url, err: (err as Error).message }, 'Failed to fetch image URL, passing through')
+    return null
+  }
+}
+
+/** Reads the image URL from a content part in either accepted form:
+ *  OpenAI-standard `image_url: { url }` or the bare-string shorthand. */
+function imageUrlOfPart(part: Record<string, unknown>): string | null {
+  const raw = part.image_url
+  if (typeof raw === 'string') return raw
+  const url = (raw as { url?: unknown } | undefined)?.url
+  return typeof url === 'string' ? url : null
+}
+
 async function resolveImageUrls(content: unknown[]): Promise<unknown[]> {
   return Promise.all(
     content.map(async (part) => {
       if (!part || typeof part !== 'object') return part
       const p = part as Record<string, unknown>
-      if (p.type !== 'image_url') return part
-      const imageUrl = p.image_url as { url: string; detail?: string } | undefined
-      if (!imageUrl?.url) return part
-      const url = imageUrl.url
+      if (p.type !== 'image_url' && p.type !== 'input_image') return part
+      const url = imageUrlOfPart(p)
+      if (!url) return part
       if (!url.startsWith('http://') && !url.startsWith('https://')) return part
-      try {
-        const { fetch } = await import('undici')
-        const resp = await fetch(url, { headers: { 'User-Agent': 'ollama-router/1.0' } })
-        if (!resp.ok) {
-          logger.warn({ url, status: resp.status }, 'Image URL fetch returned non-2xx, passing through')
-          return part
-        }
-        const contentType = resp.headers.get('content-type') ?? 'image/jpeg'
-        const mediaType = contentType.split(';')[0].trim()
-        const buffer = Buffer.from(await resp.arrayBuffer())
-        logger.debug({ url, bytes: buffer.length, mediaType }, 'Resolved image URL to base64')
-        return { ...p, image_url: { ...imageUrl, url: `data:${mediaType};base64,${buffer.toString('base64')}` } }
-      } catch (err) {
-        logger.warn({ url, err: (err as Error).message }, 'Failed to fetch image URL, passing through')
-        return part
-      }
+      const fetched = await fetchImageAsBase64(url)
+      if (!fetched) return part
+      const dataUrl = `data:${fetched.mediaType};base64,${fetched.base64}`
+      // Preserve the shape the client used — objects stay objects, strings stay strings.
+      if (typeof p.image_url === 'string') return { ...p, image_url: dataUrl }
+      return { ...p, image_url: { ...(p.image_url as Record<string, unknown>), url: dataUrl } }
     }),
   )
 }
 
-async function sanitizeMessages(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** True when native image entries are not already raw base64 (data: prefix or
+ *  http(s) URL) and thus need a payload rewrite before forwarding. */
+function nativeImageEntriesNeedRewrite(entries: unknown[]): boolean {
+  return entries.some(
+    (entry) =>
+      typeof entry === 'string' &&
+      (entry.startsWith('data:') || /^https?:\/\//iu.test(entry)),
+  )
+}
+
+/** Ollama native image arrays carry raw base64. Rewrite tolerated entry shapes
+ *  into what Ollama actually accepts: strip `data:` prefixes, inline http(s)
+ *  URLs. Non-string entries pass through untouched. */
+async function normalizeNativeImages(images: unknown[]): Promise<unknown[]> {
+  return Promise.all(
+    images.map(async (entry) => {
+      if (typeof entry !== 'string' || !entry) return entry
+      if (/^https?:\/\//iu.test(entry)) {
+        const fetched = await fetchImageAsBase64(entry)
+        return fetched ? fetched.base64 : entry
+      }
+      if (entry.startsWith('data:')) {
+        const marker = ';base64,'
+        const idx = entry.indexOf(marker)
+        return idx !== -1 ? entry.slice(idx + marker.length) : entry
+      }
+      return entry
+    }),
+  )
+}
+
+/** Native Ollama /api/chat only reads per-message images — a top-level
+ *  `images` array is an unknown field and would be silently dropped upstream.
+ *  Merges it into the last user message (never mutates the caller's messages). */
+function mergeTopLevelImages(body: Record<string, unknown>): void {
+  const images = body.images
+  if (!Array.isArray(images) || images.length === 0) return
+  const messages = Array.isArray(body.messages)
+    ? [...(body.messages as Array<Record<string, unknown>>)]
+    : []
+  if (messages.length > 0) {
+    let targetIndex = -1
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === 'user') {
+        targetIndex = i
+        break
+      }
+    }
+    if (targetIndex === -1) targetIndex = Math.max(0, messages.length - 1)
+    const target = messages[targetIndex] ?? {}
+    messages[targetIndex] = {
+      ...target,
+      images: Array.isArray(target.images)
+        ? [...(target.images as unknown[]), ...images]
+        : [...images],
+    }
+    body.messages = messages
+  }
+  delete body.images
+}
+
+async function sanitizeMessages(
+  body: Record<string, unknown>,
+  endpoint: string,
+): Promise<Record<string, unknown>> {
+  // Native shapes: /api/chat ignores unknown top-level fields, so images must
+  // ride inside a message; /api/generate takes top-level images but only as
+  // raw base64. Other endpoints are forwarded untouched.
+  if (endpoint === '/api/chat') {
+    mergeTopLevelImages(body)
+  } else if (endpoint === '/api/generate' && Array.isArray(body.images)) {
+    body = { ...body, images: await normalizeNativeImages(body.images as unknown[]) }
+  }
   if (!Array.isArray(body.messages)) return body
   const messages = await Promise.all(
     body.messages.map(async (msg: unknown) => {
       if (!msg || typeof msg !== 'object') return msg
       const m = msg as Record<string, unknown>
-      if (m.content === null) return { ...m, content: '' }
-      if (!Array.isArray(m.content)) return m
-      return { ...m, content: await resolveImageUrls(m.content) }
+      let out = m
+      if (m.content === null) out = { ...m, content: '' }
+      if (Array.isArray(m.content)) out = { ...out, content: await resolveImageUrls(m.content) }
+      if (endpoint === '/api/chat' && Array.isArray(m.images)) {
+        out = { ...out, images: await normalizeNativeImages(m.images as unknown[]) }
+      }
+      return out
     }),
   )
   return { ...body, messages }
 }
 
 /** Returns true when the request body can be forwarded to the upstream node as
- *  raw bytes without re-serialization. Safe when the model field isn't changing
- *  and no message content needs modification (null content or http(s) images
- *  that need fetching + base64 encoding). */
-function canForwardRaw(reqBody: Record<string, unknown>, modelName: string): boolean {
+ *  raw bytes without re-serialization. Unsafe when the model field is changing,
+ *  message content needs modification (null content or http(s) image parts that
+ *  need fetching + base64 encoding), or native Ollama image fields need
+ *  normalizing or merging into messages. */
+function canForwardRaw(
+  reqBody: Record<string, unknown>,
+  modelName: string,
+  endpoint: string,
+): boolean {
   const model = reqBody.model
   if (model !== modelName) return false
+
+  if (endpoint === '/api/chat' && Array.isArray(reqBody.images)) return false
+  if (
+    endpoint === '/api/generate' &&
+    Array.isArray(reqBody.images) &&
+    nativeImageEntriesNeedRewrite(reqBody.images as unknown[])
+  ) {
+    return false
+  }
 
   const messages = reqBody.messages
   if (!Array.isArray(messages)) return true
@@ -274,15 +384,21 @@ function canForwardRaw(reqBody: Record<string, unknown>, modelName: string): boo
     if (!msg || typeof msg !== 'object') continue
     const m = msg as Record<string, unknown>
     if (m.content === null) return false
+    if (
+      endpoint === '/api/chat' &&
+      Array.isArray(m.images) &&
+      nativeImageEntriesNeedRewrite(m.images as unknown[])
+    ) {
+      return false
+    }
     if (!Array.isArray(m.content)) continue
     for (const part of m.content) {
       if (!part || typeof part !== 'object') continue
       const p = part as Record<string, unknown>
-      if (p.type === 'image_url') {
-        const imageUrl = p.image_url as { url: string } | undefined
-        if (typeof imageUrl?.url === 'string' && (imageUrl.url.startsWith('http://') || imageUrl.url.startsWith('https://'))) {
-          return false
-        }
+      if (p.type !== 'image_url' && p.type !== 'input_image') continue
+      const url = imageUrlOfPart(p)
+      if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+        return false
       }
     }
   }
@@ -302,10 +418,10 @@ export async function forwardRequest(
   endpoint: string,
   options: { signal?: AbortSignal; apiKey?: string; rawBody?: Buffer | null } = {},
 ): Promise<unknown> {
-  const useRaw = options.rawBody != null && canForwardRaw(reqBody, modelName)
+  const useRaw = options.rawBody != null && canForwardRaw(reqBody, modelName, endpoint)
   const bodyPayload = useRaw
     ? options.rawBody!
-    : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }))
+    : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }, endpoint))
 
   const resp = await request(`${baseUrl}${endpoint}`, {
     method: 'POST',
@@ -432,10 +548,10 @@ export async function handleStreamingRequest(
     }
 
     const apiKey = discoveryManager.getCloudApiKey(nodeHost)
-    const useRaw = opts.rawBody != null && canForwardRaw(reqBody, modelName)
+    const useRaw = opts.rawBody != null && canForwardRaw(reqBody, modelName, endpoint)
     const bodyPayload = useRaw
       ? opts.rawBody!
-      : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }))
+      : JSON.stringify(await sanitizeMessages({ ...reqBody, model: modelName }, endpoint))
     const startTime = Date.now()
     let modelLoadMs = 0
     // Streaming telemetry, from either wire format:

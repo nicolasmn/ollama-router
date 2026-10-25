@@ -65,7 +65,8 @@ function stringifyContent(content: unknown): string {
 function hasImageContent(content: unknown): boolean {
   if (!Array.isArray(content)) return false
   return (content as MessagePart[]).some(
-    (part) => part?.type === 'image_url' || part?.type === 'image',
+    (part) =>
+      part?.type === 'image_url' || part?.type === 'image' || part?.type === 'input_image',
   )
 }
 
@@ -95,7 +96,17 @@ export function bodyHasImages(reqBody: Record<string, unknown> | undefined | nul
     return true
   }
   const messages = Array.isArray(reqBody.messages) ? (reqBody.messages as unknown[]) : []
-  return messages.some((m) => messageHasImages(m))
+  if (messages.some((m) => messageHasImages(m))) return true
+  const input = Array.isArray(reqBody.input) ? (reqBody.input as unknown[]) : []
+  return input.some(inputHasImages)
+}
+
+/** /v1/responses shape: images ride in `input` items as input_image parts. */
+function inputHasImages(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false
+  const it = item as Record<string, unknown>
+  if (it.type === 'input_image') return true
+  return Array.isArray(it.content) && hasImageContent(it.content)
 }
 
 function countMatches(text: string, regex: RegExp): number {
