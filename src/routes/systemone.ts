@@ -5,6 +5,7 @@ import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestRouter } from '../request-router.js'
 import type { RequestHistoryManager } from '../request-history.js'
+import { readJsonBody } from '../read-body.js'
 import {
   makeRequestId,
   selectCandidatesOrHandleError,
@@ -28,31 +29,40 @@ export function setupSystemoneRoutes(
 
     try {
       requestId = makeRequestId()
-      const reqBody = req.body as Record<string, unknown>
+      const { body: reqBody, raw } = await readJsonBody(req)
 
       // systemone is a decision-model endpoint with explicit model selection
       // Request format: { model, state, questions }
       // No streaming support per Ollama spec
-      const analysis = requestRouter.analyzeRequest(reqBody, 'systemone')
+
+      // Cache checks: conversation first, then signal. On a hit we skip
+      // re-analyzing the body and skip heavy history capture.
+      const peeked = requestRouter.peekCachedRouting?.(reqBody) ?? requestRouter.peekSignalCache?.(reqBody)
+      const analysis = peeked ? undefined : requestRouter.analyzeRequest(reqBody, 'systemone')
 
       requestHistoryManager.startRequest({
         requestId,
         endpointType: 'systemone',
         reqBody,
-        analysis,
+        analysis: analysis ?? {},
+        skipCapture: !!peeked,
       })
       requestHistoryManager.registerAbortController(requestId, abortController)
 
-      const candidates = await selectCandidatesOrHandleError({
-        requestId,
-        reqBody,
-        taskType: 'systemone',
-        res,
-        requestHistoryManager,
-        selectFn: (body) => requestRouter.selectForSystemone(body, abortController.signal),
-        selectionErrorMessage: 'Systemone model selection error',
-        logger,
-      })
+      let candidates = peeked
+      if (!candidates) {
+        const result = await selectCandidatesOrHandleError({
+          requestId,
+          reqBody,
+          taskType: 'systemone',
+          res,
+          requestHistoryManager,
+          selectFn: (body) => requestRouter.selectForSystemone(body, abortController.signal),
+          selectionErrorMessage: 'Systemone model selection error',
+          logger,
+        })
+        candidates = result
+      }
       if (!candidates) return
 
       requestHistoryManager.recordSelection(requestId, candidates)
@@ -87,7 +97,7 @@ export function setupSystemoneRoutes(
         discoveryManager,
         loadManager,
         requestHistoryManager,
-        signal: abortController.signal,
+        signal: abortController.signal, rawBody: raw,
       })
       if (!succeeded) {
         if (!res.headersSent) res.status(503).json({ error: 'All upstream nodes failed' })
