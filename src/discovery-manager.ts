@@ -736,6 +736,9 @@ export class DiscoveryManager {
       err?.code === 'ECONNREFUSED' ||
       err?.code === 'ECONNRESET' ||
       err?.code === 'ETIMEDOUT' ||
+      // undici throws ConnectTimeoutError when a node stops responding mid-TCP
+      // (asleep laptop) — same meaning as ETIMEDOUT for reachability purposes.
+      err?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
       err?.code === 'UND_ERR_BODY_TIMEOUT' ||
       err?.code === 'UND_ERR_HEADERS_TIMEOUT'
     if (isNetworkError) this.markNodeUnreachable(nodeHost)
