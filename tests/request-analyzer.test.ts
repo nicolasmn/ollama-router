@@ -70,6 +70,47 @@ describe('RequestAnalyzer', () => {
       expect(result.needsVision).toBe(true)
     })
 
+    it('detects top-level images on native generate requests', () => {
+      const result = analyzer.analyze(
+        {
+          model: 'llava',
+          prompt: 'what is in this image?',
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='],
+        },
+        'generate',
+      )
+      expect(result.needsVision).toBe(true)
+    })
+
+    it('detects top-level images on native chat requests', () => {
+      const result = analyzer.analyze(
+        {
+          model: 'llava',
+          messages: [{ role: 'user', content: 'what is in this image?' }],
+          images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='],
+        },
+        'chat',
+      )
+      expect(result.needsVision).toBe(true)
+    })
+
+    it('detects per-message images on native chat requests', () => {
+      const result = analyzer.analyze(
+        {
+          model: 'llava',
+          messages: [
+            {
+              role: 'user',
+              content: 'what is in this image?',
+              images: ['iVBORw0KGgoAAAANSUhEUgAAAAEA...'],
+            },
+          ],
+        },
+        'chat',
+      )
+      expect(result.needsVision).toBe(true)
+    })
+
     it('does not flag vision for plain text', () => {
       const result = analyzer.analyze(
         { messages: [{ role: 'user', content: 'hello' }] },

@@ -65,7 +65,8 @@ function stringifyContent(content: unknown): string {
 function hasImageContent(content: unknown): boolean {
   if (!Array.isArray(content)) return false
   return (content as MessagePart[]).some(
-    (part) => part?.type === 'image_url' || part?.type === 'image',
+    (part) =>
+      part?.type === 'image_url' || part?.type === 'image' || part?.type === 'input_image',
   )
 }
 
@@ -74,6 +75,38 @@ function hasAudioContent(content: unknown): boolean {
   return (content as MessagePart[]).some(
     (part) => part?.type === 'input_audio' || part?.type === 'audio',
   )
+}
+
+/** True when a single message carries images — OpenAI-style content parts
+ *  (`image_url`/`image`) or native Ollama per-message `images` arrays. */
+export function messageHasImages(msg: unknown): boolean {
+  if (!msg || typeof msg !== 'object') return false
+  const m = msg as Record<string, unknown>
+  if (Array.isArray(m.images) && (m.images as unknown[]).some((i) => typeof i === 'string' && i)) {
+    return true
+  }
+  return hasImageContent(m.content)
+}
+
+/** True when the request body carries images — top-level `images` array
+ *  (Ollama /api/generate) or per-message images (Ollama /api/chat). */
+export function bodyHasImages(reqBody: Record<string, unknown> | undefined | null): boolean {
+  if (!reqBody) return false
+  if (Array.isArray(reqBody.images) && (reqBody.images as unknown[]).some((i) => typeof i === 'string' && i)) {
+    return true
+  }
+  const messages = Array.isArray(reqBody.messages) ? (reqBody.messages as unknown[]) : []
+  if (messages.some((m) => messageHasImages(m))) return true
+  const input = Array.isArray(reqBody.input) ? (reqBody.input as unknown[]) : []
+  return input.some(inputHasImages)
+}
+
+/** /v1/responses shape: images ride in `input` items as input_image parts. */
+function inputHasImages(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false
+  const it = item as Record<string, unknown>
+  if (it.type === 'input_image') return true
+  return Array.isArray(it.content) && hasImageContent(it.content)
 }
 
 function countMatches(text: string, regex: RegExp): number {
@@ -97,7 +130,7 @@ function detectMultimodalNeeds(messages: RequestMessage[]): ModalResult {
 
   for (const msg of messages) {
     const content = msg?.content
-    if (hasImageContent(content)) needsVision = true
+    if (messageHasImages(msg)) needsVision = true
     if (hasAudioContent(content)) needsAudio = true
     const text = ' ' + stringifyContent(content)
     totalText += text
@@ -213,7 +246,7 @@ export class RequestAnalyzer {
       userText = totalText
     } else {
       const modal = detectMultimodalNeeds(messages)
-      needsVision = modal.needsVision
+      needsVision = modal.needsVision || bodyHasImages(reqBody)
       needsAudio = modal.needsAudio
       totalText = modal.totalText
       userText = modal.userText

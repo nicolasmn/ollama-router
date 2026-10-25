@@ -152,8 +152,8 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     next()
   })
 
-  app.use(express.json({ limit: '10mb' }))
-
+  // Body parsing is handled per-route (readJsonBody) so large bodies aren't
+  // buffered by a global middleware before the router can check its cache.
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
   app.use('/dashboard-assets', express.static(join(__dirname, 'dashboard')))

@@ -5,6 +5,7 @@ import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestRouter } from '../request-router.js'
 import type { RequestHistoryManager } from '../request-history.js'
+import { readJsonBody } from '../read-body.js'
 import {
   makeRequestId,
   selectCandidatesOrHandleError,
@@ -28,17 +29,25 @@ export function setupEmbeddingsRoutes(
 
     try {
     requestId = makeRequestId()
-    const reqBody = req.body as Record<string, unknown>
-    const analysis = requestRouter.analyzeRequest(reqBody, 'embeddings')
+    const { body: reqBody, raw } = await readJsonBody(req)
 
-    requestHistoryManager.startRequest({ requestId, endpointType: 'embeddings', reqBody, analysis })
+    // Cache checks: conversation first, then signal. On a hit we skip
+    // re-analyzing the body and skip heavy history capture.
+    const peeked = requestRouter.peekCachedRouting?.(reqBody) ?? requestRouter.peekSignalCache?.(reqBody)
+    const analysis = peeked ? undefined : requestRouter.analyzeRequest(reqBody, 'embeddings')
+
+    requestHistoryManager.startRequest({ requestId, endpointType: 'embeddings', reqBody, analysis: analysis ?? {}, skipCapture: !!peeked })
     requestHistoryManager.registerAbortController(requestId, abortController)
 
-    const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'embeddings', res, requestHistoryManager,
-      selectFn: (body) => requestRouter.selectForEmbeddings(body, abortController.signal),
-      selectionErrorMessage: 'Embeddings model selection error', logger,
-    })
+    let candidates = peeked
+    if (!candidates) {
+      const result = await selectCandidatesOrHandleError({
+        requestId, reqBody, taskType: 'embeddings', res, requestHistoryManager,
+        selectFn: (body) => requestRouter.selectForEmbeddings(body, abortController.signal, undefined, analysis),
+        selectionErrorMessage: 'Embeddings model selection error', logger,
+      })
+      candidates = result
+    }
     if (!candidates) return
 
     requestHistoryManager.recordSelection(requestId, candidates)
@@ -48,7 +57,7 @@ export function setupEmbeddingsRoutes(
       tokensFromResult: (r) => ((r as Record<string, Record<string, number>>).usage?.prompt_tokens) ?? 0,
       successLog: 'Embeddings successful', failureLog: 'Embeddings failed, trying next',
       res, discoveryManager, loadManager, requestHistoryManager,
-      signal: abortController.signal,
+      signal: abortController.signal, rawBody: raw,
     })
 
     if (!succeeded) {

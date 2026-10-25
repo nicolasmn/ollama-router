@@ -5,6 +5,7 @@ import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestRouter } from '../request-router.js'
 import type { RequestHistoryManager } from '../request-history.js'
+import { readJsonBody } from '../read-body.js'
 import {
   makeRequestId,
   selectCandidatesOrHandleError,
@@ -30,18 +31,26 @@ export function setupChatRoutes(
 
     try {
     requestId = makeRequestId()
-    const reqBody = req.body as Record<string, unknown>
+    const { body: reqBody, raw } = await readJsonBody(req)
     const isStreaming = Boolean(reqBody?.stream)
-    const analysis = requestRouter.analyzeRequest(reqBody, 'chat')
 
-    requestHistoryManager.startRequest({ requestId, endpointType: 'chat', reqBody, analysis })
+    // Cache checks: conversation first, then signal. On a hit we skip
+    // re-analyzing the body and skip heavy history capture.
+    const peeked = requestRouter.peekCachedRouting?.(reqBody) ?? requestRouter.peekSignalCache?.(reqBody)
+    const analysis = peeked ? undefined : requestRouter.analyzeRequest(reqBody, 'chat')
+
+    requestHistoryManager.startRequest({ requestId, endpointType: 'chat', reqBody, analysis: analysis ?? {}, skipCapture: !!peeked })
     requestHistoryManager.registerAbortController(requestId, abortController)
 
-    const candidates = await selectCandidatesOrHandleError({
-      requestId, reqBody, taskType: 'chat', res, requestHistoryManager,
-      selectFn: (body) => requestRouter.selectForChat(body, abortController.signal),
-      selectionErrorMessage: 'Chat model selection error', logger,
-    })
+    let candidates = peeked
+    if (!candidates) {
+      const result = await selectCandidatesOrHandleError({
+        requestId, reqBody, taskType: 'chat', res, requestHistoryManager,
+        selectFn: (body) => requestRouter.selectForChat(body, abortController.signal, undefined, analysis),
+        selectionErrorMessage: 'Chat model selection error', logger,
+      })
+      candidates = result
+    }
     if (!candidates) return
 
     // Always record the full ranked list so the dashboard shows all candidates
@@ -51,7 +60,7 @@ export function setupChatRoutes(
       await handleStreamingRequest({
         requestId, reqBody, candidate: candidates[0], endpoint: '/v1/chat/completions',
         sseTerminator: true, res, discoveryManager, loadManager, requestHistoryManager,
-        signal: abortController.signal,
+        signal: abortController.signal, rawBody: raw,
       })
     } else {
       const succeeded = await tryCandidatesWithRetry({
@@ -60,7 +69,7 @@ export function setupChatRoutes(
         responseContentFrom: (r) => (r as Record<string, unknown[]>)?.choices?.[0],
         successLog: 'Chat completion successful', failureLog: 'Chat failed, trying next',
         res, discoveryManager, loadManager, requestHistoryManager,
-        signal: abortController.signal,
+        signal: abortController.signal, rawBody: raw,
       })
       if (!succeeded) {
         if (!res.headersSent) res.status(503).json({ error: 'All upstream nodes failed' })

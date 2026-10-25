@@ -14,6 +14,7 @@ import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestRouter } from '../request-router.js'
 import type { RequestHistoryManager } from '../request-history.js'
+import { readJsonBody } from '../read-body.js'
 
 const logger = createLogger('ollama')
 
@@ -34,11 +35,12 @@ export function setupOllamaInferenceRoutes(
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
 
-    const isStreaming = (req.body as Record<string, unknown>)?.stream !== false
+    const { body: reqBody, raw } = await readJsonBody(req)
+    const isStreaming = reqBody?.stream !== false
     requestHistoryManager.startRequest({
       requestId,
       endpointType: 'generate',
-      reqBody: req.body as Record<string, unknown>,
+      reqBody: reqBody,
       analysis: {},
     })
     requestHistoryManager.registerAbortController(requestId, abortController)
@@ -46,7 +48,7 @@ export function setupOllamaInferenceRoutes(
     try {
       const candidates = await selectCandidatesOrHandleError({
         requestId,
-        reqBody: req.body as Record<string, unknown>,
+        reqBody: reqBody,
         taskType: 'generate',
         res,
         requestHistoryManager,
@@ -61,7 +63,7 @@ export function setupOllamaInferenceRoutes(
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
-          reqBody: req.body as Record<string, unknown>,
+          reqBody: reqBody,
           candidate: candidates[0],
           endpoint: '/api/generate',
           forwardContentType: true,
@@ -69,6 +71,7 @@ export function setupOllamaInferenceRoutes(
           discoveryManager,
           loadManager,
           requestHistoryManager,
+          rawBody: raw,
         })
         return
       }
@@ -76,7 +79,7 @@ export function setupOllamaInferenceRoutes(
       const success = await tryCandidatesWithRetry({
         requestId,
         candidates,
-        reqBody: req.body as Record<string, unknown>,
+        reqBody: reqBody,
         endpoint: '/api/generate',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
@@ -90,6 +93,7 @@ export function setupOllamaInferenceRoutes(
         loadManager,
         requestHistoryManager,
         signal: abortController.signal,
+        rawBody: raw,
       })
 
       if (!success) {
@@ -161,11 +165,12 @@ export function setupOllamaInferenceRoutes(
     const onClientClose = () => abortController.abort()
     res.once('close', onClientClose)
 
-    const isStreaming = (req.body as Record<string, unknown>)?.stream !== false
+    const { body: reqBody, raw } = await readJsonBody(req)
+    const isStreaming = reqBody?.stream !== false
     requestHistoryManager.startRequest({
       requestId,
       endpointType: 'chat',
-      reqBody: req.body as Record<string, unknown>,
+      reqBody: reqBody,
       analysis: {},
     })
     requestHistoryManager.registerAbortController(requestId, abortController)
@@ -173,7 +178,7 @@ export function setupOllamaInferenceRoutes(
     try {
       const candidates = await selectCandidatesOrHandleError({
         requestId,
-        reqBody: req.body as Record<string, unknown>,
+        reqBody: reqBody,
         taskType: 'chat',
         res,
         requestHistoryManager,
@@ -188,7 +193,7 @@ export function setupOllamaInferenceRoutes(
       if (isStreaming) {
         await handleStreamingRequest({
           requestId,
-          reqBody: req.body as Record<string, unknown>,
+          reqBody: reqBody,
           candidate: candidates[0],
           endpoint: '/api/chat',
           forwardContentType: true,
@@ -196,6 +201,7 @@ export function setupOllamaInferenceRoutes(
           discoveryManager,
           loadManager,
           requestHistoryManager,
+          rawBody: raw,
         })
         return
       }
@@ -203,7 +209,7 @@ export function setupOllamaInferenceRoutes(
       const success = await tryCandidatesWithRetry({
         requestId,
         candidates,
-        reqBody: req.body as Record<string, unknown>,
+        reqBody: reqBody,
         endpoint: '/api/chat',
         tokensFromResult: (result) =>
           ((result as Record<string, unknown>).eval_count as number) ?? 0,
@@ -215,6 +221,7 @@ export function setupOllamaInferenceRoutes(
         loadManager,
         requestHistoryManager,
         signal: abortController.signal,
+        rawBody: raw,
       })
 
       if (!success) {

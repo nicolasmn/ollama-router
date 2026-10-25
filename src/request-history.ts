@@ -142,6 +142,9 @@ export interface StartRequestOptions {
   reqBody: Record<string, unknown>
   analysis: Partial<AnalysisSummary>
   forcedModel?: boolean
+  /** Skip heavy request-body capture (message list, preview, conversation id)
+   *  when reusing a cached routing decision — the body text isn't needed. */
+  skipCapture?: boolean
 }
 
 export interface RecordAttemptOptions {
@@ -827,9 +830,22 @@ export class RequestHistoryManager {
     reqBody,
     analysis,
     forcedModel = false,
+    skipCapture = false,
   }: StartRequestOptions): RequestEntry {
-    const preview = buildPreview(reqBody, endpointType)
-    const conversation = buildConversationInfo(reqBody, endpointType, preview)
+    let preview = ''
+    let conversation: ConversationInfo = {
+      id: `request:${requestId}`,
+      label: `${endpointType} request`,
+      source: 'none',
+    }
+    let inputSummary = ''
+    let messageList: MessageRecord[] = []
+    if (!skipCapture) {
+      preview = buildPreview(reqBody, endpointType)
+      conversation = buildConversationInfo(reqBody, endpointType, preview)
+      inputSummary = buildInputSummary(reqBody, endpointType)
+      messageList = buildMessageList(reqBody, endpointType)
+    }
 
     const entry: RequestEntry = {
       requestId,
@@ -856,9 +872,9 @@ export class RequestHistoryManager {
       selectedNode: null,
       tokensGenerated: 0,
       modelLoadMs: 0,
-      inputSummary: buildInputSummary(reqBody, endpointType),
+      inputSummary,
       promptPreview: preview,
-      messageList: buildMessageList(reqBody, endpointType),
+      messageList,
       analysis: buildAnalysisSummary(analysis),
       candidateCount: 0,
       candidates: [],
