@@ -97,6 +97,8 @@ export interface OllamaMessage {
 export interface OllamaChatRequest {
   model: string
   messages: OllamaMessage[]
+  /** Top-level image list (Ollama multimodal /api/chat shape). */
+  images?: string[]
   tools?: OllamaTool[]
   think?: boolean
   stream?: boolean

@@ -76,6 +76,28 @@ function hasAudioContent(content: unknown): boolean {
   )
 }
 
+/** True when a single message carries images — OpenAI-style content parts
+ *  (`image_url`/`image`) or native Ollama per-message `images` arrays. */
+export function messageHasImages(msg: unknown): boolean {
+  if (!msg || typeof msg !== 'object') return false
+  const m = msg as Record<string, unknown>
+  if (Array.isArray(m.images) && (m.images as unknown[]).some((i) => typeof i === 'string' && i)) {
+    return true
+  }
+  return hasImageContent(m.content)
+}
+
+/** True when the request body carries images — top-level `images` array
+ *  (Ollama /api/generate) or per-message images (Ollama /api/chat). */
+export function bodyHasImages(reqBody: Record<string, unknown> | undefined | null): boolean {
+  if (!reqBody) return false
+  if (Array.isArray(reqBody.images) && (reqBody.images as unknown[]).some((i) => typeof i === 'string' && i)) {
+    return true
+  }
+  const messages = Array.isArray(reqBody.messages) ? (reqBody.messages as unknown[]) : []
+  return messages.some((m) => messageHasImages(m))
+}
+
 function countMatches(text: string, regex: RegExp): number {
   const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`
   const matches = text.match(new RegExp(regex.source, flags))
@@ -97,7 +119,7 @@ function detectMultimodalNeeds(messages: RequestMessage[]): ModalResult {
 
   for (const msg of messages) {
     const content = msg?.content
-    if (hasImageContent(content)) needsVision = true
+    if (messageHasImages(msg)) needsVision = true
     if (hasAudioContent(content)) needsAudio = true
     const text = ' ' + stringifyContent(content)
     totalText += text
@@ -213,7 +235,7 @@ export class RequestAnalyzer {
       userText = totalText
     } else {
       const modal = detectMultimodalNeeds(messages)
-      needsVision = modal.needsVision
+      needsVision = modal.needsVision || bodyHasImages(reqBody)
       needsAudio = modal.needsAudio
       totalText = modal.totalText
       userText = modal.userText

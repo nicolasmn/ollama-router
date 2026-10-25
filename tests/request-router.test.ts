@@ -175,6 +175,28 @@ describe('RequestRouter', () => {
       for (const c of result) expect(c.modelInfo.profile.isEmbedding).toBe(false)
     })
 
+    it('routes native top-level-images chat requests to vision-capable models only', async () => {
+      const result = await router.selectForChat({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'what is in this image?' }],
+        images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='],
+      }) as any[]
+      expect(Array.isArray(result)).toBe(true)
+      expect(result.length).toBeGreaterThan(0)
+      for (const c of result) expect(c.modelInfo.profile.supportsVision).toBe(true)
+    })
+
+    it('routes native per-message image chat requests to vision-capable models', async () => {
+      const result = await router.selectForChat({
+        model: 'auto',
+        messages: [
+          { role: 'user', content: 'what is in this image?', images: ['iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='] },
+        ],
+      }) as any[]
+      expect(Array.isArray(result)).toBe(true)
+      for (const c of result) expect(c.modelInfo.profile.supportsVision).toBe(true)
+    })
+
     it('reuses cached routing decision for similar requests', async () => {
       const body = {
         model: 'auto',

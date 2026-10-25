@@ -1,5 +1,5 @@
 // request-router.ts - Selects optimal Ollama node/model for each request
-import { RequestAnalyzer } from './request-analyzer.js'
+import { RequestAnalyzer, bodyHasImages } from './request-analyzer.js'
 import type { AnalysisResult } from './request-analyzer.js'
 import { createLogger } from './logger.js'
 import type { DiscoveryManager } from './discovery-manager.js'
@@ -113,6 +113,9 @@ function cheapSignals(reqBody: Record<string, unknown>): {
     }
     if (needsVision && needsAudio) break
   }
+  // Native Ollama sends images as top-level / per-message arrays, not as
+  // OpenAI-style content parts — use the shared scan so all shapes are covered.
+  if (bodyHasImages(reqBody)) needsVision = true
   return { stream, maxTokensBucket, tools, messageCount: messages.length, needsVision, needsAudio }
 }
 
