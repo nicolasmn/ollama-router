@@ -118,6 +118,44 @@ describe('RequestAnalyzer', () => {
       )
       expect(result.needsVision).toBe(false)
     })
+
+    it('detects input_image parts in chat messages', () => {
+      const result = analyzer.analyze(
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: 'describe this' },
+                { type: 'input_image', image_url: 'data:image/png;base64,...' },
+              ],
+            },
+          ],
+        },
+        'chat',
+      )
+      expect(result.needsVision).toBe(true)
+    })
+
+    it('detects input_image parts in Responses API input items', () => {
+      const result = analyzer.analyze(
+        {
+          model: 'gpt-4o',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_text', text: 'describe this' },
+                { type: 'input_image', image_url: 'data:image/png;base64,...' },
+              ],
+            },
+          ],
+        },
+        'responses',
+      )
+      expect(result.needsVision).toBe(true)
+    })
   })
 
   describe('streaming detection', () => {

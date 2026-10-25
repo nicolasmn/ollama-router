@@ -197,6 +197,24 @@ describe('RequestRouter', () => {
       for (const c of result) expect(c.modelInfo.profile.supportsVision).toBe(true)
     })
 
+    it('routes Responses API image input to vision-capable models', async () => {
+      const result = await router.selectForResponses({
+        model: 'auto',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'what is in this image?' },
+              { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=' },
+            ],
+          },
+        ],
+      }) as any[]
+      expect(Array.isArray(result)).toBe(true)
+      for (const c of result) expect(c.modelInfo.profile.supportsVision).toBe(true)
+    })
+
     it('reuses cached routing decision for similar requests', async () => {
       const body = {
         model: 'auto',
