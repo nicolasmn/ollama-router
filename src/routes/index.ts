@@ -1,4 +1,5 @@
 // routes/index.ts - Register all routes on the Express app
+import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +39,16 @@ export function createRoutes(
   requestRouter: RequestRouter,
   requestHistoryManager: RequestHistoryManager,
 ): void {
+  // Per-process secret gating the privacy-sensitive request detail endpoint.
+  // Handed to browsers as an HttpOnly SameSite=Strict cookie with the
+  // dashboard page; same-origin fetches include it automatically.
+  const dashboardSecret = randomBytes(32).toString('hex')
+
   app.get('/', (_req, res) => {
+    res.cookie('dashboard_token', dashboardSecret, {
+      httpOnly: true,
+      sameSite: 'strict',
+    })
     res.setHeader('Content-Type', 'text/html')
     res.send(DASHBOARD_HTML)
   })
@@ -60,7 +70,12 @@ export function createRoutes(
   setupSystemoneRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   app.use(
     '/admin',
-    createAdminRouter({ discoveryManager, loadManager, requestHistoryManager }),
+    createAdminRouter({
+      discoveryManager,
+      loadManager,
+      requestHistoryManager,
+      dashboardSecret,
+    }),
   )
 }
 

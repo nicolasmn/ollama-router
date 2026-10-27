@@ -69,13 +69,13 @@ export class WsManager {
     )
     const scanStatus = this.#discoveryManager.getScanStatus()
 
-    // Full message threads can be large; the periodic broadcast only needs
-    // routing metadata. The dashboard fetches message details via
-    // GET /admin/requests/:id (hydration) when a drawer is opened.
+    // Full message threads live in the private store; the periodic broadcast
+    // carries routing metadata plus prompt length/hash only. The dashboard
+    // fetches messages via GET /admin/requests/:id (hydration) when a drawer
+    // is opened.
     const slimmedRequests = recentRequests.map((request) => ({
       ...request,
-      messageList: undefined,
-      hasMessages: Array.isArray(request.messageList) && request.messageList.length > 0,
+      hasMessages: request.messageCount > 0,
     }))
 
     const activeModels = new Map<string, Map<string, number>>()

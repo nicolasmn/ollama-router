@@ -143,6 +143,10 @@ Environment variables:
 - `PORT`: router listen port (default: `8000`)
 - `ROUTER_FALLBACK_TO_AUTO`: set to `true` to reroute requests for unknown model names to `auto` selection instead of returning `404` (default: `false`)
 
+### Request history privacy
+
+Request history entries never store raw prompt text — only privacy-safe metadata: prompt length (`promptChars`), a short SHA-256 hash (`promptHash`), and message counts. Full message threads are held in a private store and served on demand via `GET /admin/requests/:id`; `GET /admin/requests` and WebSocket updates never carry content. That detail endpoint is gated on a per-process `dashboard_token` cookie set when the dashboard page is served, so only clients that loaded the dashboard can fetch thread content.
+
 Current defaults in code:
 
 - Health probe interval: 15000 ms

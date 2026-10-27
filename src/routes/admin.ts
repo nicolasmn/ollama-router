@@ -2,6 +2,8 @@
 import express from 'express'
 import type { Router } from 'express'
 import { request as undiciRequest } from 'undici'
+import { timingSafeEqual } from 'node:crypto'
+import type { IncomingHttpHeaders } from 'node:http'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
 import type { RequestHistoryManager } from '../request-history.js'
@@ -17,12 +19,27 @@ export interface AdminRouterDeps {
   discoveryManager: DiscoveryManager
   loadManager: LoadManager
   requestHistoryManager: RequestHistoryManager
+  /** Dashboard gate cookie value (see routes/index.ts). */
+  dashboardSecret: string
+}
+
+/** True if the request carries the dashboard session token cookie. */
+function isDashboardClient(req: { headers: IncomingHttpHeaders }, secret: string): boolean {
+  const header = req.headers.cookie ?? ''
+  let sent: string | undefined
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx > 0 && part.slice(0, idx).trim() === 'dashboard_token') sent = part.slice(idx + 1).trim()
+  }
+  if (!sent || sent.length !== secret.length) return false
+  return timingSafeEqual(Buffer.from(sent, 'utf8'), Buffer.from(secret, 'utf8'))
 }
 
 export function createAdminRouter({
   discoveryManager,
   loadManager,
   requestHistoryManager,
+  dashboardSecret,
 }: AdminRouterDeps): Router {
   const r = express.Router()
 
@@ -175,16 +192,21 @@ export function createAdminRouter({
 
   // Single request detail — used by the dashboard drawer to hydrate message
   // threads (the periodic WS broadcast omits messageList to stay cheap).
+  // Gated on a per-process token cookie set when the dashboard page is served;
+  // see routes/index.ts. Prevents random LAN/local clients from reading the
+  // private message threads without first visiting the dashboard.
   r.get('/requests/:requestId', (req, res) => {
+    if (!isDashboardClient(req, dashboardSecret)) {
+      res.status(403).json({ error: 'Forbidden' })
+      return
+    }
     const { requestId } = req.params
-    const entry = requestHistoryManager
-      .getRecentRequests()
-      .find((r) => r.requestId === requestId)
-    if (!entry) {
+    const detail = requestHistoryManager.getRequestDetail(requestId)
+    if (!detail) {
       res.status(404).json({ error: 'Request not found' })
       return
     }
-    res.json(entry)
+    res.json(detail)
   })
 
   r.delete('/requests/:requestId', (req, res) => {
