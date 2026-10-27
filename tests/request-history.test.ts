@@ -51,14 +51,19 @@ describe('RequestHistoryManager', () => {
     expect(entry.requestId).toBe('req-1')
     expect(entry.conversationId).toMatch(/^chat:/u)
     expect(entry.conversationSource).toBe('derived')
-    expect(entry.promptPreview).toContain('Bitte vergleiche Redis und Valkey')
+    // Privacy: raw prompt text must not appear anywhere in the entry
+    expect(JSON.stringify(entry)).not.toContain('Bitte vergleiche Redis und Valkey')
+    expect(entry.promptChars).toBe(
+      'Bitte vergleiche Redis und Valkey für einen Cache-Layer mit hoher Schreibrate.'.length,
+    )
+    expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
     expect(entry.candidates[0].score).toBe(18.45)
     expect(entry.selectedModel).toBe('gemma4:e4b')
     expect(entry.attempts).toHaveLength(1)
     expect(entry.tokensGenerated).toBe(91)
   })
 
-  it('creates a useful preview for embeddings requests', () => {
+  it('captures prompt metadata but no content for embeddings requests', () => {
     const history = new RequestHistoryManager()
 
     history.startRequest({
@@ -70,7 +75,10 @@ describe('RequestHistoryManager', () => {
 
     const [entry] = history.getRecentRequests()
     expect(entry.inputSummary).toBe('2 input items')
-    expect(entry.promptPreview).toContain('hello world')
+    // 'hello world | another short input'
+    expect(entry.promptChars).toBe(33)
+    expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
+    expect(JSON.stringify(entry)).not.toContain('hello world')
   })
 
   it('uses explicit conversation identifiers when present', () => {
@@ -139,8 +147,8 @@ describe('RequestHistoryManager', () => {
 
     expect(updated).toBe(true)
 
-    const [entry] = history.getRecentRequests()
-    const assistantMessage = entry.messageList.at(-1)
+    const detail = history.getRequestDetail('req-response')
+    const assistantMessage = detail!.messageList.at(-1)
     expect(assistantMessage).toEqual({
       role: 'assistant',
       content: 'Here is the concise summary.',
@@ -251,8 +259,7 @@ describe('RequestHistoryManager', () => {
     )
 
     expect(updated).toBe(true)
-    const [entry] = history.getRecentRequests()
-    const assistantMessage = entry.messageList.at(-1)
+    const assistantMessage = history.getRequestDetail('req-stream-thinking')!.messageList.at(-1)
     expect(assistantMessage).toEqual({
       role: 'assistant',
       content: 'Final answer',
@@ -278,8 +285,7 @@ describe('RequestHistoryManager', () => {
     })
 
     expect(updated).toBe(true)
-    const [entry] = history.getRecentRequests()
-    const assistantMessage = entry.messageList.at(-1)
+    const assistantMessage = history.getRequestDetail('req-think-tags')!.messageList.at(-1)
     expect(assistantMessage).toEqual({
       role: 'assistant',
       content: 'Final answer',
@@ -302,8 +308,8 @@ describe('RequestHistoryManager', () => {
     })
     expect(first).toBe(true)
 
-    let [entry] = history.getRecentRequests()
-    expect(entry.messageList.at(-1)).toEqual({ role: 'assistant', content: 'Hel' })
+    let detail = history.getRequestDetail('req-live-stream')!
+    expect(detail.messageList.at(-1)).toEqual({ role: 'assistant', content: 'Hel' })
 
     const second = history.applyStreamingEvent('req-live-stream', {
       choices: [{ delta: { content: 'lo', reasoning_content: 'thinking...' } }],
@@ -311,8 +317,8 @@ describe('RequestHistoryManager', () => {
     expect(second).toBe(true)
 
     history.finalizeStreamingResponse('req-live-stream')
-    const [updatedEntry] = history.getRecentRequests()
-    expect(updatedEntry.messageList.at(-1)).toEqual({
+    detail = history.getRequestDetail('req-live-stream')!
+    expect(detail.messageList.at(-1)).toEqual({
       role: 'assistant',
       content: 'Hello',
       thinking: 'thinking...',
@@ -353,8 +359,8 @@ describe('RequestHistoryManager', () => {
 
     history.finalizeStreamingResponse('req-ollama-generate')
 
-    const [entry] = history.getRecentRequests()
-    expect(entry.messageList.at(-1)).toEqual({
+    const detail = history.getRequestDetail('req-ollama-generate')!
+    expect(detail.messageList.at(-1)).toEqual({
       role: 'assistant',
       content: 'The sky is blue.',
     })
@@ -401,8 +407,8 @@ describe('RequestHistoryManager', () => {
 
     history.finalizeStreamingResponse('req-ollama-chat')
 
-    const [entry] = history.getRecentRequests()
-    expect(entry.messageList.at(-1)).toEqual({
+    const detail = history.getRequestDetail('req-ollama-chat')!
+    expect(detail.messageList.at(-1)).toEqual({
       role: 'assistant',
       content: 'One, two, three.',
     })
@@ -423,9 +429,64 @@ describe('RequestHistoryManager', () => {
     // Unknown top-level shape
     expect(history.applyStreamingEvent('req-heartbeat', { type: 'ping' })).toBe(false)
 
-    // messageList is pre-populated with the user message from reqBody;
-    // assert no assistant message was appended by the no-op events
+    // Messages live in the private thread store; assert no assistant message
+    // was appended by the no-op events
+    const detail = history.getRequestDetail('req-heartbeat')!
+    expect(detail.messageList.every((m) => m.role !== 'assistant')).toBe(true)
+  })
+
+  it('keeps raw prompt content out of dashboard entries (privacy)', () => {
+    const secret =
+      'Top secret WhatsApp message: meet me at 5pm behind the old bridge edge case 42x'
+    const history = new RequestHistoryManager()
+
+    history.startRequest({
+      requestId: 'req-privacy',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: secret }] },
+      analysis: {},
+    })
+
     const [entry] = history.getRecentRequests()
-    expect(entry.messageList.every((m) => m.role !== 'assistant')).toBe(true)
+    const serialized = JSON.stringify(entry)
+    // No prompt text anywhere in the entry — not even as a substring
+    expect(serialized).not.toContain(secret)
+    expect(serialized.toLowerCase()).not.toContain('behind the old bridge')
+
+    // …but length and hash are retained
+    expect(entry.promptChars).toBe(secret.length)
+    expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
+    expect(entry.messageCount).toBe(1)
+    // Neutral conversation label, no content leak
+    expect(entry.conversationLabel).not.toContain('WhatsApp message')
+    expect(entry.conversationSource).toBe('derived')
+
+    // The private thread store still serves the content on demand (detail API)
+    const detail = history.getRequestDetail('req-privacy')!
+    expect(detail.messageList[0].content).toBe(secret)
+  })
+
+  it('restores raw prompt capture with OLLAMA_ROUTER_CAPTURE_PROMPTS=true', () => {
+    const secret = 'debug capture content 4711'
+    const prev = process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS
+    process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS = 'true'
+    try {
+      const history = new RequestHistoryManager()
+      history.startRequest({
+        requestId: 'req-capture',
+        endpointType: 'chat',
+        reqBody: { messages: [{ role: 'user', content: secret }] },
+        analysis: {},
+      })
+      const [entry] = history.getRecentRequests()
+      expect(entry.promptPreview).toBe(secret)
+      expect(entry.promptChars).toBe(secret.length)
+      expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
+      // Thread store still works as in the default path
+      expect(history.getRequestDetail('req-capture')!.messageList[0].content).toBe(secret)
+    } finally {
+      if (prev === undefined) delete process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS
+      else process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS = prev
+    }
   })
 })

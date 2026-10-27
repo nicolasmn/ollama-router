@@ -136,6 +136,12 @@ export function compactPreview(text) {
   return `${value.slice(0, 119)}…`
 }
 
+export function requestPreviewText(request) {
+  if (request.promptPreview) return compactPreview(request.promptPreview)
+  if (request.promptChars > 0) return `[redacted] · ${request.promptChars} chars`
+  return 'No preview'
+}
+
 export function requestMetaItems(request) {
   const items = []
   if (request.inputSummary) items.push(request.inputSummary)
@@ -665,7 +671,7 @@ export function renderConversationThread(request) {
 
   if (!request.messageList?.length) {
     return html`<div class="preview-box">
-      ${request.promptPreview || 'No preview available.'}
+      ${requestPreviewText(request) || 'No preview available.'}
     </div>`
   }
 

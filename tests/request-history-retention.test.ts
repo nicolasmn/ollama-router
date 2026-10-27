@@ -29,11 +29,14 @@ describe('RequestHistoryManager retention caps', () => {
     })
 
     const [entry] = history.getRecentRequests()
-    expect(entry.messageList[0].content).toContain('[truncated,')
-    expect(entry.messageList[0].content.length).toBeLessThan(10_000)
+    const detail = history.getRequestDetail('req-cap-content')!
+    expect(detail.messageList[0].content).toContain('[truncated,')
+    expect(detail.messageList[0].content.length).toBeLessThan(10_000)
 
-    // promptPreview is capped too
-    expect(entry.promptPreview.length).toBeLessThan(10_000)
+    // the entry itself carries only metadata — no raw content
+    expect(entry.promptPreview).toBeUndefined()
+    // promptChars reflects the raw prompt size (5 + 200_000 chars)
+    expect(entry.promptChars).toBe(200_005)
   })
 
   it('caps the total payload of a single request entry', () => {
@@ -48,13 +51,13 @@ describe('RequestHistoryManager retention caps', () => {
       analysis: {},
     })
 
-    const [entry] = history.getRecentRequests()
-    const serialized = JSON.stringify(entry.messageList)
-    expect(entry.messageList.length).toBeLessThan(5_000)
+    const detail = history.getRequestDetail('req-cap-entry')!
+    const serialized = JSON.stringify(detail.messageList)
+    expect(detail.messageList.length).toBeLessThan(5_000)
     expect(serialized.length).toBeLessThan(600_000) // budget 512k + marker row
     // newest messages survive the trim
-    expect(entry.messageList.at(-1)!.role).toBe('assistant')
-    expect(entry.messageList[0].role).toBe('system')
+    expect(detail.messageList.at(-1)!.role).toBe('assistant')
+    expect(detail.messageList[0].role).toBe('system')
   })
 
   it('caps base64 image payloads', () => {
@@ -78,8 +81,7 @@ describe('RequestHistoryManager retention caps', () => {
       analysis: {},
     })
 
-    const [entry] = history.getRecentRequests()
-    const images = (entry.messageList[0] as any).images
+    const images = (history.getRequestDetail('req-cap-images')!.messageList[0] as any).images
     expect(images).toHaveLength(1)
     expect(images[0].url).toContain('truncated')
     expect(images[0].url.length).toBeLessThan(70_000)
@@ -102,8 +104,7 @@ describe('RequestHistoryManager retention caps', () => {
       })
     }
 
-    const [entry] = history.getRecentRequests()
-    const assistant = entry.messageList.at(-1)!
+    const assistant = history.getRequestDetail('req-cap-stream')!.messageList.at(-1)!
     expect(assistant.content).toContain('[truncated]')
     expect(assistant.content.length).toBeLessThan(70_000)
   })
@@ -136,7 +137,10 @@ describe('RequestHistoryManager retention caps', () => {
       history.finalizeStreamingResponse(requestId)
     }
 
-    const serialized = JSON.stringify(history.requests)
+    // The private thread store must stay bounded too
+    const serialized = JSON.stringify(
+      history.requests.map((r) => history.getRequestDetail(r.requestId)),
+    )
     // ~28MB would be uncapped; the cap keeps this at a few MB.
     expect(serialized.length).toBeLessThan(30 * 1024 * 1024)
     expect(serialized.length).toBeGreaterThan(0)

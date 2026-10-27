@@ -177,14 +177,12 @@ export function createAdminRouter({
   // threads (the periodic WS broadcast omits messageList to stay cheap).
   r.get('/requests/:requestId', (req, res) => {
     const { requestId } = req.params
-    const entry = requestHistoryManager
-      .getRecentRequests()
-      .find((r) => r.requestId === requestId)
-    if (!entry) {
+    const detail = requestHistoryManager.getRequestDetail(requestId)
+    if (!detail) {
       res.status(404).json({ error: 'Request not found' })
       return
     }
-    res.json(entry)
+    res.json(detail)
   })
 
   r.delete('/requests/:requestId', (req, res) => {

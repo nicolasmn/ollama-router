@@ -1,4 +1,5 @@
 // request-history.ts - Tracks recent requests for dashboard inspection
+import { createHash } from 'node:crypto'
 
 const DEFAULT_LIMIT = 40
 const MAX_ATTEMPTS = 8
@@ -127,14 +128,23 @@ export interface RequestEntry {
   /** Time Ollama spent loading the model into memory (ms). 0 = unknown/not reported. */
   modelLoadMs: number
   inputSummary: string
-  promptPreview: string
-  messageList: MessageRecord[]
+  /** Prompt length in characters — content itself is never persisted. */
+  promptChars: number
+  /** First 12 hex chars of SHA-256 over the prompt — identifies without leaking. */
+  promptHash: string
+  /** Messages held in the private thread store (detail endpoint only). */
+  messageCount: number
+  /** Raw prompt text — only populated with OLLAMA_ROUTER_CAPTURE_PROMPTS=true. */
+  promptPreview?: string
   analysis: AnalysisSummary
   candidateCount: number
   candidates: CandidateSummary[]
   attemptCount: number
   attempts: AttemptRecord[]
 }
+
+/** Entry as served by GET /admin/requests/:id — adds the private message thread. */
+export type RequestDetail = RequestEntry & { messageList: MessageRecord[] }
 
 export interface StartRequestOptions {
   requestId: string
@@ -174,12 +184,6 @@ export interface RequestHistoryConfig {
   limit?: number
 }
 
-function normalizeInlineText(value: unknown): string {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
 function compactId(value: string, length = 10): string {
   if (!value) return ''
   if (value.length <= length) return value
@@ -192,6 +196,17 @@ function hashString(input: string): string {
     hash = (hash * 31 + input.charCodeAt(index)) | 0
   }
   return Math.abs(hash).toString(36)
+}
+
+/** Debug escape hatch: capture raw prompt text into history entries. */
+function capturePrompts(): boolean {
+  return process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS === 'true'
+}
+
+/** First 12 hex chars of SHA-256 — identifies content without storing it. */
+function shortHash(input: string): string {
+  if (!input) return ''
+  return createHash('sha256').update(input).digest('hex').slice(0, 12)
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +426,7 @@ function buildPreview(
       ? stringifyContent(lastUserMessage.content)
       : stringifyContent((messages.at(-1) as Record<string, unknown>)?.content)
   }
-  return truncateCappedText(preview, MAX_PREVIEW_CHARS)
+  return preview
 }
 
 function getNestedValue(
@@ -451,7 +466,7 @@ function extractConversationIdentifier(
 function buildConversationInfo(
   reqBody: Record<string, unknown>,
   endpointType: string,
-  preview: string,
+  promptHash: string,
 ): ConversationInfo {
   const explicitId = extractConversationIdentifier(reqBody)
   if (explicitId) {
@@ -461,31 +476,10 @@ function buildConversationInfo(
       source: 'explicit',
     }
   }
-  if (endpointType === 'chat') {
-    const messages = Array.isArray(reqBody?.messages)
-      ? (reqBody.messages as Array<Record<string, unknown>>)
-      : []
-    const firstUserMessage = messages.find((m) => m?.role === 'user')
-    const anchor = normalizeInlineText(
-      truncateCappedText(
-        firstUserMessage
-          ? stringifyContent(firstUserMessage.content)
-          : preview,
-        2_000,
-      ),
-    )
-    if (anchor) {
-      return {
-        id: `chat:${hashString(anchor.toLowerCase())}`,
-        label: truncateCappedText(anchor, 200),
-        source: 'derived',
-      }
-    }
-  }
-  if (endpointType === 'systemone' && preview) {
+  if (promptHash) {
     return {
-      id: `systemone:${hashString(preview.toLowerCase())}`,
-      label: truncateCappedText(normalizeInlineText(preview), 200),
+      id: `chat:${promptHash}`,
+      label: `${endpointType} request ${compactId(promptHash, 8)}`,
       source: 'derived',
     }
   }
@@ -802,6 +796,8 @@ function decodeStreamingChunk(
 export class RequestHistoryManager {
   limit: number
   requests: RequestEntry[]
+  /** Private message threads — served only via getRequestDetail(). */
+  readonly #threads = new Map<string, MessageRecord[]>()
   readonly #abortControllers = new Map<string, AbortController>()
 
   constructor({ limit = DEFAULT_LIMIT }: RequestHistoryConfig = {}) {
@@ -832,7 +828,9 @@ export class RequestHistoryManager {
     forcedModel = false,
     skipCapture = false,
   }: StartRequestOptions): RequestEntry {
-    let preview = ''
+    let promptChars = 0
+    let promptHash = ''
+    let promptPreview = ''
     let conversation: ConversationInfo = {
       id: `request:${requestId}`,
       label: `${endpointType} request`,
@@ -841,8 +839,10 @@ export class RequestHistoryManager {
     let inputSummary = ''
     let messageList: MessageRecord[] = []
     if (!skipCapture) {
-      preview = buildPreview(reqBody, endpointType)
-      conversation = buildConversationInfo(reqBody, endpointType, preview)
+      promptPreview = buildPreview(reqBody, endpointType)
+      promptChars = promptPreview.length
+      promptHash = shortHash(promptPreview)
+      conversation = buildConversationInfo(reqBody, endpointType, promptHash)
       inputSummary = buildInputSummary(reqBody, endpointType)
       messageList = buildMessageList(reqBody, endpointType)
     }
@@ -873,20 +873,39 @@ export class RequestHistoryManager {
       tokensGenerated: 0,
       modelLoadMs: 0,
       inputSummary,
-      promptPreview: preview,
-      messageList,
+      promptChars,
+      promptHash,
+      messageCount: messageList.length,
       analysis: buildAnalysisSummary(analysis),
       candidateCount: 0,
       candidates: [],
       attemptCount: 0,
       attempts: [],
     }
+    if (capturePrompts()) {
+      entry.promptPreview = truncateCappedText(promptPreview, MAX_PREVIEW_CHARS)
+    }
+    if (messageList.length > 0) this.#threads.set(requestId, messageList)
 
     this.requests = [
       entry,
       ...this.requests.filter((item) => item.requestId !== requestId),
     ].slice(0, this.limit)
+    this.#pruneThreads()
     return entry
+  }
+
+  /** Entry plus its private message thread — for the detail endpoint only. */
+  getRequestDetail(requestId: string): RequestDetail | null {
+    const entry = this.#findRequest(requestId)
+    if (!entry) return null
+    return {
+      ...entry,
+      analysis: { ...entry.analysis },
+      candidates: entry.candidates.map((c) => ({ ...c })),
+      attempts: entry.attempts.map((a) => ({ ...a })),
+      messageList: this.#threads.get(requestId) ?? [],
+    }
   }
 
   recordSelection(
@@ -984,12 +1003,26 @@ export class RequestHistoryManager {
     return true
   }
 
+  #getThread(requestId: string): MessageRecord[] {
+    let thread = this.#threads.get(requestId)
+    if (!thread) {
+      thread = []
+      this.#threads.set(requestId, thread)
+    }
+    return thread
+  }
+
+  /** Keep the private thread store from outgrowing the entry list. */
+  #pruneThreads(): void {
+    const live = new Set(this.requests.map((r) => r.requestId))
+    for (const id of this.#threads.keys()) {
+      if (!live.has(id)) this.#threads.delete(id)
+    }
+  }
+
   updateResponseContent(requestId: string, responseContent: unknown): boolean {
     const entry = this.#findRequest(requestId)
     if (!entry) return false
-    if (!Array.isArray(entry.messageList)) {
-      entry.messageList = []
-    }
 
     let content: string
     let thinking: string | undefined
@@ -1032,16 +1065,14 @@ export class RequestHistoryManager {
   if (toolCalls) record.toolCalls = toolCalls
   const images = extractImages(responseContent)
   if (images) (record as any).images = images
-  entry.messageList.push(record)
+  this.#getThread(requestId).push(record)
+  entry.messageCount = this.#getThread(requestId).length
     return true
   }
 
   updateResponseFromSSE(requestId: string, rawSSE: string): boolean {
     const entry = this.#findRequest(requestId)
     if (!entry) return false
-    if (!Array.isArray(entry.messageList)) {
-      entry.messageList = []
-    }
 
     const assembled = this.#parseSSEChunks(rawSSE)
     if (!assembled.content && !assembled.thinking && assembled.toolCalls.length === 0) return false
@@ -1055,7 +1086,8 @@ export class RequestHistoryManager {
     }
     if (assembled.toolCalls.length > 0) record.toolCalls = assembled.toolCalls
     if (assembled.images) (record as any).images = assembled.images
-    entry.messageList.push(record)
+    this.#getThread(requestId).push(record)
+    entry.messageCount = this.#getThread(requestId).length
     return true
   }
 
@@ -1065,15 +1097,12 @@ export class RequestHistoryManager {
   ): boolean {
     const entry = this.#findRequest(requestId)
     if (!entry) return false
-    if (!Array.isArray(entry.messageList)) {
-      entry.messageList = []
-    }
 
     const decoded = decodeStreamingChunk(payload)
     if (!decoded) return false
 
     const { contentPart, thinkingPart, toolCalls } = decoded
-    const message = this.#getOrCreateStreamingAssistantMessage(entry)
+    const message = this.#getOrCreateStreamingAssistantMessage(requestId, entry)
 
     if (contentPart) {
       appendCappedText(message, 'content', contentPart)
@@ -1127,11 +1156,12 @@ export class RequestHistoryManager {
 
   finalizeStreamingResponse(requestId: string): boolean {
     const entry = this.#findRequest(requestId)
-    if (!entry || !Array.isArray(entry.messageList) || entry.messageList.length === 0) {
+    const thread = this.#threads.get(requestId)
+    if (!entry || !thread || thread.length === 0) {
       return false
     }
 
-    const last = entry.messageList[entry.messageList.length - 1]
+    const last = thread[thread.length - 1]
     if (!last || last.role !== 'assistant') {
       return false
     }
@@ -1240,13 +1270,18 @@ export class RequestHistoryManager {
     return this.requests.find((r) => r.requestId === requestId) || null
   }
 
-  #getOrCreateStreamingAssistantMessage(entry: RequestEntry): MessageRecord {
-    const last = entry.messageList[entry.messageList.length - 1]
+  #getOrCreateStreamingAssistantMessage(
+    requestId: string,
+    entry: RequestEntry,
+  ): MessageRecord {
+    const thread = this.#getThread(requestId)
+    const last = thread[thread.length - 1]
     if (last && last.role === 'assistant') {
       return last
     }
     const created: MessageRecord = { role: 'assistant', content: '' }
-    entry.messageList.push(created)
+    thread.push(created)
+    entry.messageCount = thread.length
     return created
   }
 }

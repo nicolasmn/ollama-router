@@ -2,12 +2,12 @@ import { LitElement, html } from 'lit'
 
 import {
   MAX_VISIBLE_REQUESTS,
-  compactPreview,
   endpointLabel,
   fmt,
   isCloudRequest,
   requestInlineError,
   requestMetaItems,
+  requestPreviewText,
   routeTarget,
   statusClass,
 } from './dashboard-utils.js'
@@ -114,7 +114,7 @@ export class RequestPanel extends LitElement {
               ? html`<span class="request-inline-error" title=${inlineError}>${
                   inlineError.length > 80 ? inlineError.slice(0, 79) + '…' : inlineError
                 }</span>`
-              : html`<span class="request-preview">${compactPreview(request.promptPreview)}</span>`}
+              : html`<span class="request-preview">${requestPreviewText(request)}</span>`}
             <span class="request-meta">
               ${metaItems.map((item, i) => html`
                 ${i > 0 ? html`<span class="request-meta-dot"></span>` : ''}
