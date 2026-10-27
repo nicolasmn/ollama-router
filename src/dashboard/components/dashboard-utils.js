@@ -137,7 +137,6 @@ export function compactPreview(text) {
 }
 
 export function requestPreviewText(request) {
-  if (request.promptPreview) return compactPreview(request.promptPreview)
   if (request.promptChars > 0) return `[redacted] · ${request.promptChars} chars`
   return 'No preview'
 }

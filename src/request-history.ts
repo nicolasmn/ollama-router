@@ -134,8 +134,6 @@ export interface RequestEntry {
   promptHash: string
   /** Messages held in the private thread store (detail endpoint only). */
   messageCount: number
-  /** Raw prompt text — only populated with OLLAMA_ROUTER_CAPTURE_PROMPTS=true. */
-  promptPreview?: string
   analysis: AnalysisSummary
   candidateCount: number
   candidates: CandidateSummary[]
@@ -196,11 +194,6 @@ function hashString(input: string): string {
     hash = (hash * 31 + input.charCodeAt(index)) | 0
   }
   return Math.abs(hash).toString(36)
-}
-
-/** Debug escape hatch: capture raw prompt text into history entries. */
-function capturePrompts(): boolean {
-  return process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS === 'true'
 }
 
 /** First 12 hex chars of SHA-256 — identifies content without storing it. */
@@ -830,7 +823,6 @@ export class RequestHistoryManager {
   }: StartRequestOptions): RequestEntry {
     let promptChars = 0
     let promptHash = ''
-    let promptPreview = ''
     let conversation: ConversationInfo = {
       id: `request:${requestId}`,
       label: `${endpointType} request`,
@@ -839,9 +831,11 @@ export class RequestHistoryManager {
     let inputSummary = ''
     let messageList: MessageRecord[] = []
     if (!skipCapture) {
-      promptPreview = buildPreview(reqBody, endpointType)
-      promptChars = promptPreview.length
-      promptHash = shortHash(promptPreview)
+      // Build preview text only to derive length/hash — the text itself is
+      // discarded here and lives only in the private thread store.
+      const prompt = buildPreview(reqBody, endpointType)
+      promptChars = prompt.length
+      promptHash = shortHash(prompt)
       conversation = buildConversationInfo(reqBody, endpointType, promptHash)
       inputSummary = buildInputSummary(reqBody, endpointType)
       messageList = buildMessageList(reqBody, endpointType)
@@ -881,9 +875,6 @@ export class RequestHistoryManager {
       candidates: [],
       attemptCount: 0,
       attempts: [],
-    }
-    if (capturePrompts()) {
-      entry.promptPreview = truncateCappedText(promptPreview, MAX_PREVIEW_CHARS)
     }
     if (messageList.length > 0) this.#threads.set(requestId, messageList)
 

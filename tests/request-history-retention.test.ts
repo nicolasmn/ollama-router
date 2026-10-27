@@ -34,7 +34,6 @@ describe('RequestHistoryManager retention caps', () => {
     expect(detail.messageList[0].content.length).toBeLessThan(10_000)
 
     // the entry itself carries only metadata — no raw content
-    expect(entry.promptPreview).toBeUndefined()
     // promptChars reflects the raw prompt size (5 + 200_000 chars)
     expect(entry.promptChars).toBe(200_005)
   })

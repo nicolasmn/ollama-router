@@ -142,7 +142,10 @@ Environment variables:
 - `OLLAMA_NODES`: comma-separated node list. Example: `localhost:11434,10.0.0.12:11434`
 - `PORT`: router listen port (default: `8000`)
 - `ROUTER_FALLBACK_TO_AUTO`: set to `true` to reroute requests for unknown model names to `auto` selection instead of returning `404` (default: `false`)
-- `OLLAMA_ROUTER_CAPTURE_PROMPTS`: set to `true` to capture raw prompt text (`promptPreview`) in the request history for local debugging (default: `false`). By default the history only stores privacy-safe metadata: prompt length (`promptChars`), a short SHA-256 hash (`promptHash`), and message counts. Full message threads are held in a private store and served on demand via `GET /admin/requests/:id`; `GET /admin/requests` and WebSocket updates never carry content. That detail endpoint is gated on a per-process `dashboard_token` cookie set when the dashboard page is served, so only clients that loaded the dashboard can fetch thread content.
+
+### Request history privacy
+
+Request history entries never store raw prompt text — only privacy-safe metadata: prompt length (`promptChars`), a short SHA-256 hash (`promptHash`), and message counts. Full message threads are held in a private store and served on demand via `GET /admin/requests/:id`; `GET /admin/requests` and WebSocket updates never carry content. That detail endpoint is gated on a per-process `dashboard_token` cookie set when the dashboard page is served, so only clients that loaded the dashboard can fetch thread content.
 
 Current defaults in code:
 

@@ -465,28 +465,4 @@ describe('RequestHistoryManager', () => {
     const detail = history.getRequestDetail('req-privacy')!
     expect(detail.messageList[0].content).toBe(secret)
   })
-
-  it('restores raw prompt capture with OLLAMA_ROUTER_CAPTURE_PROMPTS=true', () => {
-    const secret = 'debug capture content 4711'
-    const prev = process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS
-    process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS = 'true'
-    try {
-      const history = new RequestHistoryManager()
-      history.startRequest({
-        requestId: 'req-capture',
-        endpointType: 'chat',
-        reqBody: { messages: [{ role: 'user', content: secret }] },
-        analysis: {},
-      })
-      const [entry] = history.getRecentRequests()
-      expect(entry.promptPreview).toBe(secret)
-      expect(entry.promptChars).toBe(secret.length)
-      expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
-      // Thread store still works as in the default path
-      expect(history.getRequestDetail('req-capture')!.messageList[0].content).toBe(secret)
-    } finally {
-      if (prev === undefined) delete process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS
-      else process.env.OLLAMA_ROUTER_CAPTURE_PROMPTS = prev
-    }
-  })
 })
