@@ -13,11 +13,16 @@ import { RequestHistoryManager } from '../src/request-history.js'
 import { DiscoveryManager } from '../src/discovery-manager.js'
 import { LoadManager } from '../src/load-manager.js'
 
-function get(server: http.Server, path: string): Promise<{ status: number; data: unknown }> {
+function get(
+  server: http.Server,
+  path: string,
+  token?: string,
+): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number }
+    const headers: Record<string, string> = token ? { Cookie: `dashboard_token=${token}` } : {}
     const req = http.request(
-      { hostname: '127.0.0.1', port: addr.port, path, method: 'GET' },
+      { hostname: '127.0.0.1', port: addr.port, path, method: 'GET', headers },
       (res) => {
         let body = ''
         res.on('data', (chunk) => { body += chunk })
@@ -29,12 +34,22 @@ function get(server: http.Server, path: string): Promise<{ status: number; data:
   })
 }
 
-function makeServer(discovery: DiscoveryManager, loadManager: LoadManager, history: RequestHistoryManager): Promise<http.Server> {
+function makeServer(
+  discovery: DiscoveryManager,
+  loadManager: LoadManager,
+  history: RequestHistoryManager,
+  dashboardSecret = 'test-secret',
+): Promise<http.Server> {
   const app = express()
   app.use(express.json())
   app.use(
     '/admin',
-    createAdminRouter({ discoveryManager: discovery, loadManager, requestHistoryManager: history }),
+    createAdminRouter({
+      discoveryManager: discovery,
+      loadManager,
+      requestHistoryManager: history,
+      dashboardSecret,
+    }),
   )
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1')
@@ -56,13 +71,35 @@ describe('admin request detail endpoint', () => {
       analysis: {},
     })
 
-    const detail = await get(server, '/admin/requests/req-detail')
+    const detail = await get(server, '/admin/requests/req-detail', 'test-secret')
     expect(detail.status).toBe(200)
     expect((detail.data as any).requestId).toBe('req-detail')
     expect((detail.data as any).messageList[0].content).toBe('hello there')
 
-    const missing = await get(server, '/admin/requests/nope')
+    const missing = await get(server, '/admin/requests/nope', 'test-secret')
     expect(missing.status).toBe(404)
+
+    server.close()
+  })
+
+  it('rejects clients without valid dashboard_token cookie (privacy gate)', async () => {
+    const discovery = new DiscoveryManager({ ollamaNodes: [] })
+    const history = new RequestHistoryManager()
+    const server = await makeServer(discovery, new LoadManager({ maxConcurrentPerNode: 4 }), history)
+
+    history.startRequest({
+      requestId: 'req-gate',
+      endpointType: 'chat',
+      reqBody: { messages: [{ role: 'user', content: 'secret-ish prompt' }] },
+      analysis: {},
+    })
+
+    const noCookie = await get(server, '/admin/requests/req-gate')
+    expect(noCookie.status).toBe(403)
+    expect((noCookie.data as any).error).toBe('Forbidden')
+
+    const wrongToken = await get(server, '/admin/requests/req-gate', 'wrong-value')
+    expect(wrongToken.status).toBe(403)
 
     server.close()
   })
