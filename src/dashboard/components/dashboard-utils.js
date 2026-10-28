@@ -86,6 +86,7 @@ export function endpointLabel(endpointType) {
   if (endpointType === 'embeddings') return 'Embeddings'
   if (endpointType === 'completions') return 'Completions'
   if (endpointType === 'systemone') return 'SystemOne'
+  if (endpointType === 'audio') return 'Audio'
   return 'Chat'
 }
 

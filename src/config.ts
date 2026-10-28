@@ -82,3 +82,24 @@ export const OLLAMA_CLOUD_SESSION_COOKIE: string =
  */
 export const ROUTER_FALLBACK_TO_AUTO: boolean =
   process.env.ROUTER_FALLBACK_TO_AUTO === 'true'
+
+/**
+ * Directory where captured audio payloads for dashboard playback are stored,
+ * keyed by requestId. Production: /var/lib/ollama-router (see scripts/service.js);
+ * dev: the repo ./data dir. Override with AUDIO_CAPTURE_DIR.
+ */
+export function resolveAudioCaptureDir(): string {
+  return (
+    process.env.AUDIO_CAPTURE_DIR ||
+    (process.env.NODE_ENV === 'production' ? '/var/lib/ollama-router' : './data')
+  )
+}
+
+/**
+ * Max captured audio bytes stored per request for dashboard playback.
+ * Captures above this are skipped (request still succeeds, no preview).
+ */
+export const AUDIO_MAX_CAPTURE_BYTES: number = Number.parseInt(
+  process.env.AUDIO_MAX_CAPTURE_BYTES || String(25 * 1024 * 1024),
+  10,
+)

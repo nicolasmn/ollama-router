@@ -3,6 +3,7 @@ import express from 'express'
 import type { Router } from 'express'
 import { request as undiciRequest } from 'undici'
 import { timingSafeEqual } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { DiscoveryManager } from '../discovery-manager.js'
 import type { LoadManager } from '../load-manager.js'
@@ -207,6 +208,34 @@ export function createAdminRouter({
       return
     }
     res.json(detail)
+  })
+
+  // Captured audio payload for dashboard playback — same dashboard session
+  // cookie gate as the request detail endpoint. Serves the binary bytes stored
+  // by the audio route under the router data dir.
+  r.get('/audio/:requestId', async (req, res) => {
+    if (!isDashboardClient(req, dashboardSecret)) {
+      res.status(403).json({ error: 'Forbidden' })
+      return
+    }
+    const { requestId } = req.params
+    const entry = requestHistoryManager
+      .getRecentRequests()
+      .find((r) => r.requestId === requestId)
+    const audio = entry?.audio
+    if (!entry || !audio?.path) {
+      res.status(404).json({ error: 'Audio not found' })
+      return
+    }
+    const stream = createReadStream(audio.path)
+    stream.on('error', () => {
+      if (!res.headersSent) res.status(404).json({ error: 'Audio not found' })
+      else res.destroy()
+    })
+    res.status(200)
+    res.setHeader('Content-Type', audio.contentType || 'audio/wav')
+    res.setHeader('Content-Length', audio.bytes)
+    stream.pipe(res)
   })
 
   r.delete('/requests/:requestId', (req, res) => {

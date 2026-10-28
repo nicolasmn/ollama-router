@@ -55,6 +55,20 @@ export interface CandidateSummary {
   rationale?: CandidateRationale | null
 }
 
+/** Server-side reference to a captured audio payload for dashboard playback. */
+export interface AudioPayloadRef {
+  /** Audio task that produced the capture: speech | transcription | translation. */
+  kind: string
+  /** MIME type of the captured bytes (e.g. audio/wav, audio/mpeg). */
+  contentType: string
+  /** Captured byte size. */
+  bytes: number
+  /** Absolute path of the stored payload on the router host. */
+  path: string
+  /** Epoch ms when the capture was stored. */
+  capturedAt: number
+}
+
 export interface AnalysisSummary {
   needsTools: boolean
   needsVision: boolean
@@ -139,6 +153,8 @@ export interface RequestEntry {
   candidates: CandidateSummary[]
   attemptCount: number
   attempts: AttemptRecord[]
+  /** Captured audio payload for dashboard playback, when this was an audio request. */
+  audio?: AudioPayloadRef | null
 }
 
 /** Entry as served by GET /admin/requests/:id — adds the private message thread. */
@@ -402,6 +418,8 @@ function buildPreview(
     preview = stringifyEmbeddingInput(reqBody?.input)
   } else if (endpointType === 'completions') {
     preview = typeof reqBody?.prompt === 'string' ? reqBody.prompt : ''
+  } else if (endpointType === 'audio') {
+    preview = typeof reqBody?.input === 'string' ? reqBody.input : ''
   } else if (endpointType === 'systemone') {
     // Jev wire format has no `messages`; the `state` field is the input.
     // Can be a string or a JSON-serializable object/array.
@@ -663,6 +681,11 @@ function buildInputSummary(
     return typeof reqBody?.prompt === 'string'
       ? `${Math.max(1, (reqBody.prompt as string).split(/\s+/u).filter(Boolean).length)} words`
       : 'completion prompt'
+  }
+  if (endpointType === 'audio') {
+    return typeof reqBody?.input === 'string' && (reqBody.input as string).trim()
+      ? `${Math.max(1, (reqBody.input as string).split(/\s+/u).filter(Boolean).length)} words`
+      : 'audio input'
   }
   if (endpointType === 'systemone') {
     const questions = reqBody?.questions
@@ -991,6 +1014,14 @@ export class RequestHistoryManager {
     }
     entry.selectedModel = result.modelName || entry.selectedModel || null
     entry.selectedNode = result.nodeHost || entry.selectedNode || null
+    return true
+  }
+
+  /** Stores (or clears, when passed null) the captured audio payload for playback. */
+  setAudioPayload(requestId: string, audio: AudioPayloadRef | null): boolean {
+    const entry = this.#findRequest(requestId)
+    if (!entry) return false
+    entry.audio = audio
     return true
   }
 
