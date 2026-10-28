@@ -580,8 +580,9 @@ export class RequestRouter {
     // Transcription/translation consume audio input, so speech-capable
     // (LLM-asr style) models qualify for those tasks as well.
     if (taskType !== 'speech' && caps.includes('speech')) return true
-    // Speech task on a broadly-flagged audio model.
-    if (taskType === 'speech' && modelInfo.profile.supportsAudio) return true
+    // The speech task needs a speech-generation model — an audio-input
+    // (multimodal) model like gemma4 cannot synthesize speech and is rejected
+    // upstream with a 400.
     return false
   }
 
