@@ -283,7 +283,13 @@ async function handleAudioRequest(
       await pipeline(upstream.body, capture.stream, res)
       const audioBuffer = Buffer.concat(capture.chunks)
       const audioContentType = (outContentType as string) || 'audio/wav'
-      const audioPath = await storeAudioCapture(requestId, taskType, audioContentType, audioBuffer)
+      let audioPath: string | null = null
+      try {
+        audioPath = await storeAudioCapture(requestId, taskType, audioContentType, audioBuffer)
+      } catch (err) {
+        // Capture is best-effort — never let it break the request lifecycle.
+        logger.warn({ requestId, err }, 'Audio capture store failed (speech)')
+      }
       if (audioPath) {
         requestHistoryManager.setAudioPayload(requestId, {
           kind: taskType,
@@ -317,7 +323,12 @@ async function handleAudioRequest(
         const captureContentType = filePart?.contentType ?? 'audio/wav'
         const captureBytes = filePart?.body ?? Buffer.alloc(0)
         if (captureBytes.length > 0 && captureBytes.length <= AUDIO_MAX_CAPTURE_BYTES) {
-          const audioPath = await storeAudioCapture(requestId, taskType, captureContentType, captureBytes)
+          let audioPath: string | null = null
+          try {
+            audioPath = await storeAudioCapture(requestId, taskType, captureContentType, captureBytes)
+          } catch (err) {
+            logger.warn({ requestId, err }, 'Audio capture store failed (upload)')
+          }
           if (audioPath) {
             requestHistoryManager.setAudioPayload(requestId, {
               kind: taskType,
