@@ -51,6 +51,8 @@ export const JSON_ONLY_PREFIXES = ['/api/', '/v1/']
 
 export function isJsonOnlyEndpoint(path: string, method: string): boolean {
   if (path.startsWith('/api/blobs/')) return false
+  // /v1/audio/transcriptions and /v1/audio/translations take multipart/form-data
+  if (path.startsWith('/v1/audio/')) return false
 
   if (JSON_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) {
     if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
