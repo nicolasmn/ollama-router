@@ -493,6 +493,99 @@ export class RequestRouter {
   }
 
   /**
+   * /v1/audio/* routing: selects the best model with the capability the task
+   * requires — `speech` for /v1/audio/speech, `audio` for transcription and
+   * translation. Virtual aliases (auto-fast) and unknown model names both route
+   * here and get rewritten to a concrete capable model by the caller.
+   */
+  async selectForAudio(
+    taskType: 'speech' | 'transcription' | 'translation',
+    reqBody: Record<string, unknown>,
+    signal?: AbortSignal,
+    /** Pre-computed analysis from the caller — skips a second full analysis pass. */
+    analysis?: AnalysisResult,
+  ): Promise<RoutingCandidate[] | null> {
+    if (signal?.aborted) return null
+    await this._performOnRequestScan()
+    if (signal?.aborted) return null
+    const requestedModel = (reqBody.model as string) || 'auto-fast'
+    const finalAnalysis = analysis ?? this.analyzer.analyze(reqBody, 'audio')
+    const capability = taskType === 'speech' ? 'speech' : 'audio'
+
+    const nodes = this.discovery.getNodes()
+
+    // Exact existing model name → direct hit on the node hosting it.
+    for (const [nodeHost, node] of nodes) {
+      if (!node.reachable) continue
+      const modelInfo = node.models.get(requestedModel)
+      if (!modelInfo) continue
+      if (disabledModelsStore.isDisabled(nodeHost, requestedModel)) continue
+      if (!this._modelHasCapability(modelInfo, capability, taskType)) continue
+      return [{ nodeHost, modelName: requestedModel, modelInfo, score: 0 }]
+    }
+
+    // Virtual alias (or unknown) → best capable model, honouring reachability,
+    // node load and the usual latency/TPS/warm scoring.
+    const candidates: RoutingCandidate[] = []
+    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    for (const [nodeHost, node] of nodes) {
+      if (!node.reachable) continue
+      if (!this.load.canAcceptRequest(nodeHost)) continue
+      for (const [modelName, modelInfo] of node.models) {
+        if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
+        if (!this._modelHasCapability(modelInfo, capability, taskType)) continue
+        const scored = this._scoreModel(modelInfo, finalAnalysis, requestedModel, nodeHost)
+        const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
+        const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+        const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
+        const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
+        const rationale: RoutingRationale = {
+          latencyScore: scored.latencyScore,
+          tpsScore: scored.tpsScore,
+          sizeFit: scored.sizeFit,
+          warmBonus,
+          loadPenalty: scored.loadPenalty,
+          cloudCostPenalty,
+          cloudUsagePenalty,
+          thinkingBonus: scored.thinkingBonus,
+          contextMargin: scored.contextMargin,
+          totalScore: score,
+          sizeReason: scored.sizeReason,
+        }
+        candidates.push({ nodeHost, modelName, modelInfo, score, rationale })
+      }
+    }
+
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => b.score - a.score)
+    logger.debug(
+      candidates.slice(0, 3).map((c) => ({
+        model: c.modelName,
+        node: c.nodeHost,
+        score: Math.round(c.score * 10) / 10,
+      })),
+      'Top audio routing candidates',
+    )
+    return candidates
+  }
+
+  /** True when the model can serve the given audio task (speech vs audio). */
+  private _modelHasCapability(
+    modelInfo: ModelInfo,
+    capability: string,
+    taskType: 'speech' | 'transcription' | 'translation',
+  ): boolean {
+    const caps = [...(modelInfo.profile.capabilities ?? [])]
+    if (caps.includes(capability)) return true
+    // Transcription/translation consume audio input, so speech-capable
+    // (LLM-asr style) models qualify for those tasks as well.
+    if (taskType !== 'speech' && caps.includes('speech')) return true
+    // Speech task on a broadly-flagged audio model.
+    if (taskType === 'speech' && modelInfo.profile.supportsAudio) return true
+    return false
+  }
+
+  /**
    * Returns the minimum context_length across all models that are eligible
    * candidates for the given virtual alias.
    */

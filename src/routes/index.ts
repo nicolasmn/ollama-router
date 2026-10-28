@@ -69,7 +69,7 @@ export function createRoutes(
   setupOllamaInferenceRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaRoutes(app, discoveryManager)
   setupSystemoneRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
-  setupAudioRoutes(app, discoveryManager)
+  setupAudioRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   app.use(
     '/admin',
     createAdminRouter({
