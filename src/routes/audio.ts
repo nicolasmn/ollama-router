@@ -347,7 +347,13 @@ async function handleAudioRequest(
       if (isMultipart) {
         const parsed = parseMultipart(raw, contentType)
         const filePart = parsed?.parts.find((part) => part.filename)
-        const captureContentType = filePart?.contentType ?? 'audio/wav'
+        // Generic container types (curl's default) are sniffed by the browser
+        // inconsistently — these endpoints only ever carry audio.
+        const rawFileContentType = filePart?.contentType ?? ''
+        const captureContentType =
+          !rawFileContentType || rawFileContentType === 'application/octet-stream'
+            ? 'audio/wav'
+            : rawFileContentType
         const captureBytes = filePart?.body ?? Buffer.alloc(0)
         if (captureBytes.length > 0 && captureBytes.length <= AUDIO_MAX_CAPTURE_BYTES) {
           let audioPath: string | null = null
