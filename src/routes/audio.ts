@@ -294,7 +294,23 @@ async function handleAudioRequest(
         })
       }
     } else {
-      await pipeline(upstream.body, res)
+      let responseText: string | null = null
+      if (taskType === 'transcription' || taskType === 'translation') {
+        responseText = await upstream.body.text().catch(() => '')
+        const parsedText = responseText
+        let responseJson: Record<string, unknown> | null = null
+        try { responseJson = JSON.parse(parsedText) } catch { /* plain-text response */ }
+        const transcribed = typeof responseJson?.text === 'string' ? responseJson.text : parsedText
+        if (transcribed) {
+          requestHistoryManager.updateResponseContent(requestId, transcribed)
+        }
+        res.status(upstream.statusCode)
+        if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type'] as string)
+        if (responseJson) res.json(responseJson)
+        else res.end(parsedText)
+      } else {
+        await pipeline(upstream.body, res)
+      }
       if (isMultipart) {
         const parsed = parseMultipart(raw, contentType)
         const filePart = parsed?.parts.find((part) => part.filename)
