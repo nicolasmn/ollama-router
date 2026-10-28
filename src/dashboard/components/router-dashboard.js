@@ -180,6 +180,9 @@ export class RouterDashboard extends LitElement {
     try {
       const response = await fetch(
         `/admin/requests/${encodeURIComponent(requestId)}`,
+        // Admin payloads are per-process state (routing decisions, message
+        // threads) — never let the browser serve a stale 304 from its cache.
+        { cache: 'no-store' },
       )
       if (!response.ok) return
       const detail = await response.json()
