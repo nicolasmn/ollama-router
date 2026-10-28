@@ -549,6 +549,33 @@ export class DiscoveryManager {
     return triggered
   }
 
+  /**
+   * Check whether any offline node hosts a model with the given audio
+   * capability, and trigger WoL for matching nodes with a known MAC. Mirrors
+   * tryWakeNodesForRequest for /v1/audio/* routing. Returns true if at least
+   * one WoL packet was sent.
+   */
+  tryWakeNodesForAudio(capability: 'audio' | 'speech'): boolean {
+    let triggered = false
+    for (const [host, node] of this.inventory) {
+      if (node.reachable) continue
+      if (node.cloud) continue
+      if (this._isLocalhost(host)) continue
+      if (!node.mac) continue
+      const hasCapable = [...node.models.values()].some((m) => {
+        const caps = m.profile.capabilities ?? new Set<string>()
+        // Speech-capable models also serve audio-input tasks (transcription,
+        // translation) — mirror _modelHasCapability in request-router.ts.
+        if (capability === 'audio') return caps.has('audio') || caps.has('speech')
+        return caps.has('speech')
+      })
+      if (!hasCapable) continue
+      this._triggerWol(host, node.mac)
+      triggered = true
+    }
+    return triggered
+  }
+
   private _offlineNodeCouldServe(
     node: NodeInfo,
     model: string,
