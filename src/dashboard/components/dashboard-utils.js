@@ -696,8 +696,17 @@ export function renderConversationThread(request) {
     <div class="message-thread">
       ${request.endpointType === 'audio' && request.audio?.path
         ? html`
-            <div class="audio-preview">
-              <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+            <div class="msg msg--user">
+              <div class="msg-header">
+                <span class="msg-avatar msg-avatar--user">U</span>
+                <span class="msg-role">${ROLE_LABELS.user ?? 'User'}</span>
+                <span class="msg-index">#0</span>
+              </div>
+              <div class="msg-body">
+                <div class="audio-preview">
+                  <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+                </div>
+              </div>
             </div>
           `
         : ''}
