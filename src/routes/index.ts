@@ -24,6 +24,7 @@ import { setupMessagesRoutes } from './messages.js'
 import { setupOllamaInferenceRoutes } from './ollama-inference.js'
 import { setupOllamaRoutes } from './ollama.js'
 import { setupSystemoneRoutes } from './systemone.js'
+import { setupAudioRoutes } from './audio.js'
 
 export interface RouteDeps {
   discoveryManager: DiscoveryManager
@@ -68,6 +69,7 @@ export function createRoutes(
   setupOllamaInferenceRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
   setupOllamaRoutes(app, discoveryManager)
   setupSystemoneRoutes(app, discoveryManager, loadManager, requestRouter, requestHistoryManager)
+  setupAudioRoutes(app, discoveryManager)
   app.use(
     '/admin',
     createAdminRouter({

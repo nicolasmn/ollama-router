@@ -440,7 +440,7 @@ function firstReachableNode(discoveryManager: DiscoveryManager): string | null {
   return null
 }
 
-function findNodeForModel(
+export function findNodeForModel(
   discoveryManager: DiscoveryManager,
   modelName: string,
 ): string | null {
