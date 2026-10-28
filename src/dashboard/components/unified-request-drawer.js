@@ -297,22 +297,6 @@ export class UnifiedRequestDrawer extends LitElement {
     `
   }
 
-  // ─── Audio preview ───────────────────────────────────────────────────
-
-  renderAudioPreview() {
-    const r = this.request
-    const audio = r?.audio
-    if (!r || !audio?.path) return ''
-    return html`
-      <div class="detail-section">
-        <h3>Audio</h3>
-        <div class="audio-preview">
-          <audio controls preload="metadata" src=${`/admin/audio/${r.requestId}`}></audio>
-        </div>
-      </div>
-    `
-  }
-
   // ─── Execution (metadata) ─────────────────────────────────────────
 
   renderExecutionSection() {
@@ -424,7 +408,6 @@ export class UnifiedRequestDrawer extends LitElement {
 
     return html`
       ${this.renderRoutingSection()}
-      ${this.renderAudioPreview()}
       ${this.renderExecutionSection()}
       ${this.renderActionableInsights()}
 

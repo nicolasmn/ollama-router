@@ -670,6 +670,18 @@ export function renderConversationThread(request) {
   }
 
   if (!request.messageList?.length) {
+    if (request.endpointType === 'audio' && request.audio?.path) {
+      // Audio captures carry no chat-style thread; the playable payload is
+      // the conversation content, so render the player instead of a redacted
+      // text preview.
+      return html`
+        <div class="message-thread">
+          <div class="audio-preview">
+            <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+          </div>
+        </div>
+      `
+    }
     return html`<div class="preview-box">
       ${requestPreviewText(request) || 'No preview available.'}
     </div>`
