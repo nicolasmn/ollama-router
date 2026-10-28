@@ -230,49 +230,76 @@ async function handleAudioRequest(
     }
 
     requestHistoryManager.recordSelection(requestId, candidates)
-    const candidate = candidates[0]
-    const nodeHost = candidate.nodeHost
-    const selectedModel = candidate.modelName
-    requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'waiting', attemptReason: 'first_try' })
+    // Failover loop — try candidates in ranked order (mirrors chat behavior):
+    // connect errors and 5xx move on to the next candidate; 4xx is a client
+    // error and is passed straight through (failover would fail the same way).
+    let handled = false
+    for (let attemptIndex = 0; attemptIndex < candidates.length && !handled; attemptIndex++) {
+      const candidate = candidates[attemptIndex]
+      const nodeHost = candidate.nodeHost
+      const selectedModel = candidate.modelName
+      requestHistoryManager.recordAttempt(requestId, {
+        nodeHost,
+        modelName: selectedModel,
+        status: 'waiting',
+        attemptReason: attemptIndex === 0 ? 'first_try' : 'failover',
+      })
 
-    try {
-      loadManager.incrementLoad(nodeHost)
-    } catch {
-      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: 429, error: 'Node at capacity', nodeHost, modelName: selectedModel })
-      res.status(429).json({ error: 'Node at capacity' })
-      return
-    }
+      try {
+        loadManager.incrementLoad(nodeHost)
+      } catch {
+        requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'capacity' })
+        continue
+      }
 
-    const startTime = Date.now()
-    const outboundBody = isMultipart
-      ? rebuildMultipartModel(raw, contentType, selectedModel)
-      : JSON.stringify({ ...reqBody, model: selectedModel })
-    const upstream = await request(`${nodeHost}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': isMultipart ? contentType : 'application/json',
-        ...(discoveryManager.getCloudApiKey(nodeHost)
-          ? { Authorization: `Bearer ${discoveryManager.getCloudApiKey(nodeHost)}` }
-          : {}),
-      },
-      body: outboundBody,
-      headersTimeout: INFERENCE_TIMEOUT,
-      bodyTimeout: INFERENCE_TIMEOUT,
-      signal: abortController.signal,
-    })
-    logger.info({ nodeHost, selectedModel, endpoint }, 'Audio upstream dispatch')
+      const startTime = Date.now()
+      let upstream: Awaited<ReturnType<typeof request>>
+      try {
+        const outboundBody = isMultipart
+          ? rebuildMultipartModel(raw, contentType, selectedModel)
+          : JSON.stringify({ ...reqBody, model: selectedModel })
+        upstream = await request(`${nodeHost}${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': isMultipart ? contentType : 'application/json',
+            ...(discoveryManager.getCloudApiKey(nodeHost)
+              ? { Authorization: `Bearer ${discoveryManager.getCloudApiKey(nodeHost)}` }
+              : {}),
+          },
+          body: outboundBody,
+          headersTimeout: INFERENCE_TIMEOUT,
+          bodyTimeout: INFERENCE_TIMEOUT,
+          signal: abortController.signal,
+        })
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.name === 'AbortError' || abortController.signal.aborted) throw err
+        logger.warn(
+          { requestId, endpoint, nodeHost, modelName: selectedModel, err },
+          'Audio dispatch failed, trying next candidate',
+        )
+        requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'failed', error: String(err) })
+        loadManager.decrementLoad(nodeHost)
+        continue
+      }
+      logger.info({ nodeHost, selectedModel, endpoint }, 'Audio upstream dispatch')
 
-    if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
-      const detail = await upstream.body.text().catch(() => '')
-      logger.warn(
-        { requestId, endpoint, nodeHost, modelName: selectedModel, status: upstream.statusCode, detail: detail.slice(0, 300) },
-        'Audio upstream error',
-      )
-      requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: upstream.statusCode, error: `HTTP ${upstream.statusCode}`, nodeHost, modelName: selectedModel })
-      if (res.headersSent) return
-      res.status(upstream.statusCode).type('application/json').send(detail || 'Upstream error')
-      return
-    }
+      if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
+        const detail = await upstream.body.text().catch(() => '')
+        logger.warn(
+          { requestId, endpoint, nodeHost, modelName: selectedModel, status: upstream.statusCode, detail: detail.slice(0, 300) },
+          'Audio upstream error',
+        )
+        loadManager.decrementLoad(nodeHost)
+        if (upstream.statusCode >= 400 && upstream.statusCode < 500) {
+          // Client error — failover would fail identically; pass through.
+          requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: upstream.statusCode, error: `HTTP ${upstream.statusCode}`, nodeHost, modelName: selectedModel })
+          if (!res.headersSent) res.status(upstream.statusCode).type('application/json').send(detail || 'Upstream error')
+          handled = true
+          break
+        }
+        requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'failed', error: `HTTP ${upstream.statusCode}` })
+        continue
+      }
 
     res.status(upstream.statusCode)
     const outContentType = upstream.headers['content-type']
@@ -346,6 +373,18 @@ async function handleAudioRequest(
     discoveryManager.updateModelMetrics(nodeHost, selectedModel, latency, 0, endpoint)
     requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'success', latency })
     requestHistoryManager.finishRequest(requestId, { status: 'success', responseStatus: upstream.statusCode, latency, nodeHost, modelName: selectedModel })
+    loadManager.decrementLoad(nodeHost)
+    handled = true
+    }
+
+    if (!handled && !res.headersSent) {
+      requestHistoryManager.finishRequest(requestId, {
+        status: 'failed',
+        responseStatus: 503,
+        error: 'All upstream nodes failed',
+      })
+      res.status(503).json({ error: 'All upstream nodes failed' })
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.name === 'AbortError' || abortController.signal.aborted) {
       if (!res.headersSent) res.status(499).json({ error: 'Request cancelled' })
