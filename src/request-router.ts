@@ -556,7 +556,64 @@ export class RequestRouter {
       }
     }
 
-    if (candidates.length === 0) return null
+    if (candidates.length === 0) {
+      // No live audio-capable node — mirror the chat path: wake offline nodes
+      // that host a capable model and poll for them to come back online.
+      if (!this.discovery.tryWakeNodesForAudio(capability)) return null
+      logger.info(
+        { taskType, capability },
+        'No live audio candidates — WoL triggered, waiting for node to wake',
+      )
+      const deadline = Date.now() + WOL_WAIT_TIMEOUT_MS
+      while (Date.now() < deadline && candidates.length === 0) {
+        if (signal?.aborted) return null
+        await new Promise<void>((r) => setTimeout(r, WOL_POLL_INTERVAL_MS))
+        if (signal?.aborted) return null
+        for (const [nodeHost, node] of this.discovery.getNodes()) {
+          if (!node.reachable) continue
+          if (!this.load.canAcceptRequest(nodeHost)) continue
+          for (const [modelName, modelInfo] of node.models) {
+            if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
+            if (!this._modelHasCapability(modelInfo, capability, taskType)) continue
+            const scored = this._scoreModel(modelInfo, finalAnalysis, requestedModel, nodeHost)
+            const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
+            const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
+            const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
+            const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
+            candidates.push({
+              nodeHost,
+              modelName,
+              modelInfo,
+              score,
+              rationale: {
+                latencyScore: scored.latencyScore,
+                tpsScore: scored.tpsScore,
+                sizeFit: scored.sizeFit,
+                warmBonus,
+                loadPenalty: scored.loadPenalty,
+                cloudCostPenalty,
+                cloudUsagePenalty,
+                thinkingBonus: scored.thinkingBonus,
+                contextMargin: scored.contextMargin,
+                totalScore: score,
+                sizeReason: scored.sizeReason,
+              },
+            })
+          }
+        }
+      }
+      if (candidates.length === 0) {
+        logger.warn(
+          { taskType, capability },
+          'WoL wait timed out — no audio-capable node came online',
+        )
+        return null
+      }
+      logger.info(
+        { taskType, capability },
+        'Audio node came online after WoL — routing request',
+      )
+    }
     candidates.sort((a, b) => b.score - a.score)
     logger.debug(
       candidates.slice(0, 3).map((c) => ({
