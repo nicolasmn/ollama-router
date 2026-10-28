@@ -694,6 +694,13 @@ export function renderConversationThread(request) {
 
   return html`
     <div class="message-thread">
+      ${request.endpointType === 'audio' && request.audio?.path
+        ? html`
+            <div class="audio-preview">
+              <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+            </div>
+          `
+        : ''}
       ${messages.map(
         (msg, i) => {
           const isLastMessage = i === messages.length - 1
