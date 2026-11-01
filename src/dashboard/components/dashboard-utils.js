@@ -86,6 +86,7 @@ export function endpointLabel(endpointType) {
   if (endpointType === 'embeddings') return 'Embeddings'
   if (endpointType === 'completions') return 'Completions'
   if (endpointType === 'systemone') return 'SystemOne'
+  if (endpointType === 'audio') return 'Audio'
   return 'Chat'
 }
 
@@ -246,84 +247,200 @@ export function renderFlagBadges(analysis = {}) {
     : html`<span class="muted">—</span>`
 }
 
-export function renderRoutingRationale(candidate) {
-  if (!candidate?.rationale) return ''
-  const r = candidate.rationale
+// ─── Routing decision ─────────────────────────────────────────────
+//
+// Everything below renders `candidate.rationale`, the ScoreBreakdown produced
+// by src/routing-score.ts. Each factor carries value × weight = points, and
+// the total is the plain sum of those points — what is shown is exactly what
+// the router computed.
 
-  const cloudCostPenalty  = r.cloudCostPenalty  ?? (r.cloudPenalty ? r.cloudPenalty : 0)
-  const cloudUsagePenalty = r.cloudUsagePenalty ?? 0
+const pts = (n) => (n > 0 ? `+${n.toFixed(1)}` : n < 0 ? `−${Math.abs(n).toFixed(1)}` : '0.0')
+const ptsClass = (n) => (n > 0.05 ? 'rd-pos' : n < -0.05 ? 'rd-neg' : 'rd-zero')
 
-  // Both values are stored as negative numbers in the rationale.
-  // Render them as absolute values with an explicit − sign.
-  const cloudCostAbs  = Math.abs(cloudCostPenalty)
-  const cloudUsageAbs = Math.abs(cloudUsagePenalty)
-  const usageCls = cloudUsageAbs >= 14 ? 'bad' : cloudUsageAbs >= 7 ? 'warn' : 'muted'
+const SOURCE_LABEL = {
+  measured: 'measured',
+  blended: 'measured + estimate',
+  estimated: 'estimate',
+  live: 'live',
+  static: 'model info',
+}
 
+function hasBreakdown(candidate) {
+  return Array.isArray(candidate?.rationale?.factors)
+}
+
+/** Core factors always matter; penalties and the thinking modifier only when they apply. */
+const CORE_FACTORS = new Set(['quality', 'latency', 'throughput', 'context', 'warm'])
+
+function isRelevant(factor, pointsAcross) {
+  if (CORE_FACTORS.has(factor.id)) return factor.weight > 0
+  return pointsAcross.some((p) => p !== 0)
+}
+
+function factorOf(candidate, id) {
+  return candidate?.rationale?.factors?.find((f) => f.id === id)
+}
+
+/** Factors worth showing in the matrix. */
+function visibleFactors(candidates) {
+  const first = candidates.find(hasBreakdown)
+  if (!first) return []
+  return first.rationale.factors.filter((f) =>
+    isRelevant(f, candidates.map((c) => factorOf(c, f.id)?.points ?? 0)),
+  )
+}
+
+function shortModel(name) {
+  return name.length > 18 ? `${name.slice(0, 17)}…` : name
+}
+
+function hostLabel(nodeHost) {
+  return String(nodeHost || '').replace(/^https?:\/\//, '').replace(/:11434$/, '')
+}
+
+/** One-line verdict: who won, by how much, and what decided it. */
+function renderVerdict(candidates) {
+  const winner = candidates[0]
+  const r = winner?.rationale
+  if (!r?.ranking) return ''
+  const { ranking } = r
+  if (!ranking.against) return html`<span class="rd-verdict-main">Only one eligible candidate.</span>`
+  const decisive = factorOf(winner, ranking.decisive)
   return html`
-    <div class="routing-rationale">
-      <div class="rationale-row">
-        <span class="rationale-label">Size fit</span>
-        <span class="rationale-note muted">${r.sizeReason ?? ''}</span>
-        <span class="rationale-value ${r.sizeFit > 0 ? 'good' : r.sizeFit < 0 ? 'bad' : ''}">
-          ${r.sizeFit > 0 ? `+${r.sizeFit}` : r.sizeFit}
-        </span>
+    <span class="rd-verdict-main">
+      <strong>${winner.modelName}</strong> leads
+      <span class="rd-pos">${pts(ranking.gap)}</span> over ${ranking.against}
+    </span>
+    ${decisive
+      ? html`<span class="rd-verdict-why">
+          mainly <strong>${decisive.label}</strong>
+          <span class="${ptsClass(ranking.decisiveDelta)}">${pts(ranking.decisiveDelta)}</span>
+          — ${decisive.detail}
+        </span>`
+      : ''}
+  `
+}
+
+function renderWeightBar(profile, factors) {
+  const positive = factors.filter((f) => f.weight > 0 && ['quality', 'latency', 'throughput', 'context', 'warm', 'thinking'].includes(f.id))
+  const total = positive.reduce((sum, f) => sum + f.weight, 0) || 1
+  return html`
+    <div class="rd-weights" title="How much each factor can contribute under this profile">
+      ${positive.map((f) => html`
+        <span class="rd-weight-seg rd-f-${f.id}" style="flex:${f.weight / total}"></span>`)}
+    </div>
+    <div class="rd-weight-legend">
+      ${positive.map((f) => html`
+        <span class="rd-legend-item"><i class="rd-dot rd-f-${f.id}"></i>${f.label} ${f.weight}</span>`)}
+    </div>
+  `
+}
+
+/** Summary block above the candidate list: profile, weights, verdict. */
+export function renderDecisionSummary(candidates) {
+  const scored = (candidates || []).filter(hasBreakdown)
+  if (!scored.length) return ''
+  const { profile, factors } = scored[0].rationale
+  return html`
+    <div class="rd-summary">
+      <div class="rd-profile">
+        <span class="badge b-blue">${profile.kind}</span>
+        <span class="rd-profile-reason">${profile.reason}</span>
+        ${profile.tags.map((t) => html`<span class="badge">${t}</span>`)}
       </div>
-      <div class="rationale-row">
-        <span class="rationale-label">Latency</span>
-        <span class="rationale-note muted">response speed score</span>
-        <span class="rationale-value">+${r.latencyScore.toFixed(1)}</span>
-      </div>
-      <div class="rationale-row">
-        <span class="rationale-label">Throughput</span>
-        <span class="rationale-note muted">tokens/s score</span>
-        <span class="rationale-value">+${r.tpsScore.toFixed(1)}</span>
-      </div>
-      ${r.contextMargin
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Context margin</span>
-            <span class="rationale-note muted">fits prompt comfortably</span>
-            <span class="rationale-value good">+${r.contextMargin}</span>
+      <div class="rd-verdict">${renderVerdict(scored)}</div>
+      ${renderWeightBar(profile, factors)}
+    </div>
+  `
+}
+
+/** Candidates × factors table — the whole decision on one screen. */
+export function renderScoreMatrix(candidates, winnerKey) {
+  const scored = (candidates || []).filter(hasBreakdown)
+  if (scored.length < 2) return ''
+  const rows = visibleFactors(scored)
+  const keyOf = (c) => `${c.modelName}@${c.nodeHost}`
+  return html`
+    <div class="rd-matrix-wrap">
+      <table class="rd-matrix">
+        <thead>
+          <tr>
+            <th></th>
+            ${scored.map((c) => html`
+              <th class="${keyOf(c) === winnerKey ? 'rd-col-winner' : ''}" title="${c.modelName} @ ${c.nodeHost}">
+                <div class="rd-col-model">${shortModel(c.modelName)}</div>
+                <div class="rd-col-host">${hostLabel(c.nodeHost)}</div>
+              </th>`)}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((f) => html`
+            <tr>
+              <th class="rd-row-label" title="${f.detail}">${f.label}</th>
+              ${scored.map((c) => {
+                const cell = factorOf(c, f.id)
+                return html`<td class="${ptsClass(cell?.points ?? 0)} ${keyOf(c) === winnerKey ? 'rd-col-winner' : ''}"
+                  title="${cell?.detail ?? ''}">${cell ? pts(cell.points) : '—'}</td>`
+              })}
+            </tr>`)}
+          <tr class="rd-total-row">
+            <th class="rd-row-label">Total</th>
+            ${scored.map((c) => html`
+              <td class="${keyOf(c) === winnerKey ? 'rd-col-winner' : ''}">${c.rationale.total.toFixed(1)}</td>`)}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
+/** Expanded candidate detail: each factor with its evidence and delta to the winner. */
+export function renderRoutingRationale(candidate, winner) {
+  if (!hasBreakdown(candidate)) return ''
+  const r = candidate.rationale
+  const isWinner = winner && winner.modelName === candidate.modelName && winner.nodeHost === candidate.nodeHost
+  const rows = r.factors.filter((f) => isRelevant(f, [f.points]))
+  const ranking = r.ranking
+  return html`
+    <div class="rd-detail">
+      ${ranking && ranking.against
+        ? html`<div class="rd-rank">
+            ${isWinner
+              ? html`Rank 1 of ${ranking.of} · <span class="rd-pos">${pts(ranking.gap)}</span> vs ${ranking.against}`
+              : html`Rank ${ranking.rank} of ${ranking.of} · <span class="rd-neg">${pts(ranking.gap)}</span> vs ${ranking.against}${ranking.decisive
+                  ? html`, mostly ${r.factors.find((f) => f.id === ranking.decisive)?.label ?? ranking.decisive} <span class="rd-neg">${pts(ranking.decisiveDelta)}</span>`
+                  : ''}`}
           </div>`
         : ''}
-      ${r.warmBonus
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Warm model</span>
-            <span class="rationale-note"></span>
-            <span class="rationale-value good">+${r.warmBonus}</span>
+      ${rows.map((f) => {
+        const win = factorOf(winner, f.id)
+        const delta = !isWinner && win ? f.points - win.points : null
+        const pct = Math.min(100, Math.abs(f.value) * 100)
+        return html`
+          <div class="rd-factor">
+            <div class="rd-factor-head">
+              <span class="rd-factor-label">${f.label}</span>
+              <span class="rd-meter ${f.value < 0 ? 'rd-meter-neg' : ''}">
+                <span class="rd-meter-fill rd-f-${f.id}" style="width:${pct}%"></span>
+              </span>
+              <span class="rd-factor-pts ${ptsClass(f.points)}">${pts(f.points)}</span>
+              <span class="rd-factor-delta ${delta === null ? '' : ptsClass(delta)}"
+                title="Difference to the winner's contribution">${delta === null || Math.abs(delta) < 0.05 ? '' : pts(delta)}</span>
+            </div>
+            <div class="rd-factor-detail">
+              <span class="rd-src rd-src-${f.source}">${SOURCE_LABEL[f.source] ?? f.source}</span>
+              ${f.detail}
+              <span class="rd-factor-calc">· ${(f.value * 100).toFixed(0)}% × ${f.weight}</span>
+            </div>
           </div>`
-        : ''}
-      ${r.thinkingBonus
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Thinking bonus</span>
-            <span class="rationale-note"></span>
-            <span class="rationale-value good">+${r.thinkingBonus}</span>
-          </div>`
-        : ''}
-      ${r.loadPenalty
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Load penalty</span>
-            <span class="rationale-note"></span>
-            <span class="rationale-value bad">−${r.loadPenalty.toFixed(1)}</span>
-          </div>`
-        : ''}
-      ${cloudCostAbs
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Cloud cost</span>
-            <span class="rationale-note muted">local-first preference</span>
-            <span class="rationale-value bad">−${cloudCostAbs}</span>
-          </div>`
-        : ''}
-      ${cloudUsageAbs
-        ? html`<div class="rationale-row">
-            <span class="rationale-label">Cloud usage</span>
-            <span class="rationale-note muted">usage near cap</span>
-            <span class="rationale-value ${usageCls}">−${cloudUsageAbs}</span>
-          </div>`
-        : ''}
-      <div class="rationale-row rationale-row--total">
-        <span class="rationale-label">Total score</span>
-        <span class="rationale-note"></span>
-        <span class="rationale-value">${r.totalScore.toFixed(1)}</span>
+      })}
+      <div class="rd-factor rd-factor-total">
+        <div class="rd-factor-head">
+          <span class="rd-factor-label">Total</span>
+          <span class="rd-meter"></span>
+          <span class="rd-factor-pts">${r.total.toFixed(1)}</span>
+          <span class="rd-factor-delta"></span>
+        </div>
       </div>
     </div>
   `
@@ -669,6 +786,18 @@ export function renderConversationThread(request) {
   }
 
   if (!request.messageList?.length) {
+    if (request.endpointType === 'audio' && request.audio?.path) {
+      // Audio captures carry no chat-style thread; the playable payload is
+      // the conversation content, so render the player instead of a redacted
+      // text preview.
+      return html`
+        <div class="message-thread">
+          <div class="audio-preview">
+            <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+          </div>
+        </div>
+      `
+    }
     return html`<div class="preview-box">
       ${requestPreviewText(request) || 'No preview available.'}
     </div>`
@@ -681,6 +810,22 @@ export function renderConversationThread(request) {
 
   return html`
     <div class="message-thread">
+      ${request.endpointType === 'audio' && request.audio?.path
+        ? html`
+            <div class="msg msg--user">
+              <div class="msg-header">
+                <span class="msg-avatar msg-avatar--user">U</span>
+                <span class="msg-role">${ROLE_LABELS.user ?? 'User'}</span>
+                <span class="msg-index">#0</span>
+              </div>
+              <div class="msg-body">
+                <div class="audio-preview">
+                  <audio controls preload="metadata" src=${`/admin/audio/${request.requestId}`}></audio>
+                </div>
+              </div>
+            </div>
+          `
+        : ''}
       ${messages.map(
         (msg, i) => {
           const isLastMessage = i === messages.length - 1

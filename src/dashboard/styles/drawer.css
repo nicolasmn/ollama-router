@@ -913,72 +913,248 @@
   display: block;
 }
 
-/* ─── Routing Rationale (inside cand-detail) ─────────── */
+/* ─── Routing decision (rd-*) ────────────────────────── */
 
-.routing-rationale {
+.rd-pos  { color: #6ee7b7; }
+.rd-neg  { color: #f87171; }
+.rd-zero { color: rgba(122, 133, 163, 0.55); }
+
+/* Factor palette — shared by the weight bar, legend and meters. */
+.rd-f-quality     { background: #60a5fa; }
+.rd-f-latency     { background: #4f98a3; }
+.rd-f-throughput  { background: #a78bfa; }
+.rd-f-context     { background: #67e8f9; }
+.rd-f-warm        { background: #fbbf24; }
+.rd-f-thinking    { background: #f472b6; }
+.rd-f-load        { background: #f87171; }
+.rd-f-reliability { background: #fb923c; }
+.rd-f-cloudCost   { background: #94a3b8; }
+.rd-f-cloudUsage  { background: #ef4444; }
+
+.rd-summary {
   display: flex;
   flex-direction: column;
-  gap: 0.18rem;
-  padding: 0.5rem 0.65rem;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
   min-width: 0;
 }
 
-/*
-  Row layout: label | note (flex:1, truncated) | value (right)
-  All three on one line, note soaks up spare space.
-*/
-.rationale-row {
+.rd-profile {
   display: flex;
-  align-items: baseline;
-  gap: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.rd-profile-reason {
   font-size: 0.72rem;
-  min-width: 0;
-}
-
-.rationale-label {
   color: var(--muted);
-  white-space: nowrap;
-  flex-shrink: 0;
+  margin-right: 0.2rem;
 }
 
-.rationale-note {
-  font-size: 0.67rem;
-  color: rgba(122, 133, 163, 0.5);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
+.rd-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
   min-width: 0;
-  padding-left: 0.35rem;
+  overflow-wrap: anywhere;
 }
 
-.rationale-value {
+.rd-verdict-main strong { font-weight: 600; }
+
+.rd-verdict-why {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.rd-verdict-why strong { color: var(--text); font-weight: 500; }
+
+.rd-weights {
+  display: flex;
+  height: 6px;
+  gap: 2px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.rd-weight-seg { min-width: 2px; }
+
+.rd-weight-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.7rem;
+  font-size: 0.67rem;
+  color: var(--muted);
+}
+
+.rd-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.rd-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Candidates × factors */
+.rd-matrix-wrap {
+  overflow-x: auto;
+  margin-bottom: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 9px;
+}
+
+.rd-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rd-matrix th,
+.rd-matrix td {
+  padding: 0.28rem 0.5rem;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.rd-matrix td {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.rd-matrix thead th {
+  vertical-align: bottom;
+  font-weight: 500;
+}
+
+.rd-matrix .rd-row-label {
+  position: sticky;
+  left: 0;
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.rd-col-model { color: var(--text); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.rd-col-host  { color: rgba(122, 133, 163, 0.55); font-size: 0.62rem; font-weight: 400; }
+
+.rd-matrix .rd-col-winner { background: rgba(79, 152, 163, 0.1); }
+
+.rd-total-row th,
+.rd-total-row td {
+  border-bottom: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rd-total-row td.rd-col-winner { color: #4f98a3; }
+
+/* Per-candidate detail */
+.rd-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.7rem;
+  min-width: 0;
+}
+
+.rd-rank {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.rd-factor { min-width: 0; }
+
+.rd-factor-head {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) 1fr 3.4rem 3.4rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.74rem;
+}
+
+.rd-factor-label { color: var(--text); }
+
+.rd-meter {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.rd-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  opacity: 0.85;
+}
+
+.rd-factor-pts,
+.rd-factor-delta {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.72rem;
-  color: var(--text);
   text-align: right;
   font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-  padding-left: 0.5rem;
 }
 
-.rationale-value.good { color: #6ee7b7; }
-.rationale-value.bad  { color: #f87171; }
+.rd-factor-delta { font-size: 0.66rem; opacity: 0.8; }
 
-.rationale-row--total {
-  margin-top: 0.2rem;
-  padding-top: 0.2rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+.rd-factor-detail {
+  margin-top: 0.1rem;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: rgba(122, 133, 163, 0.85);
+  overflow-wrap: anywhere;
 }
 
-.rationale-row--total .rationale-label {
-  font-weight: 600;
-  color: var(--text);
+.rd-factor-calc { color: rgba(122, 133, 163, 0.5); white-space: nowrap; }
+
+.rd-src {
+  display: inline-block;
+  padding: 0 0.35rem;
+  margin-right: 0.3rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
 }
 
-.rationale-row--total .rationale-value {
-  font-weight: 600;
-  color: #4f98a3;
+.rd-src-measured  { background: rgba(110, 231, 183, 0.14); color: #6ee7b7; }
+.rd-src-blended   { background: rgba(96, 165, 250, 0.14);  color: #60a5fa; }
+.rd-src-estimated { background: rgba(251, 191, 36, 0.14);  color: #fbbf24; }
+
+.rd-factor-total {
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.rd-factor-total .rd-factor-label,
+.rd-factor-total .rd-factor-pts { font-weight: 600; }
+
+.rd-factor-total .rd-factor-pts { color: #4f98a3; }
+
+.cand-gap {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ─── Legacy routing path (kept for compat) ──────────── */
@@ -1405,4 +1581,10 @@
     max-width: 150px;
     max-height: 150px;
   }
+}
+
+.audio-preview audio {
+  width: 100%;
+  height: 2.5rem;
+  display: block;
 }

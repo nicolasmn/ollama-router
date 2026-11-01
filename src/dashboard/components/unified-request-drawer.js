@@ -8,7 +8,9 @@ import {
   formatRetryHint,
   renderFlagBadges,
   renderConversationThread,
+  renderDecisionSummary,
   renderRoutingRationale,
+  renderScoreMatrix,
   routeTarget,
 } from './dashboard-utils.js'
 
@@ -156,10 +158,14 @@ export class UnifiedRequestDrawer extends LitElement {
     }
 
     const scoreDetail = candidate?.rationale
-      ? renderRoutingRationale(candidate)
+      ? renderRoutingRationale(candidate, this.request?.candidates?.[0])
       : score !== null
         ? html`<div class="cand-score-only">${score.toFixed(1)}</div>`
         : ''
+    const gap = candidate?.rationale?.ranking
+    const trailing = gap && gap.rank > 1 && gap.gap < 0
+      ? html`<span class="rd-neg cand-gap" title="Deficit to the top-ranked candidate">−${Math.abs(gap.gap).toFixed(1)}</span>`
+      : ''
 
     return html`
       <div class="cand-card ${isWinner ? 'winner' : ''} ${isOpen ? 'open' : ''}">
@@ -182,6 +188,7 @@ export class UnifiedRequestDrawer extends LitElement {
                 ? html`<span class="cand-score-label">score</span>
                        <span class="cand-score-val ${isWinner ? 'winner' : ''}">${score.toFixed(1)}</span>`
                 : ''}
+              ${trailing}
               <span class="cand-expand">▸</span>
             </div>
           </div>
@@ -278,6 +285,8 @@ export class UnifiedRequestDrawer extends LitElement {
             ? html`<span class="section-count">${rows.length} candidates</span>`
             : ''}
         </div>
+        ${renderDecisionSummary(candidates)}
+        ${renderScoreMatrix(candidates, candidates[0] ? this.candidateKey(candidates[0].modelName, candidates[0].nodeHost) : '')}
         <div class="candidate-list">
           ${rows.map(({ candidate, attempt }, rowIndex) => {
             const modelName = candidate?.modelName ?? attempt?.modelName

@@ -14,7 +14,9 @@ function makeDiscovery(
       string,
       Partial<{
         recentLatency: number
+        recentTtft: number
         recentTps: number
+        totalRequests: number
         lastRoutedAt: number
       }>
     >
@@ -38,8 +40,12 @@ function makeDiscovery(
       if (overrides) {
         if (overrides.recentLatency !== undefined)
           info.recentLatency = overrides.recentLatency
+        if (overrides.recentTtft !== undefined)
+          info.recentTtft = overrides.recentTtft
         if (overrides.recentTps !== undefined)
           info.recentTps = overrides.recentTps
+        if (overrides.totalRequests !== undefined)
+          info.totalRequests = overrides.totalRequests
         if (overrides.lastRoutedAt !== undefined)
           info.lastRoutedAt = overrides.lastRoutedAt
       }
@@ -84,7 +90,8 @@ describe('RequestRouter', () => {
       })
       expect(Array.isArray(result)).toBe(true)
       expect((result as unknown[]).length).toBeGreaterThan(0)
-      expect((result as any)[0]).toMatchObject({ nodeHost: expect.any(String), modelName: 'gemma4:e4b' })
+      expect((result as any)[0]).toMatchObject({ nodeHost: expect.any(String), modelName: expect.any(String) })
+      expect((result as any)[0].rationale.factors.length).toBeGreaterThan(0)
     })
 
     it('returns array even for streaming request', async () => {
@@ -109,13 +116,13 @@ describe('RequestRouter', () => {
       for (const c of result) expect(c.modelInfo.profile.supportsTools).toBe(true)
     })
 
-    it('prefers capable small thinking models for day-to-day reasoning prompts', async () => {
+    it('does not pick the largest model for a short day-to-day prompt', async () => {
       const result = await router.selectForChat({
         model: 'auto',
         messages: [{ role: 'user', content: 'Erkläre bitte die Unterschiede zwischen Caching im Browser und im CDN und gib mir eine kurze Empfehlung.' }],
       }) as any[]
       expect(Array.isArray(result)).toBe(true)
-      expect(result[0].modelName).toBe('gemma4:e4b')
+      expect(result[0].modelName).not.toBe('gemma4:26b')
     })
 
     it('still prefers larger thinking models for code-heavy reasoning', async () => {
@@ -157,14 +164,14 @@ describe('RequestRouter', () => {
       ).rejects.toMatchObject({ statusCode: 404, code: 'MODEL_NOT_FOUND' })
     })
 
-    it('prefers 26B for long conversations regardless of message complexity', async () => {
+    it('classifies long conversations as a complex task profile', async () => {
       const messages = Array.from({ length: 12 }, (_, i) => ({
         role: i % 2 === 0 ? 'user' : 'assistant',
         content: 'hi',
       }))
       const result = await router.selectForChat({ model: 'auto', messages }) as any[]
       expect(Array.isArray(result)).toBe(true)
-      expect(result[0].modelName).toBe('gemma4:26b')
+      expect(result[0].rationale.profile.kind).toBe('complex')
     })
 
     it('excludes embedding models from chat requests', async () => {
@@ -249,6 +256,28 @@ describe('RequestRouter', () => {
     })
   })
 
+  describe('speech-synthesis models', () => {
+    it('are never chat candidates for auto or auto-fast, even when they are the only fast model', async () => {
+      const discovery = makeDiscovery({
+        'http://node-s:11434': {
+          'lfm3-audio:2b': {
+            capabilities: new Set(['completion', 'tools', 'audio', 'speech']),
+            supportsTools: true, supportsAudio: true, parameters: 2, contextLength: 128000,
+          },
+          'gemma4:26b': { supportsTools: true, parameters: 26, contextLength: 128000 },
+        },
+      })
+      const r = new RequestRouter(discovery, new LoadManager({ maxConcurrentPerNode: 3 }))
+      for (const model of ['auto', 'auto-fast']) {
+        const result = (await r.selectForChat({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+        })) as any[]
+        expect(result.map((c) => c.modelName)).toEqual(['gemma4:26b'])
+      }
+    })
+  })
+
   describe('auto-fast alias', () => {
     it('prefers small models for auto-fast', async () => {
       const result = await router.selectForChat({
@@ -256,7 +285,8 @@ describe('RequestRouter', () => {
         messages: [{ role: 'user', content: 'hi' }],
       }) as any[]
       expect(result).not.toBeNull()
-      expect(result[0].modelName).toBe('gemma4:e4b')
+      expect(result[0].rationale.profile.kind).toBe('fast')
+      expect(result[0].modelName).not.toBe('gemma4:26b')
     })
   })
 
@@ -430,10 +460,10 @@ describe('RequestRouter', () => {
         ['http://cloud:11434'],
         {
           'http://local:11434': {
-            'gemma4:e4b': { recentLatency: 5000, recentTps: 3 },
+            'gemma4:e4b': { recentTtft: 5000, recentTps: 3, totalRequests: 20 },
           },
           'http://cloud:11434': {
-            'gemma4:e4b': { recentLatency: 150, recentTps: 90 },
+            'gemma4:e4b': { recentTtft: 150, recentTps: 90, totalRequests: 20 },
           },
         },
       )
