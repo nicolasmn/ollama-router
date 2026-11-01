@@ -40,6 +40,16 @@ export class ModelProfile {
     this.architecture = data.architecture ?? ''
     this.embeddingDim = data.embeddingDim ?? 0
   }
+
+  /** Speech-synthesis (TTS) model: only serves /v1/audio/speech, never text chat. */
+  get isSpeechSynthesis(): boolean {
+    return this.capabilities.has('speech')
+  }
+
+  /** True when the model can answer text chat / completion requests. */
+  get isChatCapable(): boolean {
+    return !this.isEmbedding && !this.supportsDecision && !this.isSpeechSynthesis
+  }
 }
 
 export interface ModelInfoJSON {

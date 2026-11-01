@@ -451,7 +451,7 @@ function firstReachableNode(discoveryManager: DiscoveryManager): string | null {
   return null
 }
 
-export function findNodeForModel(
+function findNodeForModel(
   discoveryManager: DiscoveryManager,
   modelName: string,
 ): string | null {

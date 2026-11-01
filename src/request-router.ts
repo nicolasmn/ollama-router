@@ -4,12 +4,21 @@ import type { AnalysisResult } from './request-analyzer.js'
 import { createLogger } from './logger.js'
 import type { DiscoveryManager } from './discovery-manager.js'
 import type { LoadManager } from './load-manager.js'
-import type { ModelInfo } from './models.js'
+import type { ModelInfo, NodeInfo } from './models.js'
 import { forceModelStore } from './force-model-store.js'
 import { disabledModelsStore } from './disabled-models-store.js'
 import { ROUTER_FALLBACK_TO_AUTO } from './config.js'
 import { cloudUsageStore } from './cloud-usage.js'
-import type { CloudUsage } from './cloud-usage.js'
+import {
+  NEUTRAL_ANALYSIS,
+  TaskProfile,
+  annotateRanking,
+  cloudUsagePressure,
+  computeWarmSignal,
+  fitsContext,
+  scoreCandidate,
+} from './routing-score.js'
+import type { ScoreBreakdown } from './routing-score.js'
 
 const logger = createLogger('router')
 
@@ -20,32 +29,6 @@ export const VIRTUAL_MODELS = new Set<string>([
   'auto-think',
   'auto-local',
 ])
-
-/**
- * Small preference bonus for local nodes over cloud candidates.
- * Cloud nodes compete on measured latency/TPS merit and win when materially faster or better.
- * Only overridden by `auto-local` which excludes cloud entirely.
- */
-const CLOUD_COST_PREFERENCE = 8
-
-/**
- * Maximum load penalty points at 100 % node utilisation.
- * Scaled by getUtilization() so partially-loaded nodes receive proportional penalties.
- */
-const LOAD_PENALTY_MAX = 15
-
-/** TTFT score scale: latency score loses 1 point per TTFT_PENALTY_SCALE_MS ms. */
-const TTFT_PENALTY_SCALE_MS = 150
-
-/** Bonus when a model is the most recently active on its node (likely warm in VRAM). */
-const WARM_MODEL_BONUS = 8
-
-/** Penalty when a different model was more recently active on the same node (likely needs loading). */
-const MODEL_SWITCH_PENALTY = 5
-
-const WARM_RECENT_MS = 2 * 60 * 1000    // < 2 min → full warm bonus
-const WARM_ACTIVE_MS = 5 * 60 * 1000    // < 5 min → half warm bonus
-const WARM_INACTIVE_MS = 10 * 60 * 1000 // < 10 min → small warm signal
 
 const STALE_SCAN_THRESHOLD_MS = 5 * 60 * 1000
 
@@ -127,79 +110,13 @@ const WOL_WAIT_TIMEOUT_MS = 30_000
 /** Polling interval (ms) while waiting for a WoL-triggered node. */
 const WOL_POLL_INTERVAL_MS = 1_000
 
-/**
- * Computes a warm-model bias for a candidate on a given node.
- * Returns a positive bonus when this model is likely warm in VRAM, or a negative
- * penalty when a different model was more recently active and the node probably
- * needs to evict the old one before loading this one.
- *
- * Cloud nodes are stateless from the router's perspective — they handle model
- * loading internally — so warm/cold VRAM state does not apply.
- */
-function computeWarmBonus(model: ModelInfo, nodeModels: Map<string, ModelInfo>, isCloud: boolean): number {
-  if (isCloud) return 0
-
-  const now = Date.now()
-
-  let mostRecentlyRouted: ModelInfo | null = null
-  let maxRoutedAt = 0
-  for (const m of nodeModels.values()) {
-    if (m.lastRoutedAt > maxRoutedAt) {
-      maxRoutedAt = m.lastRoutedAt
-      mostRecentlyRouted = m
-    }
-  }
-
-  if (mostRecentlyRouted === null || maxRoutedAt === 0) return 0
-
-  const recentModelAge = now - maxRoutedAt
-
-  if (mostRecentlyRouted === model) {
-    const age = now - model.lastRoutedAt
-    if (age < WARM_RECENT_MS) return WARM_MODEL_BONUS
-    if (age < WARM_ACTIVE_MS) return Math.round(WARM_MODEL_BONUS / 2)
-    if (age < WARM_INACTIVE_MS) return 2
-    return 0
-  }
-
-  if (recentModelAge < WARM_ACTIVE_MS) return -MODEL_SWITCH_PENALTY
-  return 0
-}
-
-/**
- * Dynamic cloud penalty based on current usage percentage.
- * Ramps from 0 → 20 as usage crosses 70 % → 100 %.
- */
-export function computeCloudUsagePenalty(usage: CloudUsage | null): number {
-  if (!usage || usage.stale || usage.fetchedAt === 0) return 0
-  const pct = Math.max(usage.sessionPct, usage.weeklyPct)
-  if (pct < 70) return 0
-  return Math.round(((pct - 70) / 30) * 20)
-}
-
-export interface RoutingRationale {
-  latencyScore: number
-  tpsScore: number
-  sizeFit: number
-  warmBonus: number
-  loadPenalty: number
-  /** Fixed local-preference penalty, always −CLOUD_COST_PREFERENCE for cloud candidates (0 for local). */
-  cloudCostPenalty: number
-  /** Dynamic usage penalty, ramps 0 → 20 as cloud usage crosses 70 % → 100 %. */
-  cloudUsagePenalty: number
-  thinkingBonus: number
-  contextMargin: number
-  totalScore: number
-  sizeReason: string
-}
-
 export interface RoutingCandidate {
   nodeHost: string
   modelName: string
   modelInfo: ModelInfo
   score: number
   forcedModel?: boolean
-  rationale?: RoutingRationale
+  rationale?: ScoreBreakdown
 }
 
 export interface ModelCatalogEntry {
@@ -527,32 +444,15 @@ export class RequestRouter {
     // Virtual alias (or unknown) → best capable model, honouring reachability,
     // node load and the usual latency/TPS/warm scoring.
     const candidates: RoutingCandidate[] = []
-    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    const pressure = cloudUsagePressure(cloudUsageStore.get())
+    const audioProfile = TaskProfile.from(finalAnalysis, requestedModel)
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
       if (!this.load.canAcceptRequest(nodeHost)) continue
       for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
         if (!this._modelHasCapability(modelInfo, capability, taskType)) continue
-        const scored = this._scoreModel(modelInfo, finalAnalysis, requestedModel, nodeHost)
-        const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
-        const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-        const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
-        const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
-        const rationale: RoutingRationale = {
-          latencyScore: scored.latencyScore,
-          tpsScore: scored.tpsScore,
-          sizeFit: scored.sizeFit,
-          warmBonus,
-          loadPenalty: scored.loadPenalty,
-          cloudCostPenalty,
-          cloudUsagePenalty,
-          thinkingBonus: scored.thinkingBonus,
-          contextMargin: scored.contextMargin,
-          totalScore: score,
-          sizeReason: scored.sizeReason,
-        }
-        candidates.push({ nodeHost, modelName, modelInfo, score, rationale })
+        candidates.push(this._buildCandidate(nodeHost, node, modelName, modelInfo, finalAnalysis, audioProfile, pressure))
       }
     }
 
@@ -575,30 +475,7 @@ export class RequestRouter {
           for (const [modelName, modelInfo] of node.models) {
             if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
             if (!this._modelHasCapability(modelInfo, capability, taskType)) continue
-            const scored = this._scoreModel(modelInfo, finalAnalysis, requestedModel, nodeHost)
-            const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
-            const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-            const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
-            const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
-            candidates.push({
-              nodeHost,
-              modelName,
-              modelInfo,
-              score,
-              rationale: {
-                latencyScore: scored.latencyScore,
-                tpsScore: scored.tpsScore,
-                sizeFit: scored.sizeFit,
-                warmBonus,
-                loadPenalty: scored.loadPenalty,
-                cloudCostPenalty,
-                cloudUsagePenalty,
-                thinkingBonus: scored.thinkingBonus,
-                contextMargin: scored.contextMargin,
-                totalScore: score,
-                sizeReason: scored.sizeReason,
-              },
-            })
+            candidates.push(this._buildCandidate(nodeHost, node, modelName, modelInfo, finalAnalysis, audioProfile, pressure))
           }
         }
       }
@@ -615,6 +492,7 @@ export class RequestRouter {
       )
     }
     candidates.sort((a, b) => b.score - a.score)
+    annotateRanking(candidates)
     logger.debug(
       candidates.slice(0, 3).map((c) => ({
         model: c.modelName,
@@ -654,7 +532,7 @@ export class RequestRouter {
       if (alias === 'auto-local' && node.cloud) continue
       for (const [, modelInfo] of node.models) {
         const { profile } = modelInfo
-        if (profile.isEmbedding) continue
+        if (profile.isEmbedding || profile.isSpeechSynthesis) continue
         if (alias === 'auto-think' && !profile.supportsThinking) continue
         const ctx = profile.contextLength || 0
         if (ctx > 0 && ctx < min) min = ctx
@@ -865,7 +743,8 @@ export class RequestRouter {
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
-    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    const pressure = cloudUsagePressure(cloudUsageStore.get())
+    const profile = TaskProfile.from(analysis, alias)
     const { decisionOnly = false, maxCriteria = 0 } = options
 
     for (const [nodeHost, node] of nodes) {
@@ -875,47 +754,33 @@ export class RequestRouter {
 
       for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(nodeHost, modelName)) continue
-        const { profile } = modelInfo
+        const { profile: caps } = modelInfo
         if (decisionOnly) {
-          if (!profile.supportsDecision) continue
+          if (!caps.supportsDecision) continue
           // Skip decision models whose learned criteria cap can't fit this
           // request (e.g. nimble caps at 26) — they would 400 upstream.
           if (maxCriteria > 0 && modelInfo.systemoneMaxCriteria > 0 && maxCriteria > modelInfo.systemoneMaxCriteria) continue
-        } else if (profile.supportsDecision) {
+        } else if (caps.supportsDecision) {
           continue
         }
         if (analysis.needsEmbeddings) {
-          if (!profile.isEmbedding) continue
+          if (!caps.isEmbedding) continue
         } else {
-          if (profile.isEmbedding) continue
+          // Embedding and speech-synthesis models never serve text chat.
+          if (caps.isEmbedding || caps.isSpeechSynthesis) continue
         }
-        if (analysis.needsTools && !profile.supportsTools) continue
-        if (analysis.needsVision && !profile.supportsVision) continue
-        if (alias === 'auto-think' && !profile.supportsThinking) continue
-        const scored = this._scoreModel(modelInfo, analysis, alias, nodeHost)
-        const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
-        const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-        const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
-        const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
-        const rationale: RoutingRationale = {
-          latencyScore: scored.latencyScore,
-          tpsScore: scored.tpsScore,
-          sizeFit: scored.sizeFit,
-          warmBonus,
-          loadPenalty: scored.loadPenalty,
-          cloudCostPenalty,
-          cloudUsagePenalty,
-          thinkingBonus: scored.thinkingBonus,
-          contextMargin: scored.contextMargin,
-          totalScore: score,
-          sizeReason: scored.sizeReason,
-        }
-        candidates.push({ nodeHost, modelName, modelInfo, score, rationale })
+        if (analysis.needsTools && !caps.supportsTools) continue
+        if (analysis.needsVision && !caps.supportsVision) continue
+        if (analysis.needsAudio && !caps.supportsAudio) continue
+        if (alias === 'auto-think' && !caps.supportsThinking) continue
+        if (!fitsContext(caps.contextLength, analysis)) continue
+        candidates.push(this._buildCandidate(nodeHost, node, modelName, modelInfo, analysis, profile, pressure))
       }
     }
 
     if (candidates.length === 0) return null
     candidates.sort((a, b) => b.score - a.score)
+    annotateRanking(candidates)
     logger.debug(
       candidates.slice(0, 3).map((c) => ({
         model: c.modelName,
@@ -933,7 +798,10 @@ export class RequestRouter {
   ): RoutingCandidate[] | null {
     const nodes = this.discovery.getNodes()
     const candidates: RoutingCandidate[] = []
-    const usagePenalty = computeCloudUsagePenalty(cloudUsageStore.get())
+    const pressure = cloudUsagePressure(cloudUsageStore.get())
+    // A concrete model is fixed, so only node-level factors (speed, load, warmth,
+    // cloud) separate the candidates; rank them under a neutral chat profile.
+    const profile = TaskProfile.from(NEUTRAL_ANALYSIS, 'auto')
     const { decisionOnly = false, maxCriteria = 0 } = options
 
     for (const [nodeHost, node] of nodes) {
@@ -948,25 +816,7 @@ export class RequestRouter {
       } else if (modelInfo.profile.supportsDecision) {
         continue
       }
-      const scored = this._scoreModel(modelInfo, { preferFast: false } as AnalysisResult, 'auto', nodeHost)
-      const warmBonus = computeWarmBonus(modelInfo, node.models, node.cloud)
-      const cloudCostPenalty = node.cloud ? -CLOUD_COST_PREFERENCE : 0
-      const cloudUsagePenalty = node.cloud ? -usagePenalty : 0
-      const score = scored.baseScore + warmBonus + cloudCostPenalty + cloudUsagePenalty
-      const rationale: RoutingRationale = {
-        latencyScore: scored.latencyScore,
-        tpsScore: scored.tpsScore,
-        sizeFit: scored.sizeFit,
-        warmBonus,
-        loadPenalty: scored.loadPenalty,
-        cloudCostPenalty,
-        cloudUsagePenalty,
-        thinkingBonus: scored.thinkingBonus,
-        contextMargin: scored.contextMargin,
-        totalScore: score,
-        sizeReason: scored.sizeReason,
-      }
-      candidates.push({ nodeHost, modelName: model, modelInfo, score, rationale })
+      candidates.push(this._buildCandidate(nodeHost, node, model, modelInfo, NEUTRAL_ANALYSIS, profile, pressure))
     }
 
     if (candidates.length === 0) {
@@ -997,6 +847,7 @@ export class RequestRouter {
     }
 
     candidates.sort((a, b) => b.score - a.score)
+    annotateRanking(candidates)
     logger.debug(
       candidates.slice(0, 3).map((c) => ({
         model: c.modelName,
@@ -1008,121 +859,25 @@ export class RequestRouter {
     return candidates
   }
 
-  private _scoreModel(
-    modelInfo: ModelInfo,
-    requirements: AnalysisResult,
-    alias: string,
+  /** Single scoring entry point: every candidate list is built through here. */
+  private _buildCandidate(
     nodeHost: string,
-  ): {
-    baseScore: number
-    latencyScore: number
-    tpsScore: number
-    contextMargin: number
-    loadPenalty: number
-    sizeFit: number
-    thinkingBonus: number
-    sizeReason: string
-  } {
-    const { profile } = modelInfo
-    const params = profile.parameters || 0
-    const contextLength = profile.contextLength || 4096
-    const messageCount = requirements.messageCount || 0
-    const estimatedTokens = requirements.estimatedInputTokens || 0
-
-    // Prefer the real first-token latency; fall back to the legacy whole-
-    // response duration (persisted data from before TTFT was measured),
-    // scored on its own wall-clock scale until TTFT overwrites it.
-    const legacyLatencyScore =
-      modelInfo.recentLatency > 0 ? Math.max(0, 20 - modelInfo.recentLatency / 500) : 10
-    const latencyScore = modelInfo.recentTtft > 0
-      ? Math.max(0, 20 - modelInfo.recentTtft / TTFT_PENALTY_SCALE_MS)
-      : legacyLatencyScore
-    const tpsScore = modelInfo.recentTps
-      ? Math.min(10, modelInfo.recentTps / 5)
-      : 5
-    const baseScore = latencyScore + tpsScore
-
-    const contextMargin =
-      contextLength > estimatedTokens * 2
-        ? 5
-        : contextLength > estimatedTokens
-          ? 2
-          : 0
-
-    const loadPenalty = this.load.getUtilization(nodeHost) * LOAD_PENALTY_MAX
-
-    let sizeFit = 0
-    let sizeReason: string
-    if (alias === 'auto-fast' || requirements.preferFast) {
-      if (params >= 3 && params <= 9) {
-        sizeFit += 14
-        sizeReason = 'fast path: medium model (3–9B)'
-      } else if (params > 0 && params < 3) {
-        sizeFit += 12
-        sizeReason = 'fast path: tiny model (<3B)'
-      } else {
-        sizeFit += 1
-        sizeReason = 'fast path: large model (fallback)'
-      }
-    } else if (requirements.preferReasoning) {
-      if (params >= 20) {
-        sizeFit += 10
-        sizeReason = 'reasoning: very large model (≥20B)'
-      } else if (params >= 10) {
-        sizeFit += 5
-        sizeReason = 'reasoning: large model (10–20B)'
-      } else {
-        sizeFit += 1
-        sizeReason = 'reasoning: small model (fallback)'
-      }
-      if (profile.supportsThinking) {
-        sizeFit += 6
-        sizeReason += ' · thinking'
-      }
-    } else if (requirements.hasCodeSignals || messageCount > 10) {
-      if (params >= 20 && params <= 35) {
-        sizeFit += 14
-        sizeReason = 'code / long chat: 20–35B model'
-      } else if (params >= 10) {
-        sizeFit += 6
-        sizeReason = 'code / long chat: ≥10B model'
-      } else {
-        sizeFit += 1
-        sizeReason = 'code / long chat: small model (fallback)'
-      }
-    } else {
-      if (params >= 3 && params <= 8) {
-        sizeFit += 12
-        sizeReason = 'general chat: 3–8B model'
-      } else if (params > 0 && params < 3) {
-        sizeFit += 7
-        sizeReason = 'general chat: tiny model (<3B)'
-      } else if (params <= 15) {
-        sizeFit += 6
-        sizeReason = 'general chat: mid model (<=15B)'
-      } else {
-        sizeFit += 2
-        sizeReason = 'general chat: large model (fallback)'
-      }
-    }
-
-    const thinkingBonus = profile.supportsThinking
-      ? requirements.preferReasoning
-        ? 0
-        : requirements.preferFast || alias === 'auto-fast'
-          ? 6
-          : 0
-      : 0
-
-    return {
-      baseScore: baseScore + contextMargin + sizeFit + thinkingBonus - loadPenalty,
-      latencyScore,
-      tpsScore,
-      contextMargin,
-      loadPenalty,
-      sizeFit,
-      thinkingBonus,
-      sizeReason,
-    }
+    node: NodeInfo,
+    modelName: string,
+    modelInfo: ModelInfo,
+    analysis: AnalysisResult,
+    profile: TaskProfile,
+    pressure: number,
+  ): RoutingCandidate {
+    const rationale = scoreCandidate({
+      modelInfo,
+      profile,
+      analysis,
+      isCloud: node.cloud,
+      utilization: this.load.getUtilization(nodeHost),
+      warm: computeWarmSignal(modelInfo, node.models, node.cloud),
+      cloudUsagePressure: pressure,
+    })
+    return { nodeHost, modelName, modelInfo, score: rationale.total, rationale }
   }
 }

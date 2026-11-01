@@ -588,9 +588,10 @@ export class DiscoveryManager {
     for (const modelInfo of node.models.values()) {
       const { profile } = modelInfo
       if (analysis.needsEmbeddings && !profile.isEmbedding) continue
-      if (!analysis.needsEmbeddings && profile.isEmbedding) continue
+      if (!analysis.needsEmbeddings && (profile.isEmbedding || profile.isSpeechSynthesis)) continue
       if (analysis.needsTools && !profile.supportsTools) continue
       if (analysis.needsVision && !profile.supportsVision) continue
+      if (analysis.needsAudio && !profile.supportsAudio) continue
       if (model === 'auto-think' && !profile.supportsThinking) continue
       return true
     }

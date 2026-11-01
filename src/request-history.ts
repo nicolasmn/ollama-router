@@ -1,9 +1,10 @@
 // request-history.ts - Tracks recent requests for dashboard inspection
 import { createHash } from 'node:crypto'
+import type { ScoreBreakdown } from './routing-score.js'
 
 const DEFAULT_LIMIT = 40
 const MAX_ATTEMPTS = 8
-const MAX_CANDIDATES = 3
+const MAX_CANDIDATES = 6
 const ACTIVE_ATTEMPT_STATUSES = new Set(['waiting', 'running'])
 
 // Retention budgeting. The dashboard history used to copy the entire inbound
@@ -22,22 +23,6 @@ const MAX_CAPTURED_THINKING_CHARS = 32_000
 const MAX_TOOL_ARGUMENT_CHARS = 16_000
 const MAX_PREVIEW_CHARS = 4_000
 
-export interface CandidateRationale {
-  latencyScore: number
-  tpsScore: number
-  sizeFit: number
-  warmBonus: number
-  loadPenalty: number
-  /** Fixed local-preference penalty, always −CLOUD_COST_PREFERENCE for cloud candidates (0 for local). */
-  cloudCostPenalty: number
-  /** Dynamic usage penalty, ramps 0 → 20 as cloud usage crosses 70 % → 100 %. */
-  cloudUsagePenalty: number
-  thinkingBonus: number
-  contextMargin: number
-  totalScore: number
-  sizeReason: string
-}
-
 export interface AttemptRecord {
   nodeHost: string
   modelName: string
@@ -52,7 +37,7 @@ export interface CandidateSummary {
   nodeHost: string
   modelName: string
   score: number | null
-  rationale?: CandidateRationale | null
+  rationale?: ScoreBreakdown | null
 }
 
 /** Server-side reference to a captured audio payload for dashboard playback. */
@@ -729,32 +714,17 @@ function summariseCandidate(candidate: {
   nodeHost: string
   modelName: string
   score?: number
-  rationale?: CandidateRationale | null
+  rationale?: ScoreBreakdown | null
 }): CandidateSummary {
   const scoreValue =
     typeof candidate.score === 'number'
       ? Math.round(candidate.score * 100) / 100
       : null
-  const rationale = candidate.rationale
-    ? {
-        latencyScore: candidate.rationale.latencyScore,
-        tpsScore: candidate.rationale.tpsScore,
-        sizeFit: candidate.rationale.sizeFit,
-        warmBonus: candidate.rationale.warmBonus,
-        loadPenalty: candidate.rationale.loadPenalty,
-        cloudCostPenalty: candidate.rationale.cloudCostPenalty,
-        cloudUsagePenalty: candidate.rationale.cloudUsagePenalty,
-        thinkingBonus: candidate.rationale.thinkingBonus,
-        contextMargin: candidate.rationale.contextMargin,
-        totalScore: candidate.rationale.totalScore,
-        sizeReason: candidate.rationale.sizeReason,
-      }
-    : null
   return {
     nodeHost: candidate.nodeHost,
     modelName: candidate.modelName,
     score: scoreValue,
-    rationale,
+    rationale: candidate.rationale ?? null,
   }
 }
 
@@ -928,7 +898,7 @@ export class RequestHistoryManager {
       nodeHost: string
       modelName: string
       score?: number
-      rationale?: CandidateRationale | null
+      rationale?: ScoreBreakdown | null
     }>,
   ): void {
     const entry = this.#findRequest(requestId)
