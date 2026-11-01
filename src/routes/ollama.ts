@@ -88,9 +88,19 @@ export function setupOllamaRoutes(
 
   app.post('/api/show', async (req, res) => {
     const { body } = await readJsonBody(req)
-    const { name } = body as { name?: string }
-    if (!name || typeof name !== 'string') {
-      return res.status(400).json({ error: 'name is required' })
+    // Ollama's current native API names the model field `model` (the `name`
+    // field is only a deprecated alias) — accept both so OpenCode, which sends
+    // `{ model: ... }`, and legacy clients, which send `{ name: ... }`, resolve
+    // the same way.
+    const raw = body as { name?: string; model?: string }
+    const name =
+      typeof raw.model === 'string' && raw.model
+        ? raw.model
+        : typeof raw.name === 'string' && raw.name
+          ? raw.name
+          : ''
+    if (!name) {
+      return res.status(400).json({ error: 'model is required' })
     }
 
     if (VIRTUAL_MODELS.has(name)) {
