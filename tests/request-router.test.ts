@@ -295,6 +295,33 @@ describe('RequestRouter', () => {
       const gemmaEntries = catalog.filter((m) => m.id === 'gemma4:26b')
       expect(gemmaEntries.length).toBe(1)
     })
+
+    it('includes models hosted on offline (sleeping) nodes', () => {
+      const discovery = makeDiscovery({
+        'http://node-a:11434': {
+          'gemma4:e4b': { supportsTools: true, parameters: 4, contextLength: 8192 },
+        },
+      })
+      const node = discovery.getNodes().get('http://node-a:11434')!
+      node.reachable = false
+      const offlineRouter = new RequestRouter(discovery, loadManager)
+      const catalog = offlineRouter.getModelCatalog()
+      expect(catalog.map((m) => m.id)).toContain('gemma4:e4b')
+    })
+
+    it('computes virtual alias context from offline nodes too', () => {
+      const discovery = makeDiscovery({
+        'http://node-a:11434': {
+          'small:3b': { parameters: 3, contextLength: 8192, supportsTools: true },
+        },
+      })
+      const node = discovery.getNodes().get('http://node-a:11434')!
+      node.reachable = false
+      const offlineRouter = new RequestRouter(discovery, loadManager)
+      const catalog = offlineRouter.getModelCatalog()
+      const alias = catalog.find((m) => m.id === 'auto')!
+      expect(alias.context_length).toBe(8192)
+    })
   })
 
   describe('cloud routing', () => {

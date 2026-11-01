@@ -6,7 +6,7 @@ import { setupOllamaRoutes } from '../src/routes/ollama.js'
 import { ModelInfo, ModelProfile, type NodeInfo } from '../src/models.js'
 import type { DiscoveryManager } from '../src/discovery-manager.js'
 
-function createDiscoveryManager() {
+function createDiscoveryManager(reachable: boolean) {
   const profile = new ModelProfile({
     capabilities: new Set(['completion', 'tools', 'vision']),
     contextLength: 131_072,
@@ -18,7 +18,7 @@ function createDiscoveryManager() {
   const modelInfo = new ModelInfo('gemma3:4b', 'gemma3', 5_000_000_000, profile)
   const node = {
     host: 'http://127.0.0.1:1234',
-    reachable: true,
+    reachable,
     lastSeen: Date.now(),
     failures: 0,
     lastFailure: 0,
@@ -40,7 +40,7 @@ async function startServer(app: Express): Promise<string> {
   return `http://127.0.0.1:${port}`
 }
 
-describe('POST /api/show (OpenCode model discovery)', () => {
+describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
   let baseUrl: string
   let server: http.Server
 
@@ -49,13 +49,16 @@ describe('POST /api/show (OpenCode model discovery)', () => {
       await new Promise<void>((r) => server.close(() => r()))
   })
 
-  it('resolves the model from the OpenAI-style `model` field', async () => {
+  async function start(reachable: boolean) {
     const app: Express = express()
     app.use(express.json())
-    setupOllamaRoutes(app, createDiscoveryManager())
+    setupOllamaRoutes(app, createDiscoveryManager(reachable))
     server = http.createServer(app)
     baseUrl = await startServer(app)
+  }
 
+  it('resolves the model from the OpenAI-style `model` field', async () => {
+    await start(true)
     const response = await fetch(`${baseUrl}/api/show`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -71,12 +74,7 @@ describe('POST /api/show (OpenCode model discovery)', () => {
   })
 
   it('still resolves the legacy `name` field', async () => {
-    const app: Express = express()
-    app.use(express.json())
-    setupOllamaRoutes(app, createDiscoveryManager())
-    server = http.createServer(app)
-    baseUrl = await startServer(app)
-
+    await start(true)
     const response = await fetch(`${baseUrl}/api/show`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -86,17 +84,38 @@ describe('POST /api/show (OpenCode model discovery)', () => {
   })
 
   it('returns 400 when no model identifier is present', async () => {
-    const app: Express = express()
-    app.use(express.json())
-    setupOllamaRoutes(app, createDiscoveryManager())
-    server = http.createServer(app)
-    baseUrl = await startServer(app)
-
+    await start(true)
     const response = await fetch(`${baseUrl}/api/show`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
     expect(response.status).toBe(400)
+  })
+
+  it('lists models of offline (sleeping) nodes via GET /api/tags', async () => {
+    await start(false)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { models?: Array<{ name: string }> }
+    expect(json.models).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'gemma3:4b' })]),
+    )
+  })
+
+  it('resolves a model hosted on an offline (sleeping) node via POST /api/show', async () => {
+    await start(false)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma3:4b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as {
+      capabilities?: string[]
+      model_info?: Record<string, unknown>
+    }
+    expect(json.capabilities).toContain('completion')
+    expect(json.model_info?.['gemma3.context_length']).toBe(131_072)
   })
 })
