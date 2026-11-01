@@ -500,7 +500,6 @@ export class RequestRouter {
     const nodes = this.discovery.getNodes()
     let min = Infinity
     for (const [, node] of nodes) {
-      if (!node.reachable) continue
       if (alias === 'auto-local' && node.cloud) continue
       for (const [, modelInfo] of node.models) {
         const { profile } = modelInfo
@@ -516,7 +515,8 @@ export class RequestRouter {
   getModelCatalog(): ModelCatalogEntry[] {
     const seen = new Map<string, ModelCatalogEntry>()
     for (const node of this.discovery.getNodes().values()) {
-      if (!node.reachable) continue
+      // Include offline (sleeping) nodes — their known models are still
+      // theoretically available and get woken via WoL before routing.
       for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(node.host, modelName)) continue
         if (!seen.has(modelName)) {

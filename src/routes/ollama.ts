@@ -22,7 +22,8 @@ function aggregateModels(
 ): Map<string, { modelInfo: ModelInfo; nodeHost: string }> {
   const deduped = new Map<string, { modelInfo: ModelInfo; nodeHost: string }>()
   for (const [nodeHost, node] of discoveryManager.getNodes()) {
-    if (!node.reachable) continue
+    // Include offline (sleeping) nodes — their known models are still
+    // theoretically available and get woken via WoL before routing.
     for (const [name, modelInfo] of node.models) {
       const existing = deduped.get(name)
       if (!existing || modelInfo.lastSeen > existing.modelInfo.lastSeen) {
