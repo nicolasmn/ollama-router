@@ -320,6 +320,19 @@ describe('RequestRouter', () => {
       expect(ids).toContain('nomic-embed-text:latest')
     })
 
+    it('lists decision models in the catalog (ollama api parity)', () => {
+      const discovery = makeDiscovery({
+        'http://node-a:11434': {
+          'gemma4:e4b': { supportsTools: true, parameters: 4, contextLength: 8192 },
+          'decision-base:2b': { supportsDecision: true, parameters: 2, contextLength: 8192 },
+        },
+      })
+      const catalogRouter = new RequestRouter(discovery, loadManager)
+      const ids = catalogRouter.getModelCatalog().map((m) => m.id)
+      expect(ids).toContain('decision-base:2b')
+      expect(ids).toContain('gemma4:e4b')
+    })
+
     it('deduplicates models across nodes', () => {
       const catalog = router.getModelCatalog()
       const gemmaEntries = catalog.filter((m) => m.id === 'gemma4:26b')

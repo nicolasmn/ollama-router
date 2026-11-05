@@ -803,6 +803,9 @@ export class RequestRouter {
     // cloud) separate the candidates; rank them under a neutral chat profile.
     const profile = TaskProfile.from(NEUTRAL_ANALYSIS, 'auto')
     const { decisionOnly = false, maxCriteria = 0 } = options
+    // True when a chat/responses request explicitly named a decision model —
+    // those are rejected with MODEL_NOT_DECISION instead of silently finding no candidate.
+    let namedDecisionModel = false
 
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
@@ -814,6 +817,7 @@ export class RequestRouter {
         if (!modelInfo.profile.supportsDecision) continue
         if (maxCriteria > 0 && modelInfo.systemoneMaxCriteria > 0 && maxCriteria > modelInfo.systemoneMaxCriteria) continue
       } else if (modelInfo.profile.supportsDecision) {
+        namedDecisionModel = true
         continue
       }
       candidates.push(this._buildCandidate(nodeHost, node, model, modelInfo, NEUTRAL_ANALYSIS, profile, pressure))
@@ -838,6 +842,15 @@ export class RequestRouter {
         const err = Object.assign(
           new Error(
             `Model ${model} does not support decision output — /v1/systemone requires a decision-capable model`,
+          ),
+          { statusCode: 400, code: 'MODEL_NOT_DECISION' },
+        ) as RouterError
+        throw err
+      }
+      if (namedDecisionModel) {
+        const err = Object.assign(
+          new Error(
+            `Model ${model} is a decision model — decision requests must use /v1/systemone`,
           ),
           { statusCode: 400, code: 'MODEL_NOT_DECISION' },
         ) as RouterError
