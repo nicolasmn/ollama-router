@@ -95,6 +95,8 @@ Notes:
 - Set `ROUTER_FALLBACK_TO_AUTO=true` to silently reroute unknown model names to `auto` selection instead of returning `404`. The `model` field in the response will reflect the actual model that served the request.
 - Alias names are reserved and also listed in `/v1/models`.
 
+Decision models (Ollama Jev-style, served via `POST /v1/systemone`) are listed like any other pulled model — `/v1/models` and `/api/tags` include them, matching Ollama. They answer typed questions/statements and return probabilities, not text. Chat requests that name a decision model explicitly are rejected with `MODEL_NOT_DECISION`; use `/v1/systemone` (or an explicit decision model name) for decision traffic.
+
 ## Force-Model Override
 
 Force a specific model for the **next single request**, bypassing normal routing logic. The override is one-shot — consumed on the first routed request, then automatically cleared.

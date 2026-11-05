@@ -189,4 +189,24 @@ describe('selectForChat (decision capability isolation)', () => {
       expect(c.modelInfo.profile.supportsDecision).toBe(false)
     }
   })
+
+  it('rejects an explicit chat request naming a decision model with MODEL_NOT_DECISION', async () => {
+    const loadManager = new LoadManager({ maxConcurrentPerNode: 3 })
+    const discovery = makeDiscovery({
+      'http://node-a:11434': {
+        'gemma4:e4b': { supportsThinking: true, parameters: 4.5, contextLength: 128000 },
+        'decision-base:2b': { supportsDecision: true, parameters: 2, contextLength: 8192 },
+      },
+    })
+    const router = new RequestRouter(discovery, loadManager)
+    await expect(
+      router.selectForChat({
+        model: 'decision-base:2b',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    ).rejects.toMatchObject({
+      code: 'MODEL_NOT_DECISION',
+      statusCode: 400,
+    })
+  })
 })

@@ -6,7 +6,7 @@ import { setupOllamaRoutes } from '../src/routes/ollama.js'
 import { ModelInfo, ModelProfile, type NodeInfo } from '../src/models.js'
 import type { DiscoveryManager } from '../src/discovery-manager.js'
 
-function createDiscoveryManager(reachable: boolean) {
+function createDiscoveryManager(reachable: boolean, decisionModel = false) {
   const profile = new ModelProfile({
     capabilities: new Set(['completion', 'tools', 'vision']),
     contextLength: 131_072,
@@ -16,6 +16,23 @@ function createDiscoveryManager(reachable: boolean) {
     supportsVision: true,
   })
   const modelInfo = new ModelInfo('gemma3:4b', 'gemma3', 5_000_000_000, profile)
+  const models = new Map([['gemma3:4b', modelInfo]])
+  if (decisionModel) {
+    models.set(
+      'decision-base:2b',
+      new ModelInfo(
+        'decision-base:2b',
+        'test',
+        1e9,
+        new ModelProfile({
+          capabilities: new Set(['decision']),
+          supportsDecision: true,
+          parameters: 2,
+          contextLength: 8192,
+        }),
+      ),
+    )
+  }
   const node = {
     host: 'http://127.0.0.1:1234',
     reachable,
@@ -23,7 +40,7 @@ function createDiscoveryManager(reachable: boolean) {
     failures: 0,
     lastFailure: 0,
     activeRequests: 0,
-    models: new Map([['gemma3:4b', modelInfo]]),
+    models,
     cloud: false,
     mac: null,
   } as unknown as NodeInfo
@@ -49,10 +66,10 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
       await new Promise<void>((r) => server.close(() => r()))
   })
 
-  async function start(reachable: boolean) {
+  async function start(reachable: boolean, decisionModel = false) {
     const app: Express = express()
     app.use(express.json())
-    setupOllamaRoutes(app, createDiscoveryManager(reachable))
+    setupOllamaRoutes(app, createDiscoveryManager(reachable, decisionModel))
     server = http.createServer(app)
     baseUrl = await startServer(app)
   }
@@ -101,6 +118,29 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
     expect(json.models).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'gemma3:4b' })]),
     )
+  })
+
+  it('lists decision models via GET /api/tags', async () => {
+    await start(true, true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { models?: Array<{ name: string }> }
+    expect(json.models).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'gemma3:4b' })]),
+    )
+    expect(json.models?.some((m) => m.name === 'decision-base:2b')).toBe(true)
+  })
+
+  it('still resolves decision models via POST /api/show', async () => {
+    await start(true, true)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'decision-base:2b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { capabilities?: string[] }
+    expect(json.capabilities).toContain('decision')
   })
 
   it('resolves a model hosted on an offline (sleeping) node via POST /api/show', async () => {
