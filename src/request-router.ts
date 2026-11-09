@@ -549,17 +549,7 @@ export class RequestRouter {
       for (const [modelName, modelInfo] of node.models) {
         if (disabledModelsStore.isDisabled(node.host, modelName)) continue
         if (!seen.has(modelName)) {
-          const caps: string[] = [...modelInfo.profile.capabilities]
-          if (modelInfo.profile.supportsVision && !caps.includes('vision'))
-            caps.push('vision')
-          if (modelInfo.profile.supportsTools && !caps.includes('tools'))
-            caps.push('tools')
-          if (modelInfo.profile.supportsThinking && !caps.includes('thinking'))
-            caps.push('thinking')
-          if (modelInfo.profile.isEmbedding && !caps.includes('embedding'))
-            caps.push('embedding')
-          if (modelInfo.profile.supportsDecision && !caps.includes('decision'))
-            caps.push('decision')
+          const caps = modelInfo.profile.capabilityList
           seen.set(modelName, {
             id: modelName,
             object: 'model',

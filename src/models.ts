@@ -50,6 +50,17 @@ export class ModelProfile {
   get isChatCapable(): boolean {
     return !this.isEmbedding && !this.supportsDecision && !this.isSpeechSynthesis
   }
+
+  /** Discovered capabilities plus flag-derived ones missing from the set, in a stable order. */
+  get capabilityList(): string[] {
+    const caps = [...this.capabilities]
+    if (this.supportsVision && !caps.includes('vision')) caps.push('vision')
+    if (this.supportsTools && !caps.includes('tools')) caps.push('tools')
+    if (this.supportsThinking && !caps.includes('thinking')) caps.push('thinking')
+    if (this.isEmbedding && !caps.includes('embedding')) caps.push('embedding')
+    if (this.supportsDecision && !caps.includes('decision')) caps.push('decision')
+    return caps
+  }
 }
 
 export interface ModelInfoJSON {
