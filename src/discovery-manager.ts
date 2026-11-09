@@ -534,7 +534,7 @@ export class DiscoveryManager {
    * and trigger WoL for matching nodes with a known MAC.
    * Returns true if at least one WoL packet was sent.
    */
-  tryWakeNodesForRequest(model: string, analysis: AnalysisResult): boolean {
+  tryWakeNodesForRequest(model: string, analysis: AnalysisResult, options: { decisionOnly?: boolean } = {}): boolean {
     const isVirtual = ['auto', 'auto-fast', 'auto-think', 'auto-local'].includes(model)
     let triggered = false
     for (const [host, node] of this.inventory) {
@@ -542,7 +542,7 @@ export class DiscoveryManager {
       if (node.cloud) continue
       if (this._isLocalhost(host)) continue
       if (!node.mac) continue
-      if (!this._offlineNodeCouldServe(node, model, analysis, isVirtual)) continue
+      if (!this._offlineNodeCouldServe(node, model, analysis, isVirtual, options.decisionOnly ?? false)) continue
       this._triggerWol(host, node.mac)
       triggered = true
     }
@@ -581,12 +581,17 @@ export class DiscoveryManager {
     model: string,
     analysis: AnalysisResult,
     isVirtual: boolean,
+    decisionOnly: boolean,
   ): boolean {
     if (node.models.size === 0) return false
-    if (!isVirtual) return node.models.has(model)
+    if (!isVirtual) {
+      const modelInfo = node.models.get(model)
+      return !!modelInfo && modelInfo.profile.supportsDecision === decisionOnly
+    }
 
     for (const modelInfo of node.models.values()) {
       const { profile } = modelInfo
+      if (profile.supportsDecision !== decisionOnly) continue
       if (analysis.needsEmbeddings && !profile.isEmbedding) continue
       if (!analysis.needsEmbeddings && (profile.isEmbedding || profile.isSpeechSynthesis)) continue
       if (analysis.needsTools && !profile.supportsTools) continue

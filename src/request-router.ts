@@ -134,6 +134,7 @@ export interface ModelCatalogEntry {
 export interface RouterError extends Error {
   statusCode?: number
   code?: string
+  upstreamDetail?: string
 }
 
 /**
@@ -247,7 +248,7 @@ export class RequestRouter {
     const candidates = this._selectCandidates(model, analysis, reqBody, options)
     if (candidates) return candidates
 
-    const woken = this.discovery.tryWakeNodesForRequest(model, analysis)
+    const woken = this.discovery.tryWakeNodesForRequest(model, analysis, options)
     if (!woken) return null
 
     logger.info({ model }, 'No live candidates — WoL triggered, waiting for node to wake')
@@ -317,8 +318,26 @@ export class RequestRouter {
     if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
-    const analysis = this.analyzer.analyze(reqBody, 'systemone')
     const model = (reqBody.model as string) || 'auto'
+    const maxCriteria = maxChoiceCriteria(reqBody)
+    if (!VIRTUAL_MODELS.has(model) && maxCriteria > 0) {
+      // The limit belongs to the model, not to an individual host.
+      let cap = 0
+      let decisionCapable = false
+      for (const node of this.discovery.getNodes().values()) {
+        const info = node.models.get(model)
+        if (!info) continue
+        cap = Math.max(cap, info.systemoneMaxCriteria)
+        if (info.profile.supportsDecision) decisionCapable = true
+      }
+      if (decisionCapable && cap > 0 && maxCriteria > cap) {
+        throw Object.assign(
+          new Error(`Decision model ${model} accepts at most ${cap} criteria per question; this request has ${maxCriteria}`),
+          { statusCode: 400, code: 'CRITERIA_LIMIT' },
+        ) as RouterError
+      }
+    }
+    const analysis = this.analyzer.analyze(reqBody, 'systemone')
     logger.debug({ model, originalModel, forced: !!forcedModel, ...analysis }, 'SystemOne routing analysis')
     let result: RoutingCandidate[] | null
     try {
@@ -326,6 +345,13 @@ export class RequestRouter {
     } catch (err: unknown) {
       if (forcedModel && (err as { code?: string })?.code === 'MODEL_NOT_FOUND') return null
       throw err
+    }
+    if (!result && !signal?.aborted && !VIRTUAL_MODELS.has(model) &&
+        [...this.discovery.getNodes().values()].some((node) => node.models.get(model)?.profile.supportsDecision)) {
+      throw Object.assign(new Error(`No node can serve decision model ${model} right now`), {
+        statusCode: 503,
+        code: 'MODEL_UNAVAILABLE',
+      }) as RouterError
     }
     if (forcedModel) this._tagForced(result)
     return result
@@ -802,11 +828,7 @@ export class RequestRouter {
     // A concrete model is fixed, so only node-level factors (speed, load, warmth,
     // cloud) separate the candidates; rank them under a neutral chat profile.
     const profile = TaskProfile.from(NEUTRAL_ANALYSIS, 'auto')
-    const { decisionOnly = false, maxCriteria = 0 } = options
-    // True when a chat/responses request explicitly named a decision model —
-    // those are rejected with MODEL_NOT_DECISION instead of silently finding no candidate.
-    let namedDecisionModel = false
-
+    const { decisionOnly = false } = options
     for (const [nodeHost, node] of nodes) {
       if (!node.reachable) continue
       if (!this.load.canAcceptRequest(nodeHost)) continue
@@ -815,9 +837,7 @@ export class RequestRouter {
       if (disabledModelsStore.isDisabled(nodeHost, model)) continue
       if (decisionOnly) {
         if (!modelInfo.profile.supportsDecision) continue
-        if (maxCriteria > 0 && modelInfo.systemoneMaxCriteria > 0 && maxCriteria > modelInfo.systemoneMaxCriteria) continue
       } else if (modelInfo.profile.supportsDecision) {
-        namedDecisionModel = true
         continue
       }
       candidates.push(this._buildCandidate(nodeHost, node, model, modelInfo, NEUTRAL_ANALYSIS, profile, pressure))
@@ -825,11 +845,12 @@ export class RequestRouter {
 
     if (candidates.length === 0) {
       let modelExists = false
+      let decisionCapable = false
       for (const node of nodes.values()) {
-        if (node.models.has(model)) {
-          modelExists = true
-          break
-        }
+        const modelInfo = node.models.get(model)
+        if (!modelInfo) continue
+        modelExists = true
+        if (modelInfo.profile.supportsDecision) decisionCapable = true
       }
       if (!modelExists) {
         const err = Object.assign(new Error(`Model not found: ${model}`), {
@@ -838,7 +859,7 @@ export class RequestRouter {
         }) as RouterError
         throw err
       }
-      if (decisionOnly) {
+      if (decisionOnly && !decisionCapable) {
         const err = Object.assign(
           new Error(
             `Model ${model} does not support decision output — /v1/systemone requires a decision-capable model`,
@@ -847,7 +868,7 @@ export class RequestRouter {
         ) as RouterError
         throw err
       }
-      if (namedDecisionModel) {
+      if (!decisionOnly && decisionCapable) {
         const err = Object.assign(
           new Error(
             `Model ${model} is a decision model — decision requests must use /v1/systemone`,

@@ -103,9 +103,14 @@ export function handleSelectionError(
     res.status(404).json({ error: err.message })
     return true
   }
-  if (err?.code === 'MODEL_NOT_DECISION') {
+  if (err?.code === 'MODEL_NOT_DECISION' || err?.code === 'CRITERIA_LIMIT') {
     routeLogger.warn({ requestId, err: err.message }, contextMessage)
     res.status(400).json({ error: err.message })
+    return true
+  }
+  if (err?.code === 'MODEL_UNAVAILABLE') {
+    routeLogger.warn({ requestId, err: err.message }, contextMessage)
+    res.status(503).json({ error: err.message })
     return true
   }
   return false
@@ -159,12 +164,14 @@ export async function selectCandidatesOrHandleError(
     const handled = handleSelectionError(routerErr, res, requestId, selectionErrorMessage, routeLogger)
     if (handled) {
       const isDecisionError = routerErr.code === 'MODEL_NOT_DECISION'
+      const isUnavailable = routerErr.code === 'MODEL_UNAVAILABLE'
+      const isCriteriaLimit = routerErr.code === 'CRITERIA_LIMIT'
       requestHistoryManager.finishRequest(requestId, {
         status: 'failed',
-        responseStatus: isDecisionError ? 400 : 404,
+        responseStatus: isUnavailable ? 503 : isDecisionError || isCriteriaLimit ? 400 : 404,
         error: routerErr.message,
-        failureCategory: isDecisionError ? 'wrong_model_type' : 'model_not_found',
-        retryHint: 'no_retry',
+        failureCategory: isUnavailable ? 'capacity' : isCriteriaLimit ? 'invalid_request' : isDecisionError ? 'wrong_model_type' : 'model_not_found',
+        retryHint: isUnavailable ? 'retry_later' : 'no_retry',
       })
       return null
     }
@@ -201,6 +208,15 @@ function bindAbortSignal(signal: AbortSignal | undefined, controller: AbortContr
 export function parseCriteriaCap(message: string): number | null {
   const m = /criteria must contain 2[–—-]\s*(\d+)/.exec(message || '')
   return m ? Number(m[1]) : null
+}
+
+function upstreamErrorMessage(err: RouterError): string {
+  const detail = err.upstreamDetail || err.message
+  try {
+    const body: unknown = JSON.parse(detail)
+    if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') return body.error
+  } catch { /* Upstream may return plain text. */ }
+  return detail
 }
 
 function categorizeFailure(err: RouterError): { failureCategory: string; retryHint: string } {  const statusCode = typeof err?.statusCode === 'number' ? Number(err.statusCode) : 0
@@ -435,7 +451,7 @@ export async function forwardRequest(
   if (resp.statusCode < 200 || resp.statusCode >= 300) {
     let detail = ''
     try { detail = await resp.body.text() } catch { /* ignore */ }
-    throw Object.assign(new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`), { statusCode: resp.statusCode }) as RouterError
+    throw Object.assign(new Error(`HTTP ${resp.statusCode}${detail ? ': ' + detail : ''}`), { statusCode: resp.statusCode, upstreamDetail: detail }) as RouterError
   }
   return resp.body.json()
 }
@@ -759,6 +775,7 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
   let lastFailure: {
     responseStatus: number; error: string; failureCategory: string
     retryHint: string; nodeHost: string; modelName: string
+    criteriaError?: string
   } | null = null
 
   if (signal?.aborted) {
@@ -829,10 +846,15 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       discoveryManager.recordModelFailure(nodeHost, modelName, typedErr as NodeJS.ErrnoException)
       // The cap error is deterministic per (body, model) — recording it here
       // means the NEXT request of this size routes correctly on first try.
-      const learnedCap = endpoint === '/v1/systemone' ? parseCriteriaCap(typedErr.message) : null
+      const detail = endpoint === '/v1/systemone' ? upstreamErrorMessage(typedErr) : ''
+      const learnedCap = endpoint === '/v1/systemone' ? parseCriteriaCap(typedErr.message) ?? parseCriteriaCap(detail) : null
       if (learnedCap) discoveryManager.setSystemoneCriteriaCap(nodeHost, modelName, learnedCap)
       requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName, status: 'failed', latency, error: typedErr.message, attemptReason: index === 0 ? 'first_try' : 'fallback_error' })
-      lastFailure = { responseStatus, error: typedErr.message, failureCategory, retryHint, nodeHost, modelName }
+      const criteriaError = responseStatus === 400 && learnedCap ? detail : undefined
+      // Too many criteria is deterministic for this body — classify it like the router-side CRITERIA_LIMIT.
+      lastFailure = criteriaError
+        ? { responseStatus, error: typedErr.message, failureCategory: 'invalid_request', retryHint: 'no_retry', nodeHost, modelName, criteriaError }
+        : { responseStatus, error: typedErr.message, failureCategory, retryHint, nodeHost, modelName }
     } finally {
       loadManager.decrementLoad(nodeHost)
     }
@@ -840,6 +862,10 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
 
   if (lastFailure) {
     requestHistoryManager.finishRequest(requestId, { status: 'failed', responseStatus: lastFailure.responseStatus, error: lastFailure.error, failureCategory: lastFailure.failureCategory, retryHint: lastFailure.retryHint, modelName: lastFailure.modelName, nodeHost: lastFailure.nodeHost })
+    if (lastFailure.criteriaError && !res.headersSent) {
+      res.status(400).json({ error: lastFailure.criteriaError })
+      return true
+    }
   }
   return false
 }
