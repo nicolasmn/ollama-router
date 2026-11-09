@@ -14,6 +14,7 @@ import {
   OLLAMA_CLOUD_URL,
   OLLAMA_CLOUD_API_KEY,
   DISABLED_MODELS_FILE,
+  OLLAMA_NODE_MEMORY_GB,
 } from './config.js'
 import { disabledModelsStore } from './disabled-models-store.js'
 import { cloudUsageStore } from './cloud-usage.js'
@@ -88,6 +89,7 @@ export async function createApp(config: AppConfig): Promise<AppResult> {
     metricsFile: config.metricsFile ?? null,
     cloudUrl: OLLAMA_CLOUD_URL,
     cloudApiKey: OLLAMA_CLOUD_API_KEY,
+    nodeMemory: OLLAMA_NODE_MEMORY_GB,
   })
 
   const loadManager = new LoadManager({

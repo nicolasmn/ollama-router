@@ -1,5 +1,11 @@
 // discovery-manager.ts - Discovers, probes, and tracks Ollama nodes
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
+import type { LoadedModel } from './models.js'
+import { resolveNodeMemoryBytes } from './config.js'
+import type { NodeMemoryEntry } from './config.js'
+import { effectiveLoadedLimit, observeLoadedSnapshot, resolveNodeMemory } from './node-memory.js'
+import type { MemorySource } from './node-memory.js'
+import { DEFAULT_KEEP_ALIVE_MS, estimateFootprint } from './routing-score.js'
 import { createLogger } from './logger.js'
 import { MetricsStore } from './metrics-store.js'
 import type { PersistedModelMetrics } from './metrics-store.js'
@@ -45,6 +51,8 @@ export interface DiscoveryConfig {
   metricsFile?: string | null
   cloudUrl?: string
   cloudApiKey?: string
+  /** Static per-node memory capacity (see OLLAMA_NODE_MEMORY_GB). */
+  nodeMemory?: NodeMemoryEntry[]
 }
 
 const DEFAULT_PROBE_INTERVAL = 30_000
@@ -67,6 +75,7 @@ export class DiscoveryManager {
   private _pendingMetrics: Map<string, Map<string, PersistedModelMetrics>> | null
   private cloudUrl: string
   private cloudApiKey: string
+  private nodeMemory: NodeMemoryEntry[]
   readonly cloudModels: string[]
   autoDiscover: boolean
   /** LAN/WLAN addresses of this machine, resolved once at startup. */
@@ -99,6 +108,7 @@ export class DiscoveryManager {
     this._pendingMetrics = null
     this.cloudUrl = config.cloudUrl ?? ''
     this.cloudApiKey = config.cloudApiKey ?? ''
+    this.nodeMemory = config.nodeMemory ?? []
     this.cloudModels = []
     this.selfAddresses = getSelfAddresses()
     this._wolCooldowns = new Map()
@@ -281,12 +291,14 @@ export class DiscoveryManager {
     node.reachable = false
     node.failures++
     node.lastFailure = Date.now()
+    node.memory.lastSnapshot = null
     logger.warn({ nodeHost }, 'Node marked unreachable due to connection failure')
   }
 
   private _recordProbeFailure(nodeHost: string, reason: string): void {
     const node = this.inventory.get(nodeHost)
     if (!node) return
+    node.memory.lastSnapshot = null
 
     // Don't mark a busy node unreachable mid-stream
     if (node.activeRequests > 0) {
@@ -321,7 +333,7 @@ export class DiscoveryManager {
     logger.info('Initializing DiscoveryManager')
 
     if (this.metricsStore) {
-      const { knownNodes, cloudModels, metrics, nodeMacs } = this.metricsStore.load()
+      const { knownNodes, cloudModels, metrics, nodeMacs, nodeMemory } = this.metricsStore.load()
       for (const host of knownNodes) {
         if (!this.inventory.has(host)) {
           logger.info({ host }, 'Restoring known node from persistence')
@@ -336,6 +348,10 @@ export class DiscoveryManager {
       if (cloudModels.length > 0) logger.info({ cloudModels }, 'Restored cloud models from persistence')
       this._pendingMetrics = metrics.size > 0 ? metrics : null
       this._applyLoadedMacs(nodeMacs)
+      for (const [host, learned] of nodeMemory) {
+        const node = this.inventory.get(host)
+        if (node) Object.assign(node.memory, learned)
+      }
     }
 
     await this.registerCloudNode()
@@ -371,6 +387,8 @@ export class DiscoveryManager {
         model.totalRequests = m.totalRequests
         model.lastRoutedAt = m.lastRoutedAt
         model.lastRoutingEndpoint = m.lastRoutingEndpoint
+        // A footprint measured by the first probe is fresher than the persisted one.
+        if (!model.measuredFootprint) model.measuredFootprint = m.measuredFootprint ?? 0
       }
     }
   }
@@ -523,9 +541,87 @@ export class DiscoveryManager {
       for (const name of node.models.keys()) {
         if (!seenNames.has(name)) node.models.delete(name)
       }
+      await this._probeLoadedModels(host, node)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown probe failure'
       this._recordProbeFailure(host, message)
+    }
+  }
+
+  /**
+   * Polls GET /api/ps for the models resident in memory and learns each one's
+   * measured footprint. Best-effort: a failure leaves the node reachable and
+   * marks its loaded state unknown (null), which disables eviction scoring.
+   */
+  private async _probeLoadedModels(host: string, node: NodeInfo): Promise<void> {
+    try {
+      const { request } = await import('undici')
+      const psResp = await request(`${host}/api/ps`, {
+        headersTimeout: PROBE_HEADERS_TIMEOUT,
+        bodyTimeout: PROBE_BODY_TIMEOUT,
+      })
+      if (psResp.statusCode !== 200) {
+        await psResp.body.dump()
+        node.loaded = null
+        node.memory.lastSnapshot = null
+        return
+      }
+      const psData = (await psResp.body.json()) as { models?: Array<Record<string, unknown>> }
+      const loaded: LoadedModel[] = []
+      for (const raw of psData.models ?? []) {
+        const name = (raw.name ?? raw.model) as string | undefined
+        if (typeof name !== 'string' || !name) continue
+        const size = typeof raw.size === 'number' ? raw.size : 0
+        const expires = typeof raw.expires_at === 'string' ? Date.parse(raw.expires_at) : NaN
+        loaded.push({
+          name,
+          size,
+          sizeVram: typeof raw.size_vram === 'number' ? raw.size_vram : 0,
+          expiresAt: Number.isFinite(expires) ? expires : 0,
+        })
+        const model = node.models.get(name)
+        if (model && size > 0) model.measuredFootprint = size
+      }
+      const now = Date.now()
+      node.loaded = { models: loaded, updatedAt: now }
+      observeLoadedSnapshot(node.memory, loaded, now)
+    } catch (err) {
+      node.loaded = null
+      node.memory.lastSnapshot = null
+      logger.debug({ host, err: err instanceof Error ? err.message : String(err) }, 'Loaded-model probe failed')
+    }
+  }
+
+  /** Memory Ollama can use for models on a node: the configured value, else what /api/ps snapshots revealed. */
+  getNodeMemory(host: string): { bytes: number | null; source: MemorySource | null } {
+    const node = this.inventory.get(host)
+    if (!node || node.cloud) return { bytes: null, source: null }
+    return resolveNodeMemory(node.memory, resolveNodeMemoryBytes(this.nodeMemory, host))
+  }
+
+  /** Effective Ollama loaded-model limit of a node, or null for cloud / unknown nodes. */
+  getNodeLoadedLimit(host: string): number | null {
+    const node = this.inventory.get(host)
+    return !node || node.cloud ? null : effectiveLoadedLimit(node.memory)
+  }
+
+  /**
+   * Called when a request is dispatched to a node: counts the model as loaded
+   * (estimated footprint, default keep-alive) so a burst within one probe
+   * interval sees current free memory. The next /api/ps poll replaces the
+   * snapshot, so no attempt is made to guess which model Ollama unloads.
+   */
+  noteModelDispatched(host: string, modelName: string, now: number = Date.now()): void {
+    const node = this.inventory.get(host)
+    const model = node?.models.get(modelName)
+    if (!node || !model) return
+    model.lastRoutedAt = now
+    const loaded = node.loaded
+    if (!loaded || loaded.models.some((m) => m.name === modelName)) return
+    const size = estimateFootprint(model).bytes
+    node.loaded = {
+      ...loaded,
+      models: [...loaded.models, { name: modelName, size, sizeVram: size, expiresAt: now + DEFAULT_KEEP_ALIVE_MS }],
     }
   }
 
@@ -673,6 +769,8 @@ export class DiscoveryManager {
       freshNode.activeRequests = existing.activeRequests
       // Preserve learned MAC — freshNode from scanner won't have it
       if (!freshNode.mac && existing.mac) freshNode.mac = existing.mac
+      freshNode.loaded = existing.loaded
+      freshNode.memory = existing.memory
       for (const [name, freshModel] of freshNode.models) {
         const existingModel = existing.models.get(name)
         if (existingModel) {
@@ -684,6 +782,7 @@ export class DiscoveryManager {
           freshModel.totalRequests = existingModel.totalRequests
           freshModel.lastRoutedAt = existingModel.lastRoutedAt
           freshModel.lastRoutingEndpoint = existingModel.lastRoutingEndpoint
+          freshModel.measuredFootprint = existingModel.measuredFootprint
         }
       }
       this.inventory.set(host, freshNode)

@@ -546,6 +546,7 @@ export async function handleStreamingRequest(
       res.status(429).json({ error: 'Node at capacity' })
       return
     }
+    discoveryManager.noteModelDispatched(nodeHost, modelName)
 
     const apiKey = discoveryManager.getCloudApiKey(nodeHost)
     const useRaw = opts.rawBody != null && canForwardRaw(reqBody, modelName, endpoint)
@@ -781,6 +782,7 @@ export async function tryCandidatesWithRetry(opts: TryCandidatesOptions): Promis
       logger.debug({ requestId, nodeHost }, 'Node capacity exceeded, trying next')
       continue
     }
+    discoveryManager.noteModelDispatched(nodeHost, modelName)
 
     const apiKey = discoveryManager.getCloudApiKey(nodeHost)
     const startTime = Date.now()

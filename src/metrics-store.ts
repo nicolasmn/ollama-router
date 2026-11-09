@@ -16,13 +16,25 @@ export interface PersistedModelMetrics {
   totalRequests: number
   lastRoutedAt: number
   lastRoutingEndpoint: string | null
+  /** In-memory bytes measured via /api/ps; 0/absent = never seen loaded. */
+  measuredFootprint?: number
 }
+
+export interface PersistedNodeMemory {
+  fitBytes: number
+  noFitBytes: number
+  maxLoaded: number
+  maxSeenLoaded: number
+}
+
+type PersistableNode = Pick<NodeInfo, 'models' | 'cloud' | 'mac'> & Partial<Pick<NodeInfo, 'memory'>>
 
 interface PersistedFile {
   knownNodes: string[]
   cloudModels: string[]
   metrics: Record<string, Record<string, PersistedModelMetrics>>
   nodeMacs?: Record<string, string>
+  nodeMemory?: Record<string, PersistedNodeMemory>
 }
 
 export interface LoadedData {
@@ -30,6 +42,7 @@ export interface LoadedData {
   cloudModels: string[]
   metrics: Map<string, Map<string, PersistedModelMetrics>>
   nodeMacs: Map<string, string>
+  nodeMemory: Map<string, PersistedNodeMemory>
 }
 
 export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
@@ -37,7 +50,7 @@ export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
     const raw = readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw) as PersistedFile
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { knownNodes: [], cloudModels: [], metrics: new Map(), nodeMacs: new Map() }
+      return { knownNodes: [], cloudModels: [], metrics: new Map(), nodeMacs: new Map(), nodeMemory: new Map() }
     }
 
     const knownNodes: string[] = Array.isArray(parsed.knownNodes)
@@ -67,6 +80,7 @@ export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
             totalRequests: m.totalRequests ?? 0,
             lastRoutedAt: m.lastRoutedAt ?? 0,
             lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
+            measuredFootprint: m.measuredFootprint ?? 0,
           })
         }
         if (modelMap.size > 0) metrics.set(host, modelMap)
@@ -80,15 +94,29 @@ export function loadMetrics(filePath: string, cloudUrl?: string): LoadedData {
       }
     }
 
-    return { knownNodes, cloudModels, metrics, nodeMacs }
+    const nodeMemory = new Map<string, PersistedNodeMemory>()
+    if (typeof parsed.nodeMemory === 'object' && parsed.nodeMemory !== null) {
+      const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
+      for (const [host, m] of Object.entries(parsed.nodeMemory)) {
+        if (typeof m !== 'object' || m === null) continue
+        nodeMemory.set(host, {
+          fitBytes: count(m.fitBytes),
+          noFitBytes: count(m.noFitBytes),
+          maxLoaded: count(m.maxLoaded),
+          maxSeenLoaded: count(m.maxSeenLoaded),
+        })
+      }
+    }
+
+    return { knownNodes, cloudModels, metrics, nodeMacs, nodeMemory }
   } catch {
-    return { knownNodes: [], cloudModels: [], metrics: new Map(), nodeMacs: new Map() }
+    return { knownNodes: [], cloudModels: [], metrics: new Map(), nodeMacs: new Map(), nodeMemory: new Map() }
   }
 }
 
 export function saveMetrics(
   filePath: string,
-  nodes: Map<string, Pick<NodeInfo, 'models' | 'cloud' | 'mac'>>,
+  nodes: Map<string, PersistableNode>,
   cloudModels: string[] = [],
 ): void {
   const metricsOutput: Record<string, Record<string, PersistedModelMetrics>> = {}
@@ -102,7 +130,8 @@ export function saveMetrics(
         (m.recentTps || 0) === 0 &&
         (m.recentTtft || 0) === 0 &&
         (m.recentLoadMs || 0) === 0 &&
-        (m.failures || 0) === 0
+        (m.failures || 0) === 0 &&
+        (m.measuredFootprint || 0) === 0
       ) continue
       modelRecord[name] = {
         recentLatency: m.recentLatency,
@@ -114,6 +143,7 @@ export function saveMetrics(
         totalRequests: m.totalRequests ?? 0,
         lastRoutedAt: m.lastRoutedAt ?? 0,
         lastRoutingEndpoint: m.lastRoutingEndpoint ?? null,
+        measuredFootprint: m.measuredFootprint || undefined,
       }
     }
     if (Object.keys(modelRecord).length > 0) metricsOutput[host] = modelRecord
@@ -124,6 +154,16 @@ export function saveMetrics(
     if (node.mac) nodeMacsOutput[host] = node.mac
   }
 
+  const nodeMemoryOutput: Record<string, PersistedNodeMemory> = {}
+  for (const [host, node] of nodes) {
+    const { memory } = node
+    if (node.cloud || !memory) continue
+    const { fitBytes, noFitBytes, maxLoaded, maxSeenLoaded } = memory
+    if (fitBytes || noFitBytes || maxLoaded || maxSeenLoaded) {
+      nodeMemoryOutput[host] = { fitBytes, noFitBytes, maxLoaded, maxSeenLoaded }
+    }
+  }
+
   const output: PersistedFile = {
     knownNodes: Array.from(nodes.entries())
       .filter(([, node]) => !(node as NodeInfo).cloud)
@@ -131,6 +171,7 @@ export function saveMetrics(
     cloudModels,
     metrics: metricsOutput,
     nodeMacs: nodeMacsOutput,
+    nodeMemory: nodeMemoryOutput,
   }
 
   try {
@@ -154,7 +195,7 @@ export class MetricsStore {
     return loadMetrics(this.filePath, this.cloudUrl)
   }
 
-  persist(nodes: Map<string, Pick<NodeInfo, 'models' | 'cloud' | 'mac'>>, cloudModels: string[] = []): void {
+  persist(nodes: Map<string, PersistableNode>, cloudModels: string[] = []): void {
     saveMetrics(this.filePath, nodes, cloudModels)
   }
 }

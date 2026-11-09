@@ -251,6 +251,7 @@ async function handleAudioRequest(
         requestHistoryManager.recordAttempt(requestId, { nodeHost, modelName: selectedModel, status: 'capacity' })
         continue
       }
+      discoveryManager.noteModelDispatched(nodeHost, selectedModel)
 
       const startTime = Date.now()
       let upstream: Awaited<ReturnType<typeof request>>

@@ -86,10 +86,30 @@ describe('metrics-store', () => {
         totalRequests: 0,
         lastRoutedAt: 0,
         lastRoutingEndpoint: null,
+        measuredFootprint: 0,
       })
       expect(nodeA.get('gemma4:26b')).toMatchObject({ recentLatency: 800, failures: 1, systemoneMaxCriteria: 64 })
       expect(knownNodes).toContain('http://node-a:11434')
       expect(knownNodes).toContain('http://node-b:11434')
+    })
+
+    it('persists measured footprints and learned node memory, even for models without other stats', () => {
+      const path = makeTmpPath()
+      const nodes = new Map<string, any>([
+        [
+          'http://node-a:11434',
+          {
+            models: new Map([['gemma4:e4b', { measuredFootprint: 7_400_000_000 }]]),
+            cloud: false,
+            mac: null,
+            memory: { fitBytes: 10, noFitBytes: 22, maxLoaded: 2, maxSeenLoaded: 3, lastSnapshot: [] },
+          },
+        ],
+      ])
+      saveMetrics(path, nodes)
+      const { metrics, nodeMemory } = loadMetrics(path)
+      expect(metrics.get('http://node-a:11434')!.get('gemma4:e4b')!.measuredFootprint).toBe(7_400_000_000)
+      expect(nodeMemory.get('http://node-a:11434')).toEqual({ fitBytes: 10, noFitBytes: 22, maxLoaded: 2, maxSeenLoaded: 3 })
     })
 
     it('skips models with all-zero metrics', () => {

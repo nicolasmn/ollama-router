@@ -12,7 +12,7 @@
 // samples accumulate.
 
 import type { AnalysisResult } from './request-analyzer.js'
-import type { ModelInfo } from './models.js'
+import type { LoadedState, ModelInfo } from './models.js'
 import type { CloudUsage } from './cloud-usage.js'
 
 export type ProfileKind = 'fast' | 'chat' | 'complex' | 'reasoning'
@@ -23,6 +23,7 @@ export type FactorId =
   | 'throughput'
   | 'context'
   | 'warm'
+  | 'eviction'
   | 'thinking'
   | 'load'
   | 'reliability'
@@ -84,6 +85,12 @@ export interface WarmSignal {
   detail: string
 }
 
+export interface EvictionSignal {
+  /** −1 (would evict a hot model / cannot fit) .. 0 (free to load). */
+  value: number
+  detail: string
+}
+
 export interface ScoreInput {
   modelInfo: ModelInfo
   profile: TaskProfile
@@ -92,6 +99,7 @@ export interface ScoreInput {
   /** Node utilization, 0..1. */
   utilization: number
   warm: WarmSignal
+  eviction: EvictionSignal
   /** Cloud quota pressure, 0..1 (see cloudUsagePressure). */
   cloudUsagePressure: number
 }
@@ -103,6 +111,7 @@ const PENALTY_WEIGHTS = {
   reliability: 15,
   cloudCost: 8,
   cloudUsage: 20,
+  eviction: 20,
 } as const
 
 const PROFILE_WEIGHTS: Readonly<Record<ProfileKind, FactorWeights>> = {
@@ -143,6 +152,13 @@ const WARM_RECENT_MS = 2 * 60 * 1000
 const WARM_ACTIVE_MS = 5 * 60 * 1000
 const WARM_INACTIVE_MS = 10 * 60 * 1000
 const MODEL_SWITCH_VALUE = -0.6
+
+/** Safety factor on disk size when a model has never been seen loaded: the
+ *  in-memory footprint also holds the KV cache. */
+export const FOOTPRINT_DISK_FACTOR = 1.3
+/** Ollama's default keep_alive; used to infer last use from /api/ps expires_at. */
+export const DEFAULT_KEEP_ALIVE_MS = 5 * 60 * 1000
+const GB = 1024 ** 3
 
 export const NEUTRAL_ANALYSIS: AnalysisResult = {
   endpointType: 'chat',
@@ -283,10 +299,90 @@ export function computeWarmSignal(
   return { value: 0, detail: 'no model is currently hot on this node' }
 }
 
+/** In-memory bytes a model will need: measured via /api/ps once seen loaded, else disk size × safety factor. */
+export function estimateFootprint(model: ModelInfo): { bytes: number; measured: boolean } {
+  if (model.measuredFootprint > 0) return { bytes: model.measuredFootprint, measured: true }
+  return { bytes: model.size * FOOTPRINT_DISK_FACTOR, measured: false }
+}
+
+/**
+ * Penalizes loading a cold model that does not fit next to the models already
+ * resident on the node — either because free memory (configured or learned
+ * capacity minus the loaded models' sizes) is too small, or because the node
+ * already holds `loadedLimit` models. Ollama unloads the first idle runner
+ * ordered by keep-alive duration, not by recency, so any idle loaded model may
+ * go: the penalty follows the most recently used loaded model — protected
+ * inside the recent window, fading to 0 once everything has been idle.
+ * `loadedLimit` defaults to "no limit" for callers that do not know it.
+ */
+export function computeEvictionSignal(
+  model: ModelInfo,
+  nodeModels: Map<string, ModelInfo>,
+  loaded: LoadedState | null,
+  capacityBytes: number | null,
+  isCloud: boolean,
+  now: number = Date.now(),
+  loadedLimit: number = Infinity,
+): EvictionSignal {
+  if (isCloud) return { value: 0, detail: 'cloud node manages model loading itself' }
+  if (loaded === null) return { value: 0, detail: 'loaded models unknown' }
+  if (loaded.models.some((m) => m.name === model.name)) return { value: 0, detail: 'already loaded on this node' }
+
+  const footprint = estimateFootprint(model)
+  const need = `${formatGb(footprint.bytes)} GB${footprint.measured ? '' : ' (estimated)'}`
+  const known = capacityBytes !== null && capacityBytes > 0
+  if (known && footprint.bytes > capacityBytes) {
+    return { value: -1, detail: `needs ${need} — more than the node's ${formatGb(capacityBytes)} GB` }
+  }
+
+  const used = loaded.models.reduce((sum, m) => sum + m.size, 0)
+  const free = known ? Math.max(0, capacityBytes - used) : Infinity
+  const tooBig = footprint.bytes > free
+  const atLimit = loaded.models.length >= loadedLimit
+  if (!tooBig && !atLimit) {
+    return {
+      value: 0,
+      detail: known
+        ? `needs ${need}, ${formatGb(free)} GB free — fits alongside loaded models`
+        : 'node memory unknown and below the loaded-model limit',
+    }
+  }
+  const reasons: string[] = []
+  if (tooBig) reasons.push(`only ${formatGb(free)} GB free`)
+  if (atLimit) reasons.push(`already holds ${loaded.models.length} of max ${loadedLimit} models`)
+
+  let atRisk = { name: '', lastUsed: 0 }
+  for (const m of loaded.models) {
+    const lastUsed = lastUsedAt(m.name, m.expiresAt, nodeModels, now)
+    if (atRisk.name === '' || lastUsed > atRisk.lastUsed) atRisk = { name: m.name, lastUsed }
+  }
+
+  const age = now - atRisk.lastUsed
+  const protection =
+    age <= WARM_RECENT_MS ? 1 : age >= WARM_INACTIVE_MS ? 0 : 1 - (age - WARM_RECENT_MS) / (WARM_INACTIVE_MS - WARM_RECENT_MS)
+  const recency = atRisk.lastUsed > 0 ? `last used ${formatAge(age)} ago` : 'no recent use'
+  return {
+    value: -protection,
+    detail: `needs ${need}, ${reasons.join(' and ')} — Ollama may unload any idle model, incl. ${atRisk.name} (${recency})`,
+  }
+}
+
+/** Epoch ms a loaded model was last used: router history first, else inferred from /api/ps expiry; 0 = unknown. */
+function lastUsedAt(
+  name: string,
+  expiresAt: number,
+  nodeModels: Map<string, ModelInfo>,
+  now: number,
+): number {
+  const routed = nodeModels.get(name)?.lastRoutedAt ?? 0
+  if (routed > 0) return routed
+  return expiresAt > 0 ? Math.min(now, expiresAt - DEFAULT_KEEP_ALIVE_MS) : 0
+}
+
 // ─── Scoring ────────────────────────────────────────────────────────
 
 export function scoreCandidate(input: ScoreInput): ScoreBreakdown {
-  const { modelInfo, profile, analysis, isCloud, utilization, warm, cloudUsagePressure: usage } = input
+  const { modelInfo, profile, analysis, isCloud, utilization, warm, eviction, cloudUsagePressure: usage } = input
   const w = profile.weights
   const factors: ScoreFactor[] = [
     qualityFactor(modelInfo, profile, w.quality),
@@ -294,6 +390,7 @@ export function scoreCandidate(input: ScoreInput): ScoreBreakdown {
     throughputFactor(modelInfo, isCloud, w.throughput),
     contextFactor(modelInfo, analysis, w.context),
     makeFactor('warm', 'Warm model', warm.value, w.warm, 'live', warm.detail),
+    makeFactor('eviction', 'Eviction cost', eviction.value, w.eviction, 'live', eviction.detail),
     thinkingFactor(modelInfo, profile, w.thinking),
     makeFactor(
       'load', 'Node load', -clamp01(utilization), w.load, 'live',
@@ -514,6 +611,10 @@ function formatMs(ms: number): string {
 function formatAge(ms: number): string {
   const s = ms / 1000
   return s < 60 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`
+}
+
+function formatGb(bytes: number): string {
+  return (bytes / GB).toFixed(1)
 }
 
 function formatTokens(n: number): string {

@@ -31,6 +31,7 @@ function createDiscoveryManager(nodeHost: string, modelName: string) {
     ]),
     updateModelMetrics: jest.fn(),
     recordModelFailure: jest.fn(),
+    noteModelDispatched: jest.fn(),
     getCloudApiKey: jest.fn().mockReturnValue(null),
   } as unknown as DiscoveryManager
 }
