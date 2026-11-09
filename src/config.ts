@@ -28,6 +28,64 @@ export interface Config {
 export const OLLAMA_NODES: string[] =
   process.env.OLLAMA_NODES?.split(',').filter(Boolean) ?? []
 
+const BYTES_PER_GB = 1024 ** 3
+
+export interface NodeMemoryEntry {
+  /** Lower-cased hostname or IP the entry applies to. */
+  hostname: string
+  /** Port the entry is restricted to; '' = any port on that host. */
+  port: string
+  bytes: number
+}
+
+function splitHostPort(value: string): { hostname: string; port: string } | null {
+  try {
+    const url = new URL(value.includes('://') ? value : `http://${value}`)
+    return url.hostname ? { hostname: url.hostname.toLowerCase(), port: url.port } : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Parses OLLAMA_NODE_MEMORY_GB, e.g. "192.168.1.20=64,mac-studio.local=32".
+ * Keys may carry a scheme and/or port; entries with a non-positive or
+ * non-numeric size, or an unparseable host, are ignored.
+ */
+export function parseNodeMemoryGb(raw: string | undefined): NodeMemoryEntry[] {
+  const entries: NodeMemoryEntry[] = []
+  for (const part of (raw ?? '').split(',')) {
+    const eq = part.lastIndexOf('=')
+    if (eq < 0) continue
+    const gb = Number(part.slice(eq + 1).trim())
+    const host = splitHostPort(part.slice(0, eq).trim())
+    if (!host || !Number.isFinite(gb) || gb <= 0) continue
+    entries.push({ ...host, bytes: gb * BYTES_PER_GB })
+  }
+  return entries
+}
+
+/** Configured memory (bytes) for a node URL, or null. A port-specific entry beats a host-only one. */
+export function resolveNodeMemoryBytes(
+  entries: readonly NodeMemoryEntry[],
+  nodeHost: string,
+): number | null {
+  const node = splitHostPort(nodeHost)
+  if (!node) return null
+  const sameHost = entries.filter((e) => e.hostname === node.hostname)
+  const match = sameHost.find((e) => e.port === node.port) ?? sameHost.find((e) => e.port === '')
+  return match?.bytes ?? null
+}
+
+/**
+ * Memory Ollama can use for loaded models, per node in GB (Ollama cannot report
+ * it), used to avoid routing loads that would evict hot models. Nodes without
+ * an entry get no penalty.
+ */
+export const OLLAMA_NODE_MEMORY_GB: NodeMemoryEntry[] = parseNodeMemoryGb(
+  process.env.OLLAMA_NODE_MEMORY_GB,
+)
+
 export const DISCOVERY_INTERVAL = 15_000
 export const MAX_CONCURRENT_PER_NODE = 3
 export const PORT: number | string = process.env.PORT || 8000

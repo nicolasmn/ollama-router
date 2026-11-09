@@ -14,6 +14,7 @@ import {
   TaskProfile,
   annotateRanking,
   cloudUsagePressure,
+  computeEvictionSignal,
   computeWarmSignal,
   fitsContext,
   scoreCandidate,
@@ -900,6 +901,15 @@ export class RequestRouter {
       isCloud: node.cloud,
       utilization: this.load.getUtilization(nodeHost),
       warm: computeWarmSignal(modelInfo, node.models, node.cloud),
+      eviction: computeEvictionSignal(
+        modelInfo,
+        node.models,
+        node.loaded,
+        this.discovery.getNodeMemory(nodeHost).bytes,
+        node.cloud,
+        Date.now(),
+        this.discovery.getNodeLoadedLimit(nodeHost) ?? Infinity,
+      ),
       cloudUsagePressure: pressure,
     })
     return { nodeHost, modelName, modelInfo, score: rationale.total, rationale }

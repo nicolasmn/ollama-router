@@ -82,6 +82,37 @@ export interface ModelInfoJSON {
   lastRoutedAt?: number
 }
 
+/** A model currently resident in a node's memory, as reported by GET /api/ps. */
+export interface LoadedModel {
+  name: string
+  /** Actual in-memory bytes (weights + KV cache). */
+  size: number
+  sizeVram: number
+  /** Epoch ms when Ollama will unload the model; 0 = unknown. */
+  expiresAt: number
+}
+
+/** Snapshot of a node's loaded models from the latest successful /api/ps poll. */
+export interface LoadedState {
+  models: LoadedModel[]
+  /** Epoch ms of the poll that produced this snapshot. */
+  updatedAt: number
+}
+
+/** What consecutive /api/ps snapshots have revealed about a node's memory and model limit (0 = unknown). */
+export interface NodeMemoryLearning {
+  /** Lower bound: largest Σ size of models seen loaded together. */
+  fitBytes: number
+  /** Upper bound: a total reaching this did not fit. */
+  noFitBytes: number
+  /** Loaded-model limit inferred from a count-triggered eviction. */
+  maxLoaded: number
+  /** Largest number of models seen loaded together. */
+  maxSeenLoaded: number
+  /** Models of the last successful /api/ps poll; null when a probe has failed since. Not persisted. */
+  lastSnapshot: LoadedModel[] | null
+}
+
 export class ModelInfo {
   name: string
   family: string
@@ -103,6 +134,9 @@ export class ModelInfo {
   lastSeen: number
   lastRoutingEndpoint: string | null
   lastRoutedAt: number
+  /** In-memory bytes measured via /api/ps the last time this model was seen
+   *  loaded on this node; 0 = never observed loaded. */
+  measuredFootprint: number
 
   constructor(name: string, family: string, size: number, profile: ModelProfile) {
     this.name = name
@@ -120,6 +154,7 @@ export class ModelInfo {
     this.lastSeen = 0
     this.lastRoutingEndpoint = null
     this.lastRoutedAt = 0
+    this.measuredFootprint = 0
   }
 }
 
@@ -147,6 +182,9 @@ export class NodeInfo {
   cloud: boolean
   /** Learned MAC address via ARP — null until node has been seen at least once. */
   mac: string | null
+  /** Loaded-model snapshot from /api/ps; null = unknown (not polled yet or the poll failed). */
+  loaded: LoadedState | null
+  memory: NodeMemoryLearning
 
   constructor(host: string, cloud = false) {
     this.host = host
@@ -158,5 +196,7 @@ export class NodeInfo {
     this.models = new Map()
     this.cloud = cloud
     this.mac = null
+    this.loaded = null
+    this.memory = { fitBytes: 0, noFitBytes: 0, maxLoaded: 0, maxSeenLoaded: 0, lastSnapshot: null }
   }
 }

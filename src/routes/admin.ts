@@ -61,6 +61,7 @@ export function createAdminRouter({
       nodes: Object.fromEntries(
         Array.from(nodes.entries()).map(([host, node]) => {
           const isCloud = node.cloud ?? false
+          const memory = discoveryManager.getNodeMemory(host)
           return [
             host,
             {
@@ -78,6 +79,14 @@ export function createAdminRouter({
               atCapacity: loadManager.isAtCapacity(host),
               utilization: loadManager.getUtilization(host),
               modelCount: node.models.size,
+              memoryBytes: memory.bytes,
+              memorySource: memory.source,
+              fitBytes: isCloud ? null : node.memory.fitBytes || null,
+              noFitBytes: isCloud ? null : node.memory.noFitBytes || null,
+              loadedLimit: discoveryManager.getNodeLoadedLimit(host),
+              loaded: node.loaded
+                ? { updatedAt: node.loaded.updatedAt, models: node.loaded.models }
+                : null,
               models: Object.fromEntries(
                 Array.from(node.models.entries()).map(([name, info]) => [
                   name,
@@ -95,6 +104,7 @@ export function createAdminRouter({
                     totalRequests: info.totalRequests,
                     lastRoutingEndpoint: info.lastRoutingEndpoint,
                     lastRoutedAt: info.lastRoutedAt,
+                    measuredFootprint: info.measuredFootprint,
                     disabled: disabledModelsStore.isDisabled(node.host, name),
                   },
                 ]),

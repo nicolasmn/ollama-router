@@ -145,8 +145,30 @@ curl -X DELETE http://localhost:8000/admin/force-model
 Environment variables:
 
 - `OLLAMA_NODES`: comma-separated node list. Example: `localhost:11434,10.0.0.12:11434`
+- `OLLAMA_NODE_MEMORY_GB`: optional override for the memory (GB, i.e. GiB) that Ollama can use for loaded models on each node, as comma-separated `host=GB` pairs. Example: `192.168.1.20=64,mac-studio.local=21`. Use the memory Ollama can actually use, not the installed RAM — on Apple Silicon the GPU only gets part of unified memory by default (about 21 GB on a 32 GB Mac). Ollama logs this as `total` on its `inference compute` line at startup. Hosts match with or without scheme and port (`http://192.168.1.20:11434=64` restricts the entry to that port). Without an entry the router learns the value per node (see below); a configured value always wins. The cloud node is never penalized.
 - `PORT`: router listen port (default: `8000`)
 - `ROUTER_FALLBACK_TO_AUTO`: set to `true` to reroute requests for unknown model names to `auto` selection instead of returning `404` (default: `false`)
+
+### Memory-aware co-location
+
+Ollama keeps several models loaded and unloads idle ones when a new model does not fit (or when it would exceed its loaded-model limit), so routing a large *cold* model to a node can evict a hot one (the next request for it then pays a full reload). The router tracks this per non-cloud node:
+
+- it polls `GET /api/ps` on every probe cycle to learn which models are loaded and their in-memory size (a failing `/api/ps` marks the loaded state unknown but never marks the node unreachable);
+- it learns each model's real footprint from `/api/ps`; before a model has ever been seen loaded it estimates disk size × 1.3;
+- when a request is dispatched, the model is counted as loaded on that node right away (estimated footprint, 5 min keep-alive) so a burst within one probe interval sees current free memory; the next probe replaces the snapshot;
+- **memory** is `OLLAMA_NODE_MEMORY_GB` if configured, otherwise learned from consecutive `/api/ps` snapshots: when a model disappears before its expiry while a new one appears and the node held fewer models than its loaded-model limit, a total of that size did not fit; a partially GPU-offloaded model (`size_vram < size`) shows the GPU was full. The smallest "did not fit" total becomes the capacity, and it is forgotten again if a total that large is later seen loaded together;
+- the **loaded-model limit** (`OLLAMA_MAX_LOADED_MODELS`, default 3 per GPU — the router cannot see the GPU count) is the value learned from an eviction that happened although that much had already fitted, else 3, raised to the most models ever seen loaded together on that node;
+- both learned values are persisted in the metrics file and restored on startup.
+
+A candidate gets an `eviction` factor (weight 20, `−1…0`): `0` when the model is already loaded or fits in `capacity − Σ loaded sizes` below the loaded-model limit, otherwise a penalty driven by the most recently used loaded model, since Ollama may unload any idle one — close to `−1` if it served traffic within 2 minutes, fading to `0` once every loaded model has been idle for 10 minutes, and `−1` when the model is larger than the whole node. It is a penalty, not a filter: a node can still win when it is much faster.
+
+Caveats:
+
+- The loaded-model limit applies to every non-cloud node with a known loaded state, so with no configuration at all routing is **not** identical to before: a cold model aimed at a node already holding 3 models is penalized. Memory predictions only start after one memory-triggered eviction has been observed on that node (or when `OLLAMA_NODE_MEMORY_GB` is set).
+- Explicit unloads (`ollama stop`, `keep_alive: 0`) and normal expiry are ignored; they teach nothing.
+- Loads that start and end between two probes are missed.
+
+`GET /admin/inventory` shows per node `memoryBytes` (effective capacity) with `memorySource` (`config`, `learned` or `null`), the learned bounds `fitBytes` / `noFitBytes`, the effective `loadedLimit`, and `loaded` (models with `size`, `sizeVram`, `expiresAt`, and `updatedAt` of the snapshot); per model it shows `measuredFootprint` (bytes, `0` = never seen loaded).
 
 ### Request history privacy
 
