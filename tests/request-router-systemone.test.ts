@@ -1,10 +1,14 @@
 // request-router-systemone.test.ts — /v1/systemone routes ONLY decision models
-import { describe, it, expect, beforeEach, jest } from '@jest/globals'
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import type { Response } from 'express'
 import { RequestRouter } from '../src/request-router.js'
 import { maxChoiceCriteria } from '../src/request-router.js'
-import { parseCriteriaCap } from '../src/routes/request-helpers.js'
+import { parseCriteriaCap, selectCandidatesOrHandleError } from '../src/routes/request-helpers.js'
 import { LoadManager } from '../src/load-manager.js'
 import { DiscoveryManager } from '../src/discovery-manager.js'
+import { RequestHistoryManager } from '../src/request-history.js'
+import { createLogger } from '../src/logger.js'
+import { disabledModelsStore } from '../src/disabled-models-store.js'
 import { ModelInfo, ModelProfile, NodeInfo } from '../src/models.js'
 import type { ModelProfileData } from '../src/models.js'
 
@@ -66,6 +70,73 @@ describe('systemone criteria-cap filtering (learned from upstream 400s)', () => 
     const router = routerWithCap(0)
     const result = await router.selectForSystemone({ model: 'auto', state: {}, questions: questions(27) })
     expect(result?.length).toBeGreaterThan(0)
+  })
+
+  it('rejects an explicit decision model when its learned cap is too small', async () => {
+    const router = routerWithCap(26)
+    const select = jest.spyOn(router as unknown as { _selectCandidates: () => unknown }, '_selectCandidates')
+    await expect(router.selectForSystemone({ model: 'decision-base:2b', questions: questions(27) })).rejects.toMatchObject({
+      code: 'CRITERIA_LIMIT', statusCode: 400,
+      message: 'Decision model decision-base:2b accepts at most 26 criteria per question; this request has 27',
+    })
+    expect(select).not.toHaveBeenCalled()
+    select.mockRestore()
+  })
+
+  it('rejects an oversized request before selecting or waking an offline host', async () => {
+    const router = routerWithCap(26)
+    const node = router.discovery.inventory.get('http://node-a:11434')!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(router.discovery, 'tryWakeNodesForRequest').mockReturnValue(false)
+    const select = jest.spyOn(router as unknown as { _selectCandidates: () => unknown }, '_selectCandidates')
+    await expect(router.selectForSystemone({ model: 'decision-base:2b', questions: questions(27) })).rejects.toMatchObject({
+      code: 'CRITERIA_LIMIT', statusCode: 400,
+    })
+    expect(select).not.toHaveBeenCalled()
+    expect(wake).not.toHaveBeenCalled()
+    select.mockRestore()
+    wake.mockRestore()
+  })
+
+  it('uses the largest known cap for the same model across reachable and offline nodes', async () => {
+    const hostA = 'http://node-a:11434'
+    const hostB = 'http://node-b:11434'
+    const model = 'decision-base:2b'
+    const discovery = makeDiscovery({
+      [hostA]: { [model]: { supportsDecision: true } },
+      [hostB]: { [model]: { supportsDecision: true } },
+    })
+    const nodeA = discovery.inventory.get(hostA)!
+    const nodeB = discovery.inventory.get(hostB)!
+    nodeA.models.get(model)!.systemoneMaxCriteria = 26
+    nodeB.models.get(model)!.systemoneMaxCriteria = 40
+    nodeB.reachable = false
+    const router = new RequestRouter(discovery, new LoadManager())
+    const wake = jest.spyOn(discovery, 'tryWakeNodesForRequest').mockReturnValue(false)
+    await expect(router.selectForSystemone({ model, questions: questions(41) })).rejects.toMatchObject({
+      code: 'CRITERIA_LIMIT', statusCode: 400,
+      message: `Decision model ${model} accepts at most 40 criteria per question; this request has 41`,
+    })
+    await expect(router.selectForSystemone({ model, questions: questions(30) })).resolves.toEqual([
+      expect.objectContaining({ nodeHost: hostA, modelName: model }),
+    ])
+    expect(wake).not.toHaveBeenCalled()
+    nodeB.reachable = true
+    await expect(router.selectForSystemone({ model, questions: questions(40) })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeHost: hostA, modelName: model }),
+      expect.objectContaining({ nodeHost: hostB, modelName: model }),
+    ]))
+    wake.mockRestore()
+  })
+
+  it('does not apply a cap belonging only to a non-decision model', async () => {
+    const discovery = makeDiscovery({ 'http://node-a:11434': { 'chat:2b': {} } })
+    discovery.inventory.get('http://node-a:11434')!.models.get('chat:2b')!.systemoneMaxCriteria = 2
+    const router = new RequestRouter(discovery, new LoadManager())
+    await expect(router.selectForSystemone({ model: 'chat:2b', questions: questions(3) })).rejects.toMatchObject({
+      code: 'MODEL_NOT_DECISION', statusCode: 400,
+    })
   })
 
   it('parseCriteriaCap extracts the cap from upstream 400 messages', () => {
@@ -140,6 +211,13 @@ describe('selectForSystemone', () => {
     })
   })
 
+  it('rejects an unknown explicit decision model with MODEL_NOT_FOUND', async () => {
+    await expect(router.selectForSystemone({ model: 'missing:2b' })).rejects.toMatchObject({
+      code: 'MODEL_NOT_FOUND',
+      statusCode: 404,
+    })
+  })
+
   it('routes an explicit decision model to its nodes', async () => {
     const result = await router.selectForSystemone({
       model: 'decision-base:2b',
@@ -166,6 +244,212 @@ describe('selectForSystemone', () => {
       questions: [{ id: 'q1', type: 'choice' }],
     })
     expect(result).toBeNull()
+  })
+})
+
+describe('concrete model wake fallback', () => {
+  const host = 'http://192.168.1.10:11434'
+  const model = 'decision-base:2b'
+
+  afterEach(() => {
+    jest.useRealTimers()
+    jest.restoreAllMocks()
+    disabledModelsStore.reset()
+  })
+
+  it('wakes an offline decision host and keeps polling until it becomes reachable', async () => {
+    jest.useFakeTimers()
+    const discovery = makeDiscovery({
+      [host]: { [model]: { supportsDecision: true, parameters: 2, contextLength: 8192 } },
+    })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const selection = router.selectForSystemone({ model })
+    let settled = false
+    void selection.then(() => { settled = true }, () => { settled = true })
+
+    await jest.advanceTimersByTimeAsync(2000)
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(host, node.mac)
+    expect(settled).toBe(false)
+    node.reachable = true
+    await jest.advanceTimersByTimeAsync(1000)
+    await expect(selection).resolves.toEqual([
+      expect.objectContaining({ nodeHost: host, modelName: model }),
+    ])
+  })
+
+  it('responds 503 and finishes request history when a decision host never wakes', async () => {
+    jest.useFakeTimers()
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: true } } })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const history = new RequestHistoryManager()
+    const reqBody = { model }
+    history.startRequest({ requestId: 'offline', endpointType: 'systemone', reqBody, analysis: {} })
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    }
+    const selection = selectCandidatesOrHandleError({
+      requestId: 'offline', reqBody, taskType: 'systemone', res: res as unknown as Response,
+      requestHistoryManager: history,
+      selectFn: (body) => router.selectForSystemone(body),
+      selectionErrorMessage: 'Systemone model selection error',
+      logger: createLogger('test'),
+    })
+
+    await jest.advanceTimersByTimeAsync(30_000)
+    await expect(selection).resolves.toBeNull()
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(host, node.mac)
+    expect(res.status).toHaveBeenCalledWith(503)
+    const message = `No node can serve decision model ${model} right now`
+    expect(res.json).toHaveBeenCalledWith({ error: message })
+    expect(history.getRecentRequests()[0]).toMatchObject({
+      status: 'failed', responseStatus: 503, error: message,
+      failureCategory: 'capacity', retryHint: 'retry_later',
+    })
+  })
+
+  it('rejects an offline non-decision model without waking its host', async () => {
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: false } } })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery, 'tryWakeNodesForRequest').mockReturnValue(false)
+    const router = new RequestRouter(discovery, new LoadManager())
+    await expect(router.selectForSystemone({ model })).rejects.toMatchObject({
+      code: 'MODEL_NOT_DECISION', statusCode: 400,
+    })
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('recognizes decision capability on a later node with the same model name', async () => {
+    const discovery = makeDiscovery({
+      'http://node-a:11434': { [model]: { supportsDecision: false } },
+      [host]: { [model]: { supportsDecision: true } },
+    })
+    discovery.inventory.get(host)!.reachable = false
+    const wake = jest.spyOn(discovery, 'tryWakeNodesForRequest').mockReturnValue(false)
+    const router = new RequestRouter(discovery, new LoadManager())
+    await expect(router.selectForSystemone({ model })).rejects.toMatchObject({
+      code: 'MODEL_UNAVAILABLE', statusCode: 503,
+      message: `No node can serve decision model ${model} right now`,
+    })
+    expect(wake).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports the decision model as unavailable when it is at capacity or disabled', async () => {
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: true } } })
+    const load = new LoadManager({ maxConcurrentPerNode: 1 })
+    const router = new RequestRouter(discovery, load)
+    load.incrementLoad(host)
+    const unavailable = { code: 'MODEL_UNAVAILABLE', statusCode: 503, message: `No node can serve decision model ${model} right now` }
+    await expect(router.selectForSystemone({ model })).rejects.toMatchObject(unavailable)
+    load.decrementLoad(host)
+    disabledModelsStore.disable(host, model)
+    await expect(router.selectForSystemone({ model })).rejects.toMatchObject(unavailable)
+  })
+
+  it('returns null instead of an availability error when aborted during the wake wait', async () => {
+    jest.useFakeTimers()
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: true } } })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const controller = new AbortController()
+    const selection = router.selectForSystemone({ model }, controller.signal)
+    await jest.advanceTimersByTimeAsync(1000)
+    expect(wake).toHaveBeenCalledTimes(1)
+    controller.abort()
+    await jest.advanceTimersByTimeAsync(1000)
+    await expect(selection).resolves.toBeNull()
+  })
+
+  it('wakes only the decision host for a systemone auto request', async () => {
+    jest.useFakeTimers()
+    const chatHost = 'http://192.168.1.11:11434'
+    const discovery = makeDiscovery({
+      [chatHost]: { 'chat:2b': { parameters: 2, contextLength: 8192 } },
+      [host]: { [model]: { supportsDecision: true, parameters: 2, contextLength: 8192 } },
+    })
+    const chatNode = discovery.inventory.get(chatHost)!
+    chatNode.reachable = false
+    chatNode.mac = 'aa:bb:cc:dd:ee:01'
+    const decisionNode = discovery.inventory.get(host)!
+    decisionNode.reachable = false
+    decisionNode.mac = 'aa:bb:cc:dd:ee:02'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const selection = router.selectForSystemone({ model: 'auto' })
+    await jest.advanceTimersByTimeAsync(1000)
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(host, decisionNode.mac)
+    decisionNode.reachable = true
+    await jest.advanceTimersByTimeAsync(1000)
+    await expect(selection).resolves.toEqual([
+      expect.objectContaining({ nodeHost: host, modelName: model }),
+    ])
+  })
+
+  it('rejects chat naming a sleeping decision model without waking it', async () => {
+    jest.useFakeTimers()
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: true } } })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const selection = router.selectForChat({ model, messages: [] })
+    void selection.catch(() => {})
+    await jest.advanceTimersByTimeAsync(30_000)
+    await expect(selection).rejects.toMatchObject({
+      code: 'MODEL_NOT_DECISION', statusCode: 400,
+      message: `Model ${model} is a decision model — decision requests must use /v1/systemone`,
+    })
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('rejects chat naming a decision model that is at capacity or disabled', async () => {
+    const discovery = makeDiscovery({ [host]: { [model]: { supportsDecision: true } } })
+    const load = new LoadManager({ maxConcurrentPerNode: 1 })
+    const router = new RequestRouter(discovery, load)
+    const wrongType = { code: 'MODEL_NOT_DECISION', statusCode: 400 }
+    load.incrementLoad(host)
+    await expect(router.selectForChat({ model, messages: [] })).rejects.toMatchObject(wrongType)
+    load.decrementLoad(host)
+    disabledModelsStore.disable(host, model)
+    await expect(router.selectForChat({ model, messages: [] })).rejects.toMatchObject(wrongType)
+  })
+
+  it('wakes an offline host for an explicitly named normal chat model', async () => {
+    jest.useFakeTimers()
+    const chatModel = 'chat:2b'
+    const discovery = makeDiscovery({ [host]: { [chatModel]: { parameters: 2, contextLength: 8192 } } })
+    const node = discovery.inventory.get(host)!
+    node.reachable = false
+    node.mac = 'aa:bb:cc:dd:ee:ff'
+    const wake = jest.spyOn(discovery as unknown as { _triggerWol: (host: string, mac: string) => void }, '_triggerWol').mockImplementation(() => {})
+    const router = new RequestRouter(discovery, new LoadManager())
+    const selection = router.selectForChat({ model: chatModel, messages: [] })
+
+    await jest.advanceTimersByTimeAsync(1000)
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(host, node.mac)
+    node.reachable = true
+    await jest.advanceTimersByTimeAsync(1000)
+    await expect(selection).resolves.toEqual([
+      expect.objectContaining({ nodeHost: host, modelName: chatModel }),
+    ])
   })
 })
 

@@ -35,34 +35,27 @@ export function setupSystemoneRoutes(
       // Request format: { model, state, questions }
       // No streaming support per Ollama spec
 
-      // Cache checks: conversation first, then signal. On a hit we skip
-      // re-analyzing the body and skip heavy history capture.
-      const peeked = requestRouter.peekCachedRouting?.(reqBody) ?? requestRouter.peekSignalCache?.(reqBody)
-      const analysis = peeked ? undefined : requestRouter.analyzeRequest(reqBody, 'systemone')
+      const analysis = requestRouter.analyzeRequest(reqBody, 'systemone')
 
       requestHistoryManager.startRequest({
         requestId,
         endpointType: 'systemone',
         reqBody,
-        analysis: analysis ?? {},
-        skipCapture: !!peeked,
+        analysis,
       })
       requestHistoryManager.registerAbortController(requestId, abortController)
 
-      let candidates = peeked
-      if (!candidates) {
-        const result = await selectCandidatesOrHandleError({
-          requestId,
-          reqBody,
-          taskType: 'systemone',
-          res,
-          requestHistoryManager,
-          selectFn: (body) => requestRouter.selectForSystemone(body, abortController.signal),
-          selectionErrorMessage: 'Systemone model selection error',
-          logger,
-        })
-        candidates = result
-      }
+      // Chat routing caches cannot validate decision capability or criteria limits.
+      const candidates = await selectCandidatesOrHandleError({
+        requestId,
+        reqBody,
+        taskType: 'systemone',
+        res,
+        requestHistoryManager,
+        selectFn: (body) => requestRouter.selectForSystemone(body, abortController.signal),
+        selectionErrorMessage: 'Systemone model selection error',
+        logger,
+      })
       if (!candidates) return
 
       requestHistoryManager.recordSelection(requestId, candidates)

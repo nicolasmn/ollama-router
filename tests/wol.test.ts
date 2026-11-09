@@ -96,6 +96,47 @@ describe('DiscoveryManager.tryWakeNodesForRequest', () => {
     expect(mockSendWakeOnLan).toHaveBeenCalledWith('aa:bb:cc:dd:ee:ff')
   })
 
+  it('wakes only decision-capable hosts for systemone auto', () => {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    const chatHost = 'http://192.168.1.10:11434'
+    const decisionHost = 'http://192.168.1.11:11434'
+    dm.inventory.set(chatHost, makeNode(chatHost, {
+      mac: 'aa:bb:cc:dd:ee:10', models: { chat: {} },
+    }))
+    dm.inventory.set(decisionHost, makeNode(decisionHost, {
+      mac: 'aa:bb:cc:dd:ee:11', models: { decision: { profile: new ModelProfile({ supportsDecision: true }) } },
+    }))
+    expect(dm.tryWakeNodesForRequest('auto', makeAnalysis({ endpointType: 'systemone' }), { decisionOnly: true })).toBe(true)
+    expect(mockSendWakeOnLan).toHaveBeenCalledTimes(1)
+    expect(mockSendWakeOnLan).toHaveBeenCalledWith('aa:bb:cc:dd:ee:11')
+  })
+
+  it('does not wake decision-only hosts for chat auto', () => {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    const host = 'http://192.168.1.10:11434'
+    dm.inventory.set(host, makeNode(host, {
+      mac: 'aa:bb:cc:dd:ee:10', models: { decision: { profile: new ModelProfile({ supportsDecision: true }) } },
+    }))
+    expect(dm.tryWakeNodesForRequest('auto', makeAnalysis())).toBe(false)
+    expect(mockSendWakeOnLan).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { decisionOnly: true, expectedMac: 'aa:bb:cc:dd:ee:11' },
+    { decisionOnly: false, expectedMac: 'aa:bb:cc:dd:ee:10' },
+  ])('wakes only matching hosts for a concrete model when decisionOnly is $decisionOnly', ({ decisionOnly, expectedMac }) => {
+    const dm = new DiscoveryManager({ ollamaNodes: [] })
+    const chatHost = 'http://192.168.1.10:11434'
+    const decisionHost = 'http://192.168.1.11:11434'
+    dm.inventory.set(chatHost, makeNode(chatHost, { mac: 'aa:bb:cc:dd:ee:10', models: { shared: {} } }))
+    dm.inventory.set(decisionHost, makeNode(decisionHost, {
+      mac: 'aa:bb:cc:dd:ee:11', models: { shared: { profile: new ModelProfile({ supportsDecision: true }) } },
+    }))
+    expect(dm.tryWakeNodesForRequest('shared', makeAnalysis(), { decisionOnly })).toBe(true)
+    expect(mockSendWakeOnLan).toHaveBeenCalledTimes(1)
+    expect(mockSendWakeOnLan).toHaveBeenCalledWith(expectedMac)
+  })
+
   it('respects cooldown — does not retrigger within 60s', () => {
     const dm = new DiscoveryManager({ ollamaNodes: [] })
     dm.inventory.set('http://192.168.1.10:11434', makeNode('http://192.168.1.10:11434', { reachable: false, mac: 'aa:bb:cc:dd:ee:ff', models: { llama3: {} } }))

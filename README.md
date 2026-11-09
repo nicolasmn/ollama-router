@@ -98,6 +98,8 @@ Notes:
 
 Decision models (Ollama Jev-style, served via `POST /v1/systemone`) are listed like any other pulled model — `/v1/models` and `/api/tags` include them, matching Ollama. They answer typed questions/statements and return probabilities, not text. Chat requests that name a decision model explicitly are rejected with `MODEL_NOT_DECISION`; use `/v1/systemone` (or an explicit decision model name) for decision traffic.
 
+On `/v1/systemone`, a decision model whose hosts are asleep is woken via Wake-on-LAN before routing; if no node can take the request, the router answers `503` naming the model. A request with more criteria per question than the decision model accepts (learned from the model's own `400`) is rejected with `400` without reaching a node.
+
 ## Force-Model Override
 
 Force a specific model for the **next single request**, bypassing normal routing logic. The override is one-shot — consumed on the first routed request, then automatically cleared.
