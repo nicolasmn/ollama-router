@@ -158,4 +158,60 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
     expect(json.capabilities).toContain('completion')
     expect(json.model_info?.['gemma3.context_length']).toBe(131_072)
   })
+
+  it('lists capabilities per model in GET /api/tags details', async () => {
+    await start(true, true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    const json = (await response.json()) as {
+      models?: Array<{ name: string; details: { capabilities?: string[] } }>
+    }
+    const byName = new Map(json.models?.map((m) => [m.name, m]))
+    expect(byName.get('gemma3:4b')?.details.capabilities).toEqual([
+      'completion',
+      'tools',
+      'vision',
+    ])
+    expect(byName.get('decision-base:2b')?.details.capabilities).toEqual([
+      'decision',
+    ])
+  })
+
+  it('lists decision capability only for decision models in GET /api/tags', async () => {
+    await start(true, true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    const json = (await response.json()) as {
+      models?: Array<{ name: string; details: { capabilities?: string[] } }>
+    }
+    const caps = (name: string) =>
+      json.models?.find((m) => m.name === name)?.details.capabilities
+    expect(caps('decision-base:2b')).toContain('decision')
+    expect(caps('gemma3:4b')).not.toContain('decision')
+  })
+
+  it('lists fixed virtual alias capabilities in GET /api/tags', async () => {
+    await start(true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    const json = (await response.json()) as {
+      models?: Array<{ name: string; details: { capabilities?: string[] } }>
+    }
+    const caps = (name: string) =>
+      json.models?.find((m) => m.name === name)?.details.capabilities
+    expect(caps('auto-think')).toContain('thinking')
+    expect(caps('auto')).not.toContain('thinking')
+    expect(caps('auto')).toEqual(['completion', 'tools'])
+  })
+
+  it('reports the same virtual alias capabilities in POST /api/show', async () => {
+    await start(true)
+    const show = async (model: string) => {
+      const response = await fetch(`${baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      })
+      return ((await response.json()) as { capabilities?: string[] }).capabilities
+    }
+    expect(await show('auto-think')).toEqual(['completion', 'tools', 'thinking'])
+    expect(await show('auto')).toEqual(['completion', 'tools'])
+  })
 })

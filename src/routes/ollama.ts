@@ -62,6 +62,7 @@ export function setupOllamaRoutes(
             : '',
           quantization_level: '',
           format: 'gguf',
+          capabilities: modelInfo.profile.capabilityList,
         },
       })
     }
@@ -79,6 +80,7 @@ export function setupOllamaRoutes(
           parameter_size: '',
           quantization_level: '',
           format: 'virtual',
+          capabilities: virtualCapabilities(name),
         },
       })
     }
@@ -118,7 +120,7 @@ export function setupOllamaRoutes(
           parameter_size: '',
           quantization_level: '',
         },
-        capabilities: ['completion', 'tools'],
+        capabilities: virtualCapabilities(name),
         model_info: {},
       })
     }
@@ -443,6 +445,13 @@ export function setupOllamaRoutes(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Fixed capabilities of a virtual alias; shared by /api/tags and /api/show. */
+function virtualCapabilities(name: string): string[] {
+  return name === 'auto-think'
+    ? ['completion', 'tools', 'thinking']
+    : ['completion', 'tools']
+}
 
 function firstReachableNode(discoveryManager: DiscoveryManager): string | null {
   for (const [nodeHost, node] of discoveryManager.getNodes()) {

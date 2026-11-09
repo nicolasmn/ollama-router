@@ -365,6 +365,24 @@ describe('RequestRouter', () => {
       const alias = catalog.find((m) => m.id === 'auto')!
       expect(alias.context_length).toBe(8192)
     })
+
+    it('derives capabilities from profile flags in a fixed order', () => {
+      const discovery = makeDiscovery({
+        'http://node-a:11434': {
+          'multi:8b': {
+            capabilities: new Set(['completion']),
+            supportsDecision: true,
+            supportsTools: true,
+            supportsVision: true,
+            parameters: 8,
+            contextLength: 8192,
+          },
+        },
+      })
+      const catalogRouter = new RequestRouter(discovery, loadManager)
+      const entry = catalogRouter.getModelCatalog().find((m) => m.id === 'multi:8b')!
+      expect(entry.capabilities).toEqual(['completion', 'vision', 'tools', 'decision'])
+    })
   })
 
   describe('cloud routing', () => {
