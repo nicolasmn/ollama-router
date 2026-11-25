@@ -97,6 +97,30 @@ Notes:
 - Alias names are reserved and also listed in `/v1/models`.
 - `/api/tags` entries carry a non-standard `details.capabilities` list (e.g. `completion`, `tools`, `vision`, `thinking`, `decision`); aliases list their fixed capabilities (`auto-think` adds `thinking`).
 
+### OpenCode reasoning variants
+
+OpenCode v2.4.0 ignores the `/api/show` `thinking` passthrough; it builds effort variants only from its own catalog or `opencode.jsonc`. To expose `low`/`medium`/`high` for a discovered Ollama model without changing the router's request handling, add variants per model ID in `opencode.jsonc`:
+
+```jsonc
+{
+  "providers": {
+    "ollama": {
+      "models": {
+        "gpt-oss:20b": {
+          "variants": [
+            { "id": "low", "body": { "think": "low" } },
+            { "id": "medium", "body": { "think": "medium" } },
+            { "id": "high", "body": { "think": "high" } },
+          ],
+        },
+      },
+    },
+  },
+}
+```
+
+`body.think` is forwarded unchanged to Ollama, which uses it to select the named level from its own `/api/show` `thinking.values`. Use the exact values that model reports; boolean-capable models use `true`/`false` instead. `capabilities.reasoning` is not equivalent here — OpenCode would send `reasoning_effort`, which Ollama's native thinking API does not consume.
+
 Decision models (Ollama Jev-style, served via `POST /v1/systemone`) are listed like any other pulled model — `/v1/models` and `/api/tags` include them, matching Ollama. They answer typed questions/statements and return probabilities, not text. Chat requests that name a decision model explicitly are rejected with `MODEL_NOT_DECISION`; use `/v1/systemone` (or an explicit decision model name) for decision traffic.
 
 On `/v1/systemone`, a decision model whose hosts are asleep is woken via Wake-on-LAN before routing; if no node can take the request, the router answers `503` naming the model. A request with more criteria per question than the decision model accepts (learned from the model's own `400`) is rejected with `400` without reaching a node.
