@@ -1,5 +1,11 @@
 // models.ts - Core data types for nodes, models, and profiles
 
+/** Upstream Ollama /api/show reasoning-effort metadata, passed through verbatim. */
+export interface ThinkingMetadata {
+  values: Array<string | boolean>
+  default?: string | boolean
+}
+
 export interface ModelProfileData {
   capabilities?: Set<string>
   parameters?: number
@@ -12,6 +18,7 @@ export interface ModelProfileData {
   isEmbedding?: boolean
   architecture?: string
   embeddingDim?: number
+  thinking?: ThinkingMetadata
 }
 
 export class ModelProfile {
@@ -26,6 +33,7 @@ export class ModelProfile {
   isEmbedding: boolean
   architecture: string
   embeddingDim: number
+  thinking?: ThinkingMetadata
 
   constructor(data: ModelProfileData = {}) {
     this.capabilities = data.capabilities ?? new Set()
@@ -39,6 +47,7 @@ export class ModelProfile {
     this.isEmbedding = data.isEmbedding ?? false
     this.architecture = data.architecture ?? ''
     this.embeddingDim = data.embeddingDim ?? 0
+    this.thinking = data.thinking
   }
 
   /** Speech-synthesis (TTS) model: only serves /v1/audio/speech, never text chat. */

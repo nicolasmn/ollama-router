@@ -45,6 +45,23 @@ describe('DiscoveryManager.buildModelProfile', () => {
     expect(profile.contextLength).toBe(4096)
     expect(profile.parameters).toBe(0)
   })
+
+  it('retains named thinking levels verbatim', () => {
+    const thinking = { values: ['low', 'medium', 'high'], default: 'medium' }
+    const profile = dm.buildModelProfile({ capabilities: ['thinking'], thinking })
+    expect(profile.thinking).toBe(thinking)
+  })
+
+  it('retains boolean thinking values verbatim', () => {
+    const thinking = { values: [true, false], default: false }
+    const profile = dm.buildModelProfile({ thinking })
+    expect(profile.thinking).toBe(thinking)
+  })
+
+  it('leaves thinking undefined when upstream omits it', () => {
+    const profile = dm.buildModelProfile({ capabilities: ['thinking'] })
+    expect(profile.thinking).toBeUndefined()
+  })
 })
 
 describe('DiscoveryManager - Network Connectivity', () => {

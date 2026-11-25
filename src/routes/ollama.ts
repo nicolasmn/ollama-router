@@ -179,6 +179,7 @@ export function setupOllamaRoutes(
       },
       capabilities,
       model_info: modelInfo,
+      ...(profile.thinking ? { thinking: profile.thinking } : {}),
     })
   })
 
