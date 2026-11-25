@@ -200,3 +200,11 @@ export class NodeInfo {
     this.memory = { fitBytes: 0, noFitBytes: 0, maxLoaded: 0, maxSeenLoaded: 0, lastSnapshot: null }
   }
 }
+
+export function resolveModelName(requested: string, knownNames: Iterable<string>): string {
+  const known = new Set(knownNames)
+  if (known.has(requested) || requested.includes(':')) return requested
+  if (known.has(`${requested}:latest`)) return `${requested}:latest`
+  for (const name of known) if (name.startsWith(`${requested}:`)) return name
+  return requested
+}

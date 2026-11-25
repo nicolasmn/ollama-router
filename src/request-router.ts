@@ -4,7 +4,7 @@ import type { AnalysisResult } from './request-analyzer.js'
 import { createLogger } from './logger.js'
 import type { DiscoveryManager } from './discovery-manager.js'
 import type { LoadManager } from './load-manager.js'
-import type { ModelInfo, NodeInfo } from './models.js'
+import { ModelInfo, NodeInfo, resolveModelName } from './models.js'
 import { forceModelStore } from './force-model-store.js'
 import { disabledModelsStore } from './disabled-models-store.js'
 import { ROUTER_FALLBACK_TO_AUTO } from './config.js'
@@ -202,6 +202,20 @@ export class RequestRouter {
     return forced
   }
 
+  /** Resolve a tagless requested name without rewriting the body: raw
+   *  forwarding checks the original `model` against the chosen one, so a
+   *  rewritten body would make the router send stale raw bytes upstream. */
+  private _resolveRequestModel(reqBody: Record<string, unknown>): string {
+    const name = reqBody.model
+    if (typeof name !== 'string') return ''
+    if (VIRTUAL_MODELS.has(name)) return name
+    const known = new Set<string>()
+    for (const node of this.discovery.getNodes().values()) {
+      for (const modelName of node.models.keys()) known.add(modelName)
+    }
+    return resolveModelName(name, known)
+  }
+
   private _tagForced(
     result: RoutingCandidate[] | null,
   ): void {
@@ -286,7 +300,7 @@ export class RequestRouter {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     const finalAnalysis = analysis ?? this.analyzer.analyze(reqBody, 'chat')
-    const model = (reqBody.model as string) || 'auto'
+    const model = this._resolveRequestModel(reqBody) || 'auto'
     logger.debug({ model, originalModel, forced: !!forcedModel, ...finalAnalysis }, 'Chat routing analysis')
 
     let result: RoutingCandidate[] | null
@@ -319,7 +333,7 @@ export class RequestRouter {
     if (signal?.aborted) return null
     const originalModel = (reqBody.model as string) || 'auto'
     const forcedModel = this._applyOverride(reqBody)
-    const model = (reqBody.model as string) || 'auto'
+    const model = this._resolveRequestModel(reqBody) || 'auto'
     const maxCriteria = maxChoiceCriteria(reqBody)
     if (!VIRTUAL_MODELS.has(model) && maxCriteria > 0) {
       // The limit belongs to the model, not to an individual host.
@@ -384,7 +398,7 @@ export class RequestRouter {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     const finalAnalysis = analysis ?? this.analyzer.analyze(reqBody, 'embeddings')
-    const model = (reqBody.model as string) || 'auto'
+    const model = this._resolveRequestModel(reqBody) || 'auto'
     logger.debug({ model, originalModel, forced: !!forcedModel }, 'Embeddings routing analysis')
 
     const result = await this._selectWithWolFallback(model, finalAnalysis, reqBody, signal)
@@ -423,7 +437,7 @@ export class RequestRouter {
     await this._performOnRequestScan()
     if (signal?.aborted) return null
     const finalAnalysis = analysis ?? this.analyzer.analyze(reqBody, 'responses')
-    const model = (reqBody.model as string) || 'auto'
+    const model = this._resolveRequestModel(reqBody) || 'auto'
     logger.debug({ model, originalModel, forced: !!forcedModel, ...finalAnalysis }, 'Responses routing analysis')
 
     const result = await this._selectWithWolFallback(model, finalAnalysis, reqBody, signal)
@@ -452,7 +466,7 @@ export class RequestRouter {
     if (signal?.aborted) return null
     await this._performOnRequestScan()
     if (signal?.aborted) return null
-    const requestedModel = (reqBody.model as string) || 'auto-fast'
+    const requestedModel = this._resolveRequestModel(reqBody) || 'auto-fast'
     const finalAnalysis = analysis ?? this.analyzer.analyze(reqBody, 'audio')
     const capability = taskType === 'speech' ? 'speech' : 'audio'
 
@@ -589,6 +603,7 @@ export class RequestRouter {
     }
     const models = [...seen.values()]
     for (const alias of VIRTUAL_MODELS) {
+      if (alias === 'auto-local' && !this.discovery.getCloudInfo().configured) continue
       models.push({
         id: alias,
         object: 'model',
