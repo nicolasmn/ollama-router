@@ -6,7 +6,11 @@ import { setupOllamaRoutes } from '../src/routes/ollama.js'
 import { ModelInfo, ModelProfile, type NodeInfo } from '../src/models.js'
 import type { DiscoveryManager } from '../src/discovery-manager.js'
 
-function createDiscoveryManager(reachable: boolean, decisionModel = false) {
+function createDiscoveryManager(
+  reachable: boolean,
+  decisionModel = false,
+  cloudConfigured = false,
+) {
   const profile = new ModelProfile({
     capabilities: new Set(['completion', 'tools', 'vision']),
     contextLength: 131_072,
@@ -46,6 +50,12 @@ function createDiscoveryManager(reachable: boolean, decisionModel = false) {
   } as unknown as NodeInfo
   return {
     getNodes: () => new Map([['http://127.0.0.1:1234', node]]),
+    getCloudInfo: () => ({
+      configured: cloudConfigured,
+      cloudUrl: cloudConfigured ? 'https://ollama.com' : '',
+      cloudApiKey: cloudConfigured ? 'test-key' : '',
+      models: [],
+    }),
   } as unknown as DiscoveryManager
 }
 
@@ -66,10 +76,17 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
       await new Promise<void>((r) => server.close(() => r()))
   })
 
-  async function start(reachable: boolean, decisionModel = false) {
+  async function start(
+    reachable: boolean,
+    decisionModel = false,
+    cloudConfigured = false,
+  ) {
     const app: Express = express()
     app.use(express.json())
-    setupOllamaRoutes(app, createDiscoveryManager(reachable, decisionModel))
+    setupOllamaRoutes(
+      app,
+      createDiscoveryManager(reachable, decisionModel, cloudConfigured),
+    )
     server = http.createServer(app)
     baseUrl = await startServer(app)
   }
@@ -80,6 +97,22 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'gemma3:4b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as {
+      capabilities?: string[]
+      model_info?: Record<string, unknown>
+    }
+    expect(json.capabilities).toContain('completion')
+    expect(json.model_info?.['gemma3.context_length']).toBe(131_072)
+  })
+
+  it('resolves a tagless name to the installed model via POST /api/show', async () => {
+    await start(true)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma3' }),
     })
     expect(response.status).toBe(200)
     const json = (await response.json()) as {
@@ -186,6 +219,25 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
       json.models?.find((m) => m.name === name)?.details.capabilities
     expect(caps('decision-base:2b')).toContain('decision')
     expect(caps('gemma3:4b')).not.toContain('decision')
+  })
+
+  it('hides auto-local from GET /api/tags when cloud is not configured', async () => {
+    await start(true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    const json = (await response.json()) as {
+      models?: Array<{ name: string }>
+    }
+    expect(json.models?.some((m) => m.name === 'auto-local')).toBe(false)
+    expect(json.models?.some((m) => m.name === 'auto')).toBe(true)
+  })
+
+  it('exposes auto-local in GET /api/tags when cloud is configured', async () => {
+    await start(true, false, true)
+    const response = await fetch(`${baseUrl}/api/tags`)
+    const json = (await response.json()) as {
+      models?: Array<{ name: string }>
+    }
+    expect(json.models?.some((m) => m.name === 'auto-local')).toBe(true)
   })
 
   it('lists fixed virtual alias capabilities in GET /api/tags', async () => {

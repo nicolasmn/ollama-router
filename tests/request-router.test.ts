@@ -21,8 +21,12 @@ function makeDiscovery(
       }>
     >
   > = {},
+  cloudConfigured = false,
 ): DiscoveryManager {
-  const dm = new DiscoveryManager({ ollamaNodes: [] })
+  const dm = new DiscoveryManager({
+    ollamaNodes: [],
+    ...(cloudConfigured ? { cloudUrl: 'http://cloud:11434', cloudApiKey: 'test-key' } : {}),
+  })
   ;(dm as any).getScanStatus = () => ({
     inProgress: false,
     lastScanMs: Date.now(),
@@ -158,6 +162,14 @@ describe('RequestRouter', () => {
       expect(result[0].modelName).toBe('qwen2.5:1.5b')
     })
 
+    it('resolves a tagless model to the installed tag', async () => {
+      const body = { model: 'qwen2.5', messages: [{ role: 'user', content: 'hi' }] }
+      const result = await router.selectForChat(body) as any[]
+      expect(result[0].modelName).toBe('qwen2.5:1.5b')
+      // Raw forwarding relies on the original body/model pair staying in sync.
+      expect(body.model).toBe('qwen2.5')
+    })
+
     it('throws 404 for unknown model', async () => {
       await expect(
         router.selectForChat({ model: 'does-not-exist', messages: [] }),
@@ -254,6 +266,11 @@ describe('RequestRouter', () => {
       expect(result.length).toBeGreaterThan(0)
       for (const c of result) expect(c.modelInfo.profile.isEmbedding).toBe(true)
     })
+
+    it('resolves a tagless embedding model to :latest', async () => {
+      const result = await router.selectForEmbeddings({ model: 'nomic-embed-text', input: 'hello' }) as any[]
+      expect(result[0].modelName).toBe('nomic-embed-text:latest')
+    })
   })
 
   describe('speech-synthesis models', () => {
@@ -310,14 +327,18 @@ describe('RequestRouter', () => {
       expect(ids).toContain('auto')
       expect(ids).toContain('auto-fast')
       expect(ids).toContain('auto-think')
-      expect(ids).toContain('auto-local')
-      expect(ids).not.toContain('auto-cloud')
-      expect(ids).toContain('auto-local')
+      expect(ids).not.toContain('auto-local')
       expect(ids).not.toContain('auto-cloud')
       expect(ids).toContain('gemma4:e4b')
       expect(ids).toContain('gemma4:26b')
       expect(ids).toContain('qwen2.5:1.5b')
       expect(ids).toContain('nomic-embed-text:latest')
+    })
+
+    it('advertises auto-local when cloud is configured', () => {
+      const discovery = makeDiscovery({}, [], {}, true)
+      const catalogRouter = new RequestRouter(discovery, loadManager)
+      expect(catalogRouter.getModelCatalog().map((m) => m.id)).toContain('auto-local')
     })
 
     it('lists decision models in the catalog (ollama api parity)', () => {

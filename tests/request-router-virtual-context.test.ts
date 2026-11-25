@@ -8,8 +8,12 @@ import type { ModelProfileData } from '../src/models.js'
 function makeDiscovery(
   nodes: Record<string, Record<string, ModelProfileData>>,
   cloudHosts: string[] = [],
+  cloudConfigured = false,
 ): DiscoveryManager {
-  const dm = new DiscoveryManager({ ollamaNodes: [] })
+  const dm = new DiscoveryManager({
+    ollamaNodes: [],
+    ...(cloudConfigured ? { cloudUrl: 'http://cloud:11434', cloudApiKey: 'test-key' } : {}),
+  })
   ;(dm as any).getScanStatus = () => ({
     inProgress: false,
     lastScanMs: Date.now(),
@@ -59,6 +63,7 @@ describe('Virtual model catalog context_length', () => {
         },
       },
       ['http://cloud:11434'],
+      true,
     )
     const lm = new LoadManager({ maxConcurrentPerNode: 3 })
     lm.setUnlimited('http://cloud:11434')

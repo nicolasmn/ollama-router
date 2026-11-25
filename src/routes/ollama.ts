@@ -11,7 +11,7 @@ import type { Application, Request, Response } from 'express'
 import { VIRTUAL_MODELS } from '../request-router.js'
 import { INFERENCE_TIMEOUT, ROUTER_FALLBACK_TO_AUTO } from '../config.js'
 import type { DiscoveryManager } from '../discovery-manager.js'
-import type { ModelInfo } from '../models.js'
+import { resolveModelName, type ModelInfo } from '../models.js'
 import type { RequestRouter } from '../request-router.js'
 import { readJsonBody } from '../read-body.js'
 
@@ -67,7 +67,9 @@ export function setupOllamaRoutes(
       })
     }
 
+    const cloudConfigured = discoveryManager.getCloudInfo().configured
     for (const name of VIRTUAL_MODELS) {
+      if (name === 'auto-local' && !cloudConfigured) continue
       models.push({
         name,
         model: name,
@@ -126,7 +128,8 @@ export function setupOllamaRoutes(
     }
 
     const allModels = aggregateModels(discoveryManager)
-    const entry = allModels.get(name)
+    const resolvedName = resolveModelName(name, allModels.keys())
+    const entry = allModels.get(resolvedName)
     if (!entry) {
       return res.status(404).json({ error: `model '${name}' not found` })
     }
@@ -247,7 +250,9 @@ export function setupOllamaRoutes(
     res.once('close', onClientClose)
 
     try {
-      let nodeHost = findNodeForModel(discoveryManager, modelName)
+      const target = findNodeForModel(discoveryManager, modelName)
+      let nodeHost = target?.nodeHost ?? null
+      if (target) body.model = target.resolvedName
 
       if (!nodeHost) {
         if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
@@ -309,7 +314,9 @@ export function setupOllamaRoutes(
     res.once('close', onClientClose)
 
     try {
-      let nodeHost = findNodeForModel(discoveryManager, modelName)
+      const target = findNodeForModel(discoveryManager, modelName)
+      let nodeHost = target?.nodeHost ?? null
+      if (target) body.model = target.resolvedName
 
       if (!nodeHost) {
         if (ROUTER_FALLBACK_TO_AUTO && requestRouter) {
@@ -463,10 +470,15 @@ function firstReachableNode(discoveryManager: DiscoveryManager): string | null {
 function findNodeForModel(
   discoveryManager: DiscoveryManager,
   modelName: string,
-): string | null {
+): { nodeHost: string; resolvedName: string } | null {
+  const knownNames = new Set<string>()
+  for (const [, node] of discoveryManager.getNodes()) {
+    for (const name of node.models.keys()) knownNames.add(name)
+  }
+  const resolvedName = resolveModelName(modelName, knownNames)
   for (const [nodeHost, node] of discoveryManager.getNodes()) {
     if (!node.reachable) continue
-    if (node.models.has(modelName)) return nodeHost
+    if (node.models.has(resolvedName)) return { nodeHost, resolvedName }
   }
   return null
 }

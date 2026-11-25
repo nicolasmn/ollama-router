@@ -86,11 +86,12 @@ You can set the `model` field in requests to either a concrete model name or a r
 - `auto`: default router behavior — picks the best candidate across local and cloud nodes
 - `auto-fast`: prefers small/fast models; includes cloud when no suitable local is available
 - `auto-think`: routes only to thinking-capable models; includes cloud candidates
-- `auto-local`: local-only variant — never routes to cloud nodes
+- `auto-local`: local-only variant — never routes to cloud nodes; only listed when `OLLAMA_CLOUD_API_KEY` is set
 - `<real-model-name>`: routes only to that model across discovered nodes
 
 Notes:
 
+- A tagless name matches the installed tagged variant (`:latest` preferred, otherwise any installed tag), e.g. `nimble-v3` → `nimble-v3:7b`.
 - Unknown model names return `404` by default.
 - Set `ROUTER_FALLBACK_TO_AUTO=true` to silently reroute unknown model names to `auto` selection instead of returning `404`. The `model` field in the response will reflect the actual model that served the request.
 - Alias names are reserved and also listed in `/v1/models`.
