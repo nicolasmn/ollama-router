@@ -79,6 +79,11 @@ describe('RequestHistoryManager', () => {
     expect(entry.promptChars).toBe(33)
     expect(entry.promptHash).toMatch(/^[0-9a-f]{12}$/u)
     expect(JSON.stringify(entry)).not.toContain('hello world')
+    // The private detail endpoint exposes the input for the dashboard preview.
+    expect(history.getRequestDetail('embed-1')?.messageList.map((m) => m.content)).toEqual([
+      'hello world',
+      'another short input',
+    ])
   })
 
   it('uses explicit conversation identifiers when present', () => {
