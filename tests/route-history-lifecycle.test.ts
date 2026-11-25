@@ -150,6 +150,33 @@ describe('Route history lifecycle — finishRequest on early exit', () => {
       } finally { await close(server) }
     })
 
+    it('embeddings: cached routing still captures the input preview', async () => {
+      const upstreamApp = express()
+      upstreamApp.post('/v1/embeddings', (_req, res) => {
+        res.json({ data: [], usage: { prompt_tokens: 1 } })
+      })
+      const upstream = await listen(upstreamApp)
+      const host = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`
+      const model = 'nomic-embed-text:latest'
+      const discovery = makeDiscovery({ [host]: { [model]: { isEmbedding: true } } })
+      const router = new RequestRouter(discovery, loadManager)
+      await router.selectForEmbeddings({ model, input: 'seed' })
+
+      const body = { model, input: ['cached-alpha', 'cached-beta'] }
+      expect(router.peekSignalCache(body)).not.toBeNull()
+      const app = express()
+      app.use(express.json())
+      setupEmbeddingsRoutes(app, discovery, loadManager, router, history)
+      const server = await listen(app)
+      try {
+        expect((await post(server, '/v1/embeddings', body)).status).toBe(200)
+        expect(history.getRequestDetail(lastEntry().requestId)?.messageList.map((m) => m.content)).toEqual(body.input)
+      } finally {
+        await close(server)
+        await close(upstream)
+      }
+    })
+
     it('responses: entry is finished with status=failed after 404', async () => {
       const server = await listen(makeApp(makeDiscovery(BASE_NODES), loadManager, history))
       try {

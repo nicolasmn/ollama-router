@@ -381,16 +381,18 @@ function extractThinkingFromTaggedContent(
   }
 }
 
+function stringifyEmbeddingItem(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (Array.isArray(item)) return `[vector:${item.length}]`
+  return String(item ?? '')
+}
+
 function stringifyEmbeddingInput(input: unknown): string {
   if (typeof input === 'string') return input
   if (!Array.isArray(input)) return ''
   return (input as unknown[])
     .slice(0, 3)
-    .map((item) => {
-      if (typeof item === 'string') return item
-      if (Array.isArray(item)) return `[vector:${item.length}]`
-      return String(item ?? '')
-    })
+    .map(stringifyEmbeddingItem)
     .join(' | ')
 }
 
@@ -629,6 +631,17 @@ function buildMessageList(
       }
     }
     return applyEntryBudget(list)
+  }
+  if (endpointType === 'embeddings') {
+    const input = reqBody?.input
+    if (input === undefined || input === null) return []
+    const items = Array.isArray(input) ? input : [input]
+    return applyEntryBudget(
+      items.slice(0, MAX_MESSAGES_PER_ENTRY).map((item) => ({
+        role: 'user',
+        content: stringifyEmbeddingItem(item),
+      })),
+    )
   }
   if (endpointType !== 'chat') return []
   const messages = Array.isArray(reqBody?.messages)

@@ -32,11 +32,12 @@ export function setupEmbeddingsRoutes(
     const { body: reqBody, raw } = await readJsonBody(req)
 
     // Cache checks: conversation first, then signal. On a hit we skip
-    // re-analyzing the body and skip heavy history capture.
+    // re-analyzing the body, but still capture the input so cached embedding
+    // requests get a dashboard preview too.
     const peeked = requestRouter.peekCachedRouting?.(reqBody) ?? requestRouter.peekSignalCache?.(reqBody)
     const analysis = peeked ? undefined : requestRouter.analyzeRequest(reqBody, 'embeddings')
 
-    requestHistoryManager.startRequest({ requestId, endpointType: 'embeddings', reqBody, analysis: analysis ?? {}, skipCapture: !!peeked })
+    requestHistoryManager.startRequest({ requestId, endpointType: 'embeddings', reqBody, analysis: analysis ?? {} })
     requestHistoryManager.registerAbortController(requestId, abortController)
 
     let candidates = peeked
