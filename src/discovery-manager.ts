@@ -1,6 +1,6 @@
 // discovery-manager.ts - Discovers, probes, and tracks Ollama nodes
 import { NodeInfo, ModelInfo, ModelProfile } from './models.js'
-import type { LoadedModel } from './models.js'
+import type { LoadedModel, ThinkingMetadata } from './models.js'
 import { resolveNodeMemoryBytes } from './config.js'
 import type { NodeMemoryEntry } from './config.js'
 import { effectiveLoadedLimit, observeLoadedSnapshot, resolveNodeMemory } from './node-memory.js'
@@ -276,6 +276,7 @@ export class DiscoveryManager {
     }
     return new ModelProfile({
       capabilities, parameters, contextLength, architecture, embeddingDim,
+      thinking: d.thinking as ThinkingMetadata | undefined,
       supportsTools: capabilities.has('tools'),
       supportsVision: capabilities.has('vision'),
       supportsAudio: capabilities.has('audio'),

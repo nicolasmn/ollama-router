@@ -3,13 +3,14 @@ import express, { type Express } from 'express'
 import http from 'node:http'
 import { once } from 'node:events'
 import { setupOllamaRoutes } from '../src/routes/ollama.js'
-import { ModelInfo, ModelProfile, type NodeInfo } from '../src/models.js'
+import { ModelInfo, ModelProfile, type NodeInfo, type ThinkingMetadata } from '../src/models.js'
 import type { DiscoveryManager } from '../src/discovery-manager.js'
 
 function createDiscoveryManager(
   reachable: boolean,
   decisionModel = false,
   cloudConfigured = false,
+  thinking?: ThinkingMetadata,
 ) {
   const profile = new ModelProfile({
     capabilities: new Set(['completion', 'tools', 'vision']),
@@ -18,6 +19,7 @@ function createDiscoveryManager(
     architecture: 'gemma3',
     supportsTools: true,
     supportsVision: true,
+    thinking,
   })
   const modelInfo = new ModelInfo('gemma3:4b', 'gemma3', 5_000_000_000, profile)
   const models = new Map([['gemma3:4b', modelInfo]])
@@ -80,12 +82,13 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
     reachable: boolean,
     decisionModel = false,
     cloudConfigured = false,
+    thinking?: ThinkingMetadata,
   ) {
     const app: Express = express()
     app.use(express.json())
     setupOllamaRoutes(
       app,
-      createDiscoveryManager(reachable, decisionModel, cloudConfigured),
+      createDiscoveryManager(reachable, decisionModel, cloudConfigured, thinking),
     )
     server = http.createServer(app)
     baseUrl = await startServer(app)
@@ -121,6 +124,44 @@ describe('Ollama model discovery endpoints (/api/tags, /api/show)', () => {
     }
     expect(json.capabilities).toContain('completion')
     expect(json.model_info?.['gemma3.context_length']).toBe(131_072)
+  })
+
+  it('includes named thinking levels verbatim in /api/show', async () => {
+    const thinking = { values: ['low', 'medium', 'high'], default: 'medium' }
+    await start(true, false, false, thinking)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma3:4b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { thinking?: unknown }
+    expect(json.thinking).toEqual(thinking)
+  })
+
+  it('includes boolean thinking values verbatim in /api/show', async () => {
+    const thinking = { values: [true, false], default: false }
+    await start(true, false, false, thinking)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma3:4b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { thinking?: unknown }
+    expect(json.thinking).toEqual(thinking)
+  })
+
+  it('omits thinking from /api/show when not discovered', async () => {
+    await start(true)
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma3:4b' }),
+    })
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as Record<string, unknown>
+    expect(json).not.toHaveProperty('thinking')
   })
 
   it('still resolves the legacy `name` field', async () => {
